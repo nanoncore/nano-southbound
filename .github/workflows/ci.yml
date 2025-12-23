@@ -19,7 +19,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.23'
           cache: true
 
       - name: Download dependencies
@@ -61,7 +61,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.23'
           cache: true
 
       - name: Build
@@ -89,7 +89,9 @@ jobs:
           docker run --rm --platform linux/riscv64 \
             -v "$PWD":/src \
             -w /src \
-            riscv64/golang:1.23 \
+            -e GOPROXY=https://proxy.golang.org,direct \
+            -e GOTOOLCHAIN=auto \
+            golang:latest \
             sh -c "go mod download && go test -v ./..."
 
   test-arm64:
@@ -108,7 +110,9 @@ jobs:
           docker run --rm --platform linux/arm64 \
             -v "$PWD":/src \
             -w /src \
-            arm64v8/golang:1.23 \
+            -e GOPROXY=https://proxy.golang.org,direct \
+            -e GOTOOLCHAIN=auto \
+            golang:latest \
             sh -c "go mod download && go test -v ./..."
 
   lint:
@@ -120,7 +124,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.24'
+          go-version: '1.23'
           cache: true
 
       - name: golangci-lint

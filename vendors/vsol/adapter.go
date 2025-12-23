@@ -747,7 +747,7 @@ func (a *Adapter) BulkProvision(ctx context.Context, operations []types.BulkProv
 	if _, err := a.cliExecutor.ExecCommand(ctx, "config"); err != nil {
 		return nil, fmt.Errorf("failed to enter config mode: %w", err)
 	}
-	defer a.cliExecutor.ExecCommand(ctx, "end")
+	defer func() { _, _ = a.cliExecutor.ExecCommand(ctx, "end") }()
 
 	for i, op := range operations {
 		opResult := types.BulkOpResult{
@@ -817,10 +817,8 @@ func (a *Adapter) BulkProvision(ctx context.Context, operations []types.BulkProv
 		result.Results[i] = opResult
 	}
 
-	// Commit all changes
-	if _, err := a.cliExecutor.ExecCommand(ctx, "commit"); err != nil {
-		// Log but don't fail - some operations may have succeeded
-	}
+	// Commit all changes (ignore error - some operations may have succeeded)
+	_, _ = a.cliExecutor.ExecCommand(ctx, "commit")
 
 	return result, nil
 }

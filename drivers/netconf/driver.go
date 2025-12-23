@@ -72,7 +72,6 @@ func (w *netconfWriter) Write(data []byte) (int, error) {
 // netconfReader wraps SSH stdout for NETCONF framing
 type netconfReader struct {
 	reader   interface{ Read([]byte) (int, error) }
-	buffer   []byte
 	useChunk bool
 }
 
@@ -397,7 +396,7 @@ func extractRPCError(data []byte) string {
 
 // Get performs NETCONF get operation
 func (d *Driver) Get(ctx context.Context, filter string) ([]byte, error) {
-	operation := "<get>"
+	var operation string
 	if filter != "" {
 		operation = fmt.Sprintf(`<get>
   <filter type="subtree">

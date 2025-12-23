@@ -490,7 +490,7 @@ func (d *Driver) processSubscriptionUpdates(
 			continue
 
 		case *gnmipb.SubscribeResponse_Error:
-			state.errors <- fmt.Errorf("subscription error from device: %s", r.Error.Message)
+			state.errors <- fmt.Errorf("subscription error from device: %s", r.Error.Message) //nolint:staticcheck // deprecated but needed for backwards compat
 		}
 	}
 }
@@ -664,11 +664,11 @@ func decodeTypedValue(tv *gnmipb.TypedValue) interface{} {
 	case *gnmipb.TypedValue_BytesVal:
 		return v.BytesVal
 	case *gnmipb.TypedValue_FloatVal:
-		return v.FloatVal
+		return v.FloatVal //nolint:staticcheck // deprecated but needed for backwards compat
 	case *gnmipb.TypedValue_DoubleVal:
 		return v.DoubleVal
 	case *gnmipb.TypedValue_DecimalVal:
-		return float64(v.DecimalVal.Digits) / float64(int64(1)<<v.DecimalVal.Precision)
+		return float64(v.DecimalVal.Digits) / float64(int64(1)<<v.DecimalVal.Precision) //nolint:staticcheck // deprecated but needed for backwards compat
 	case *gnmipb.TypedValue_LeaflistVal:
 		var result []interface{}
 		for _, elem := range v.LeaflistVal.Element {
