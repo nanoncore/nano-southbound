@@ -30,6 +30,18 @@ This package provides protocol drivers and vendor-specific adapters for communic
 | V-SOL | CLI | V1600G Series |
 | C-Data | CLI | FD1104S, FD1208S |
 
+## Supported Architectures
+
+This is a pure Go module with no CGO dependencies. It builds and runs on any platform supported by Go:
+
+| Architecture | Build | Test | Status |
+|--------------|-------|------|--------|
+| linux/amd64  | ✅    | ✅   | Stable |
+| linux/arm64  | ✅    | ✅   | Stable |
+| linux/riscv64| ✅    | ✅   | Stable |
+| darwin/amd64 | ✅    | ✅   | Stable |
+| darwin/arm64 | ✅    | ✅   | Stable |
+
 ## Installation
 
 ```bash

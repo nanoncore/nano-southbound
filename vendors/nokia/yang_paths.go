@@ -31,12 +31,12 @@ const (
 	PathMSAPPolicy     = "/configure/subscriber-mgmt/msap-policy[msap-policy-name='%s']"
 
 	// QoS paths
-	PathQoS           = "/configure/qos"
-	PathSapIngress    = "/configure/qos/sap-ingress[sap-ingress-policy-name='%s']"
-	PathSapEgress     = "/configure/qos/sap-egress[sap-egress-policy-name='%s']"
-	PathSchedulerPol  = "/configure/qos/scheduler-policy[scheduler-policy-name='%s']"
-	PathQueuePol      = "/configure/qos/queue-policy[queue-policy-name='%s']"
-	PathPolicer       = "/configure/qos/sap-ingress[sap-ingress-policy-name='%s']/policer[policer-id='%d']"
+	PathQoS          = "/configure/qos"
+	PathSapIngress   = "/configure/qos/sap-ingress[sap-ingress-policy-name='%s']"
+	PathSapEgress    = "/configure/qos/sap-egress[sap-egress-policy-name='%s']"
+	PathSchedulerPol = "/configure/qos/scheduler-policy[scheduler-policy-name='%s']"
+	PathQueuePol     = "/configure/qos/queue-policy[queue-policy-name='%s']"
+	PathPolicer      = "/configure/qos/sap-ingress[sap-ingress-policy-name='%s']/policer[policer-id='%d']"
 
 	// Port/Interface paths
 	PathPort     = "/configure/port[port-id='%s']"
@@ -53,52 +53,52 @@ const (
 	PathRADIUSPolicy = "/configure/aaa/radius/policy[name='%s']"
 
 	// DHCP paths
-	PathDHCPServer     = "/configure/service/vprn[service-name='%s']/dhcp/local-dhcp-server[server-name='%s']"
-	PathDHCPPool       = "/configure/service/vprn[service-name='%s']/dhcp/local-dhcp-server[server-name='%s']/pool[pool-name='%s']"
-	PathDHCPv6Server   = "/configure/service/vprn[service-name='%s']/dhcp6/local-dhcp-server[server-name='%s']"
+	PathDHCPServer   = "/configure/service/vprn[service-name='%s']/dhcp/local-dhcp-server[server-name='%s']"
+	PathDHCPPool     = "/configure/service/vprn[service-name='%s']/dhcp/local-dhcp-server[server-name='%s']/pool[pool-name='%s']"
+	PathDHCPv6Server = "/configure/service/vprn[service-name='%s']/dhcp6/local-dhcp-server[server-name='%s']"
 )
 
 // State Paths - Telemetry and Monitoring
 const (
 	// Subscriber session state
-	PathStateSubscribers      = "/state/subscriber-mgmt/subscriber"
-	PathStateSubscriber       = "/state/subscriber-mgmt/subscriber[subscriber-id='%s']"
-	PathStateSubSession       = "/state/service/vprn[service-name='%s']/subscriber-interface/group-interface/sap/sub-sla-mgmt/sub-ident[subscriber-id='%s']"
+	PathStateSubscribers = "/state/subscriber-mgmt/subscriber"
+	PathStateSubscriber  = "/state/subscriber-mgmt/subscriber[subscriber-id='%s']"
+	PathStateSubSession  = "/state/service/vprn[service-name='%s']/subscriber-interface/group-interface/sap/sub-sla-mgmt/sub-ident[subscriber-id='%s']"
 
 	// Subscriber statistics
-	PathStateSubStats         = "/state/subscriber-mgmt/subscriber[subscriber-id='%s']/statistics"
-	PathStateSubSapStats      = "/state/service/vprn[service-name='%s']/subscriber-interface[interface-name='%s']/group-interface[group-interface-name='%s']/sap[sap-id='%s']/statistics"
+	PathStateSubStats    = "/state/subscriber-mgmt/subscriber[subscriber-id='%s']/statistics"
+	PathStateSubSapStats = "/state/service/vprn[service-name='%s']/subscriber-interface[interface-name='%s']/group-interface[group-interface-name='%s']/sap[sap-id='%s']/statistics"
 
 	// Port/Interface statistics
-	PathStatePort             = "/state/port[port-id='%s']"
-	PathStatePortStats        = "/state/port[port-id='%s']/statistics"
-	PathStateEthernetStats    = "/state/port[port-id='%s']/ethernet/statistics"
+	PathStatePort          = "/state/port[port-id='%s']"
+	PathStatePortStats     = "/state/port[port-id='%s']/statistics"
+	PathStateEthernetStats = "/state/port[port-id='%s']/ethernet/statistics"
 
 	// System state
-	PathStateSystem           = "/state/system"
-	PathStateSystemInfo       = "/state/system/information"
-	PathStateCPU              = "/state/system/cpu"
-	PathStateMemory           = "/state/system/memory-pools"
+	PathStateSystem     = "/state/system"
+	PathStateSystemInfo = "/state/system/information"
+	PathStateCPU        = "/state/system/cpu"
+	PathStateMemory     = "/state/system/memory-pools"
 
 	// VPRN state
-	PathStateVPRN             = "/state/service/vprn[service-name='%s']"
-	PathStateVPRNSubIface     = "/state/service/vprn[service-name='%s']/subscriber-interface[interface-name='%s']"
+	PathStateVPRN         = "/state/service/vprn[service-name='%s']"
+	PathStateVPRNSubIface = "/state/service/vprn[service-name='%s']/subscriber-interface[interface-name='%s']"
 )
 
 // gNMI Paths for streaming telemetry
 const (
 	// Subscriber telemetry (gNMI paths use same structure, different encoding)
-	GNMISubSession     = "/nokia-state:state/subscriber-mgmt/subscriber"
-	GNMISubStats       = "/nokia-state:state/subscriber-mgmt/subscriber[subscriber-id=%s]/statistics"
+	GNMISubSession = "/nokia-state:state/subscriber-mgmt/subscriber"
+	GNMISubStats   = "/nokia-state:state/subscriber-mgmt/subscriber[subscriber-id=%s]/statistics"
 
 	// Interface telemetry
-	GNMIPortStats      = "/nokia-state:state/port[port-id=%s]/statistics"
-	GNMIEthernetStats  = "/nokia-state:state/port[port-id=%s]/ethernet/statistics"
+	GNMIPortStats     = "/nokia-state:state/port[port-id=%s]/statistics"
+	GNMIEthernetStats = "/nokia-state:state/port[port-id=%s]/ethernet/statistics"
 
 	// System telemetry
-	GNMISystemInfo     = "/nokia-state:state/system/information"
-	GNMICPUStats       = "/nokia-state:state/system/cpu[sample-period=1]"
-	GNMIMemoryStats    = "/nokia-state:state/system/memory-pools"
+	GNMISystemInfo  = "/nokia-state:state/system/information"
+	GNMICPUStats    = "/nokia-state:state/system/cpu[sample-period=1]"
+	GNMIMemoryStats = "/nokia-state:state/system/memory-pools"
 
 	// QoS telemetry
 	GNMISapIngressStats = "/nokia-state:state/service/vprn[service-name=%s]/interface[interface-name=%s]/sap[sap-id=%s]/ingress/qos/sap-ingress/queue[queue-id=%d]/statistics"
@@ -337,23 +337,23 @@ type SubscriberStats struct {
 
 // PortStats represents port statistics
 type PortStats struct {
-	InOctets     uint64
-	OutOctets    uint64
-	InPackets    uint64
-	OutPackets   uint64
-	InErrors     uint64
-	OutErrors    uint64
-	InDiscards   uint64
-	OutDiscards  uint64
+	InOctets    uint64
+	OutOctets   uint64
+	InPackets   uint64
+	OutPackets  uint64
+	InErrors    uint64
+	OutErrors   uint64
+	InDiscards  uint64
+	OutDiscards uint64
 }
 
 // SystemInfo represents system information
 type SystemInfo struct {
-	Name         string
-	Type         string
-	Version      string
-	UptimeSecs   int64
-	CPUPercent   float64
-	MemoryUsed   uint64
-	MemoryTotal  uint64
+	Name        string
+	Type        string
+	Version     string
+	UptimeSecs  int64
+	CPUPercent  float64
+	MemoryUsed  uint64
+	MemoryTotal uint64
 }

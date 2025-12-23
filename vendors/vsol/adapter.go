@@ -129,7 +129,7 @@ func (a *Adapter) buildGPONCommands(ponPort string, onuID int, serial string, vl
 		// onu flowctrl <onu-id> ingress <kbps> egress <kbps>
 		fmt.Sprintf("onu flowctrl %d ingress %d egress %d",
 			onuID,
-			bwUp*1000,   // Convert Mbps to kbps
+			bwUp*1000,    // Convert Mbps to kbps
 			bwDown*1000), // Convert Mbps to kbps
 
 		// Enable the ONU

@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nanoncore/nano-southbound/model"
 	"github.com/nanoncore/nano-southbound/drivers/netconf"
+	"github.com/nanoncore/nano-southbound/model"
 	"github.com/nanoncore/nano-southbound/types"
 )
 
@@ -79,14 +79,14 @@ func (a *Adapter) CreateSubscriber(ctx context.Context, subscriber *model.Subscr
 		InterfaceName: params.InterfaceName,
 		VLAN:          subscriber.Spec.VLAN,
 		Metadata: map[string]interface{}{
-			"vendor":          "cisco",
-			"os":              a.detectOS(),
-			"interface":       params.InterfaceName,
-			"parent_iface":    params.ParentInterface,
-			"template":        params.DynamicTemplate,
-			"policy_input":    params.PolicyInput,
-			"policy_output":   params.PolicyOutput,
-			"node":            params.NodeName,
+			"vendor":        "cisco",
+			"os":            a.detectOS(),
+			"interface":     params.InterfaceName,
+			"parent_iface":  params.ParentInterface,
+			"template":      params.DynamicTemplate,
+			"policy_input":  params.PolicyInput,
+			"policy_output": params.PolicyOutput,
+			"node":          params.NodeName,
 		},
 	}
 
@@ -95,19 +95,19 @@ func (a *Adapter) CreateSubscriber(ctx context.Context, subscriber *model.Subscr
 
 // subscriberParams holds parsed subscriber parameters for Cisco
 type subscriberParams struct {
-	NodeName         string
-	ParentInterface  string
-	InterfaceName    string
-	VLAN             int
-	MAC              string
-	IPv4Address      string
-	IPv6Address      string
-	DynamicTemplate  string
-	PolicyInput      string
-	PolicyOutput     string
-	BandwidthUp      int
-	BandwidthDown    int
-	UnnumberedIface  string
+	NodeName        string
+	ParentInterface string
+	InterfaceName   string
+	VLAN            int
+	MAC             string
+	IPv4Address     string
+	IPv6Address     string
+	DynamicTemplate string
+	PolicyInput     string
+	PolicyOutput    string
+	BandwidthUp     int
+	BandwidthDown   int
+	UnnumberedIface string
 }
 
 // extractSubscriberParams extracts parameters from Subscriber and ServiceTier
@@ -441,18 +441,18 @@ func (a *Adapter) parseSubscriberSession(data []byte) *SubscriberSession {
 
 	// Parse XML response
 	type SessionXML struct {
-		XMLName       xml.Name `xml:"session-id"`
-		SessionID     string   `xml:"session-id"`
-		SubLabel      string   `xml:"subscriber-label"`
-		State         string   `xml:"state"`
-		MAC           string   `xml:"mac-address"`
-		IPv4          string   `xml:"ipv4-address"`
-		IPv6          string   `xml:"ipv6-address"`
-		Interface     string   `xml:"interface-name"`
-		VLAN          int      `xml:"outer-vlan"`
-		Uptime        string   `xml:"up-time"`
-		AccountingID  string   `xml:"accounting-session-id"`
-		ServiceType   string   `xml:"session-type"`
+		XMLName      xml.Name `xml:"session-id"`
+		SessionID    string   `xml:"session-id"`
+		SubLabel     string   `xml:"subscriber-label"`
+		State        string   `xml:"state"`
+		MAC          string   `xml:"mac-address"`
+		IPv4         string   `xml:"ipv4-address"`
+		IPv6         string   `xml:"ipv6-address"`
+		Interface    string   `xml:"interface-name"`
+		VLAN         int      `xml:"outer-vlan"`
+		Uptime       string   `xml:"up-time"`
+		AccountingID string   `xml:"accounting-session-id"`
+		ServiceType  string   `xml:"session-type"`
 	}
 
 	var s SessionXML
@@ -478,17 +478,17 @@ func (a *Adapter) parseInterfaceStats(data []byte) *InterfaceStats {
 	stats := &InterfaceStats{}
 
 	type StatsXML struct {
-		XMLName         xml.Name `xml:"generic-counters"`
-		BytesReceived   uint64   `xml:"bytes-received"`
-		BytesSent       uint64   `xml:"bytes-sent"`
-		PacketsReceived uint64   `xml:"packets-received"`
-		PacketsSent     uint64   `xml:"packets-sent"`
-		InputErrors     uint64   `xml:"input-errors"`
-		OutputErrors    uint64   `xml:"output-errors"`
-		InputDrops      uint64   `xml:"input-drops"`
-		OutputDrops     uint64   `xml:"output-drops"`
-		CRCErrors       uint64   `xml:"crc-errors"`
-		OutputBufferFails uint64 `xml:"output-buffer-failures"`
+		XMLName           xml.Name `xml:"generic-counters"`
+		BytesReceived     uint64   `xml:"bytes-received"`
+		BytesSent         uint64   `xml:"bytes-sent"`
+		PacketsReceived   uint64   `xml:"packets-received"`
+		PacketsSent       uint64   `xml:"packets-sent"`
+		InputErrors       uint64   `xml:"input-errors"`
+		OutputErrors      uint64   `xml:"output-errors"`
+		InputDrops        uint64   `xml:"input-drops"`
+		OutputDrops       uint64   `xml:"output-drops"`
+		CRCErrors         uint64   `xml:"crc-errors"`
+		OutputBufferFails uint64   `xml:"output-buffer-failures"`
 	}
 
 	var s StatsXML
@@ -622,9 +622,9 @@ func (a *Adapter) CreateQoSPolicy(ctx context.Context, tier *model.ServiceTier) 
 	}
 
 	// CIR = 80% of PIR, burst = 128KB
-	cirUp := tier.Spec.BandwidthUp * 800     // kbps
-	pirUp := tier.Spec.BandwidthUp * 1000    // kbps
-	cirDown := tier.Spec.BandwidthDown * 800 // kbps
+	cirUp := tier.Spec.BandwidthUp * 800      // kbps
+	pirUp := tier.Spec.BandwidthUp * 1000     // kbps
+	cirDown := tier.Spec.BandwidthDown * 800  // kbps
 	pirDown := tier.Spec.BandwidthDown * 1000 // kbps
 	burstKB := 128
 
@@ -673,12 +673,12 @@ func (a *Adapter) parseSubscriberSummary(data []byte) *SubscriberSummary {
 	summary := &SubscriberSummary{}
 
 	type SummaryXML struct {
-		XMLName     xml.Name `xml:"summary"`
-		Total       int      `xml:"total-sessions"`
-		PPPoE       int      `xml:"pppoe-sessions"`
-		IPoE        int      `xml:"ipoe-sessions"`
-		Activated   int      `xml:"activated-sessions"`
-		Initiating  int      `xml:"initiating-sessions"`
+		XMLName    xml.Name `xml:"summary"`
+		Total      int      `xml:"total-sessions"`
+		PPPoE      int      `xml:"pppoe-sessions"`
+		IPoE       int      `xml:"ipoe-sessions"`
+		Activated  int      `xml:"activated-sessions"`
+		Initiating int      `xml:"initiating-sessions"`
 	}
 
 	var s SummaryXML
@@ -712,8 +712,8 @@ func (a *Adapter) parseSystemInfo(data []byte) *SystemInfo {
 	info := &SystemInfo{}
 
 	type CPUInfo struct {
-		XMLName    xml.Name `xml:"cpu-utilization"`
-		TotalCPU   float64  `xml:"total-cpu-fifteen-minute"`
+		XMLName  xml.Name `xml:"cpu-utilization"`
+		TotalCPU float64  `xml:"total-cpu-fifteen-minute"`
 	}
 
 	var cpu CPUInfo

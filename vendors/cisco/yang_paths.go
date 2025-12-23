@@ -7,17 +7,17 @@ package cisco
 // YANG Namespaces
 const (
 	// Cisco IOS-XR namespaces
-	NSCiscoSubscriber    = "http://cisco.com/ns/yang/Cisco-IOS-XR-subscriber-infra-tmplmgr-cfg"
-	NSCiscoSubSession    = "http://cisco.com/ns/yang/Cisco-IOS-XR-subscriber-session-mon-oper"
-	NSCiscoSubPPPoE      = "http://cisco.com/ns/yang/Cisco-IOS-XR-subscriber-pppoe-ma-gbl-cfg"
-	NSCiscoSubIPSub      = "http://cisco.com/ns/yang/Cisco-IOS-XR-subscriber-ipsub-cfg"
-	NSCiscoQoS           = "http://cisco.com/ns/yang/Cisco-IOS-XR-qos-ma-cfg"
-	NSCiscoInfra         = "http://cisco.com/ns/yang/Cisco-IOS-XR-infra-infra-cfg"
-	NSCiscoInterface     = "http://cisco.com/ns/yang/Cisco-IOS-XR-ifmgr-cfg"
-	NSCiscoAAA           = "http://cisco.com/ns/yang/Cisco-IOS-XR-aaa-lib-cfg"
-	NSCiscoRADIUS        = "http://cisco.com/ns/yang/Cisco-IOS-XR-aaa-protocol-radius-cfg"
-	NSCiscoIPv4          = "http://cisco.com/ns/yang/Cisco-IOS-XR-ipv4-io-cfg"
-	NSCiscoIPv6          = "http://cisco.com/ns/yang/Cisco-IOS-XR-ipv6-ma-cfg"
+	NSCiscoSubscriber = "http://cisco.com/ns/yang/Cisco-IOS-XR-subscriber-infra-tmplmgr-cfg"
+	NSCiscoSubSession = "http://cisco.com/ns/yang/Cisco-IOS-XR-subscriber-session-mon-oper"
+	NSCiscoSubPPPoE   = "http://cisco.com/ns/yang/Cisco-IOS-XR-subscriber-pppoe-ma-gbl-cfg"
+	NSCiscoSubIPSub   = "http://cisco.com/ns/yang/Cisco-IOS-XR-subscriber-ipsub-cfg"
+	NSCiscoQoS        = "http://cisco.com/ns/yang/Cisco-IOS-XR-qos-ma-cfg"
+	NSCiscoInfra      = "http://cisco.com/ns/yang/Cisco-IOS-XR-infra-infra-cfg"
+	NSCiscoInterface  = "http://cisco.com/ns/yang/Cisco-IOS-XR-ifmgr-cfg"
+	NSCiscoAAA        = "http://cisco.com/ns/yang/Cisco-IOS-XR-aaa-lib-cfg"
+	NSCiscoRADIUS     = "http://cisco.com/ns/yang/Cisco-IOS-XR-aaa-protocol-radius-cfg"
+	NSCiscoIPv4       = "http://cisco.com/ns/yang/Cisco-IOS-XR-ipv4-io-cfg"
+	NSCiscoIPv6       = "http://cisco.com/ns/yang/Cisco-IOS-XR-ipv6-ma-cfg"
 
 	// Standard namespaces
 	NSNetconfBase = "urn:ietf:params:xml:ns:netconf:base:1.0"
@@ -26,37 +26,37 @@ const (
 // Configuration Paths - Dynamic Templates
 const (
 	// Dynamic template paths (BNG subscriber templates)
-	PathDynamicTemplate      = "/dynamic-template"
-	PathPPPoETemplate        = "/dynamic-template/ppps/ppp[template-name='%s']"
-	PathIPSubTemplate        = "/dynamic-template/ip-subscribers/ip-subscriber[template-name='%s']"
-	PathServiceTemplate      = "/dynamic-template/service[template-name='%s']"
+	PathDynamicTemplate = "/dynamic-template"
+	PathPPPoETemplate   = "/dynamic-template/ppps/ppp[template-name='%s']"
+	PathIPSubTemplate   = "/dynamic-template/ip-subscribers/ip-subscriber[template-name='%s']"
+	PathServiceTemplate = "/dynamic-template/service[template-name='%s']"
 
 	// Subscriber configuration paths
-	PathSubscriberInfra      = "/subscriber/manager"
-	PathSubscriberAccess     = "/subscriber/manager/nodes/node[node-name='%s']"
-	PathSubsRedundancy       = "/subscriber/redundancy"
+	PathSubscriberInfra  = "/subscriber/manager"
+	PathSubscriberAccess = "/subscriber/manager/nodes/node[node-name='%s']"
+	PathSubsRedundancy   = "/subscriber/redundancy"
 
 	// Interface paths
-	PathInterface            = "/interface-configurations/interface-configuration[active='act'][interface-name='%s']"
-	PathSubInterface         = "/interface-configurations/interface-configuration[active='act'][interface-name='%s.%d']"
-	PathBundleInterface      = "/interface-configurations/interface-configuration[active='act'][interface-name='Bundle-Ether%d']"
+	PathInterface       = "/interface-configurations/interface-configuration[active='act'][interface-name='%s']"
+	PathSubInterface    = "/interface-configurations/interface-configuration[active='act'][interface-name='%s.%d']"
+	PathBundleInterface = "/interface-configurations/interface-configuration[active='act'][interface-name='Bundle-Ether%d']"
 
 	// QoS paths
-	PathQoSPolicyMap         = "/qos/policy-maps/policy-map[name='%s']"
-	PathQoSClassMap          = "/qos/class-maps/class-map[name='%s']"
-	PathQoSServicePolicy     = "/interface-configurations/interface-configuration[active='act'][interface-name='%s']/qos/input/service-policy[service-policy-name='%s']"
+	PathQoSPolicyMap     = "/qos/policy-maps/policy-map[name='%s']"
+	PathQoSClassMap      = "/qos/class-maps/class-map[name='%s']"
+	PathQoSServicePolicy = "/interface-configurations/interface-configuration[active='act'][interface-name='%s']/qos/input/service-policy[service-policy-name='%s']"
 
 	// AAA/RADIUS paths
-	PathAAA                  = "/aaa"
-	PathRADIUSServer         = "/aaa/radius/hosts/host[ordering-index='%d'][ip-address='%s'][auth-port-number='%d'][acct-port-number='%d']"
-	PathRADIUSAttribute      = "/aaa/radius/attributes"
-	PathRADIUSDeadCriteria   = "/aaa/radius/dead-criteria"
+	PathAAA                = "/aaa"
+	PathRADIUSServer       = "/aaa/radius/hosts/host[ordering-index='%d'][ip-address='%s'][auth-port-number='%d'][acct-port-number='%d']"
+	PathRADIUSAttribute    = "/aaa/radius/attributes"
+	PathRADIUSDeadCriteria = "/aaa/radius/dead-criteria"
 
 	// DHCP paths
-	PathDHCPIPv4             = "/ipv4-dhcpd"
-	PathDHCPIPv4Profile      = "/ipv4-dhcpd/profiles/profile[profile-name='%s']"
-	PathDHCPIPv4Relay        = "/ipv4-dhcpd/interfaces/interface[interface-name='%s']"
-	PathDHCPv6               = "/dhcp/ipv6"
+	PathDHCPIPv4        = "/ipv4-dhcpd"
+	PathDHCPIPv4Profile = "/ipv4-dhcpd/profiles/profile[profile-name='%s']"
+	PathDHCPIPv4Relay   = "/ipv4-dhcpd/interfaces/interface[interface-name='%s']"
+	PathDHCPv6          = "/dhcp/ipv6"
 )
 
 // State/Telemetry Paths
@@ -67,37 +67,37 @@ const (
 	PathStateSubSessionSummary  = "/subscriber-session-mon/nodes/node[node-name='%s']/summary"
 
 	// Subscriber accounting
-	PathStateSubAccounting      = "/subscriber-accounting/nodes/node[node-name='%s']"
+	PathStateSubAccounting = "/subscriber-accounting/nodes/node[node-name='%s']"
 
 	// Interface statistics
-	PathStateInterfaceStats     = "/infra-statistics/interfaces/interface[interface-name='%s']/latest/generic-counters"
+	PathStateInterfaceStats = "/infra-statistics/interfaces/interface[interface-name='%s']/latest/generic-counters"
 
 	// QoS statistics
-	PathStateQoSStats           = "/qos/nodes/node[node-name='%s']/policy-map/interface-table/interface[interface-name='%s']"
+	PathStateQoSStats = "/qos/nodes/node[node-name='%s']/policy-map/interface-table/interface[interface-name='%s']"
 
 	// System state
-	PathStateSystem             = "/system-monitoring"
-	PathStateCPU                = "/system-monitoring/cpu-utilization"
-	PathStateMemory             = "/system-monitoring/memory-statistics"
+	PathStateSystem = "/system-monitoring"
+	PathStateCPU    = "/system-monitoring/cpu-utilization"
+	PathStateMemory = "/system-monitoring/memory-statistics"
 )
 
 // gNMI Telemetry Paths
 const (
 	// Subscriber telemetry
-	GNMISubscriberSession   = "/Cisco-IOS-XR-subscriber-session-mon-oper:subscriber-session-mon/nodes/node/session-ids/session-id"
-	GNMISubscriberSummary   = "/Cisco-IOS-XR-subscriber-session-mon-oper:subscriber-session-mon/nodes/node/summary"
-	GNMISubscriberAcct      = "/Cisco-IOS-XR-subscriber-accounting-oper:subscriber-accounting"
+	GNMISubscriberSession = "/Cisco-IOS-XR-subscriber-session-mon-oper:subscriber-session-mon/nodes/node/session-ids/session-id"
+	GNMISubscriberSummary = "/Cisco-IOS-XR-subscriber-session-mon-oper:subscriber-session-mon/nodes/node/summary"
+	GNMISubscriberAcct    = "/Cisco-IOS-XR-subscriber-accounting-oper:subscriber-accounting"
 
 	// Interface telemetry
-	GNMIInterfaceStats      = "/Cisco-IOS-XR-infra-statsd-oper:infra-statistics/interfaces/interface/latest/generic-counters"
-	GNMIInterfaceDataRates  = "/Cisco-IOS-XR-infra-statsd-oper:infra-statistics/interfaces/interface/data-rate"
+	GNMIInterfaceStats     = "/Cisco-IOS-XR-infra-statsd-oper:infra-statistics/interfaces/interface/latest/generic-counters"
+	GNMIInterfaceDataRates = "/Cisco-IOS-XR-infra-statsd-oper:infra-statistics/interfaces/interface/data-rate"
 
 	// QoS telemetry
-	GNMIQoSInterfaceStats   = "/Cisco-IOS-XR-qos-ma-oper:qos/interface-table/interface/input/service-policy-names/service-policy-instance/statistics"
+	GNMIQoSInterfaceStats = "/Cisco-IOS-XR-qos-ma-oper:qos/interface-table/interface/input/service-policy-names/service-policy-instance/statistics"
 
 	// System telemetry
-	GNMICPUUtilization      = "/Cisco-IOS-XR-wdsysmon-fd-oper:system-monitoring/cpu-utilization"
-	GNMIMemoryStats         = "/Cisco-IOS-XR-nto-misc-shmem-oper:memory-summary/nodes/node/summary"
+	GNMICPUUtilization = "/Cisco-IOS-XR-wdsysmon-fd-oper:system-monitoring/cpu-utilization"
+	GNMIMemoryStats    = "/Cisco-IOS-XR-nto-misc-shmem-oper:memory-summary/nodes/node/summary"
 )
 
 // XML Templates for common operations
@@ -328,44 +328,44 @@ type SubscriberSession struct {
 
 // SubscriberStats represents subscriber traffic statistics
 type SubscriberStats struct {
-	BytesIn       uint64
-	BytesOut      uint64
-	PacketsIn     uint64
-	PacketsOut    uint64
-	DropsIn       uint64
-	DropsOut      uint64
+	BytesIn    uint64
+	BytesOut   uint64
+	PacketsIn  uint64
+	PacketsOut uint64
+	DropsIn    uint64
+	DropsOut   uint64
 }
 
 // InterfaceStats represents interface statistics
 type InterfaceStats struct {
-	BytesReceived      uint64
-	BytesSent          uint64
-	PacketsReceived    uint64
-	PacketsSent        uint64
-	InputErrors        uint64
-	OutputErrors       uint64
-	InputDrops         uint64
-	OutputDrops        uint64
-	InputCRCErrors     uint64
-	OutputBufferFails  uint64
+	BytesReceived     uint64
+	BytesSent         uint64
+	PacketsReceived   uint64
+	PacketsSent       uint64
+	InputErrors       uint64
+	OutputErrors      uint64
+	InputDrops        uint64
+	OutputDrops       uint64
+	InputCRCErrors    uint64
+	OutputBufferFails uint64
 }
 
 // SystemInfo represents system information
 type SystemInfo struct {
-	Hostname      string
-	Version       string
-	Platform      string
-	UptimeSecs    int64
-	CPUPercent    float64
-	MemoryUsed    uint64
-	MemoryFree    uint64
+	Hostname   string
+	Version    string
+	Platform   string
+	UptimeSecs int64
+	CPUPercent float64
+	MemoryUsed uint64
+	MemoryFree uint64
 }
 
 // SubscriberSummary represents subscriber count summary
 type SubscriberSummary struct {
-	TotalSessions     int
-	PPPoESessions     int
-	IPoESessions      int
-	ActiveSessions    int
+	TotalSessions      int
+	PPPoESessions      int
+	IPoESessions       int
+	ActiveSessions     int
 	InitiatingSessions int
 }

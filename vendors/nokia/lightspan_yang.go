@@ -34,16 +34,16 @@ const (
 // Lightspan Configuration Paths - BBF TR-385 compliant
 const (
 	// Channel group paths (physical port grouping)
-	LSPathChannelGroups    = "/bbf-xpon:xpon/channel-groups"
-	LSPathChannelGroup     = "/bbf-xpon:xpon/channel-groups/channel-group[name='%s']"
+	LSPathChannelGroups = "/bbf-xpon:xpon/channel-groups"
+	LSPathChannelGroup  = "/bbf-xpon:xpon/channel-groups/channel-group[name='%s']"
 
 	// Channel partition paths (wavelength partitioning)
 	LSPathChannelPartitions = "/bbf-xpon:xpon/channel-partitions"
 	LSPathChannelPartition  = "/bbf-xpon:xpon/channel-partitions/channel-partition[name='%s']"
 
 	// Channel pair paths (upstream/downstream wavelength pair)
-	LSPathChannelPairs     = "/bbf-xpon:xpon/channel-pairs"
-	LSPathChannelPair      = "/bbf-xpon:xpon/channel-pairs/channel-pair[name='%s']"
+	LSPathChannelPairs = "/bbf-xpon:xpon/channel-pairs"
+	LSPathChannelPair  = "/bbf-xpon:xpon/channel-pairs/channel-pair[name='%s']"
 
 	// Channel termination paths (OLT-side PON interface)
 	LSPathChannelTerminations = "/bbf-xpon:xpon/channel-terminations"
@@ -362,13 +362,13 @@ const (
 
 // Lightspan ONU Presence States (BBF TR-385)
 const (
-	LSONUPresenceNotPresent          = "onu-not-present"
-	LSONUPresenceOnExpectedCT        = "onu-present-and-on-expected-channel-termination"
-	LSONUPresenceOnUnexpectedCT      = "onu-present-and-on-unexpected-channel-termination"
-	LSONUPresenceEmergencyStop       = "onu-present-and-in-emergency-stop-state"
-	LSONUPresenceDyingGasp           = "onu-present-and-in-dying-gasp-state"
-	LSONUPresenceNotPresentWithVANI  = "onu-not-present-with-v-ani"
-	LSONUPresencePresentWithoutVANI  = "onu-present-without-v-ani"
+	LSONUPresenceNotPresent         = "onu-not-present"
+	LSONUPresenceOnExpectedCT       = "onu-present-and-on-expected-channel-termination"
+	LSONUPresenceOnUnexpectedCT     = "onu-present-and-on-unexpected-channel-termination"
+	LSONUPresenceEmergencyStop      = "onu-present-and-in-emergency-stop-state"
+	LSONUPresenceDyingGasp          = "onu-present-and-in-dying-gasp-state"
+	LSONUPresenceNotPresentWithVANI = "onu-not-present-with-v-ani"
+	LSONUPresencePresentWithoutVANI = "onu-present-without-v-ani"
 )
 
 // Admin States
@@ -382,61 +382,61 @@ const (
 
 // LightspanONUState represents parsed ONU state
 type LightspanONUState struct {
-	Name                string
-	SerialNumber        string
-	ChannelTermination  string
-	ChannelPartition    string
-	ONUID               int
-	PresenceState       string
-	AdminState          string
-	OperState           string
-	RegistrationID      string
-	RxPowerDbm          float64
-	TxPowerDbm          float64
-	LaserBiasCurrent    float64
-	Temperature         float64
-	Voltage             float64
-	Distance            int
-	EqualizationDelay   uint32
-	FECCorrectedErrors  uint64
+	Name                 string
+	SerialNumber         string
+	ChannelTermination   string
+	ChannelPartition     string
+	ONUID                int
+	PresenceState        string
+	AdminState           string
+	OperState            string
+	RegistrationID       string
+	RxPowerDbm           float64
+	TxPowerDbm           float64
+	LaserBiasCurrent     float64
+	Temperature          float64
+	Voltage              float64
+	Distance             int
+	EqualizationDelay    uint32
+	FECCorrectedErrors   uint64
 	FECUncorrectedBlocks uint64
-	BIPErrors           uint64
+	BIPErrors            uint64
 }
 
 // LightspanONUCounters represents ONU traffic counters
 type LightspanONUCounters struct {
-	TotalBytesRx       uint64
-	TotalBytesTx       uint64
-	TotalFramesRx      uint64
-	TotalFramesTx      uint64
-	BroadcastFramesRx  uint64
-	BroadcastFramesTx  uint64
-	MulticastFramesRx  uint64
-	MulticastFramesTx  uint64
-	DroppedFramesRx    uint64
-	DroppedFramesTx    uint64
-	GEMFramesRx        uint64
-	GEMFramesTx        uint64
+	TotalBytesRx      uint64
+	TotalBytesTx      uint64
+	TotalFramesRx     uint64
+	TotalFramesTx     uint64
+	BroadcastFramesRx uint64
+	BroadcastFramesTx uint64
+	MulticastFramesRx uint64
+	MulticastFramesTx uint64
+	DroppedFramesRx   uint64
+	DroppedFramesTx   uint64
+	GEMFramesRx       uint64
+	GEMFramesTx       uint64
 }
 
 // LightspanCTStats represents channel termination statistics
 type LightspanCTStats struct {
-	Name            string
-	AdminState      string
-	OperState       string
-	TotalONUs       int
-	ActiveONUs      int
-	InactiveONUs    int
-	BytesRx         uint64
-	BytesTx         uint64
-	FramesRx        uint64
-	FramesTx        uint64
-	GEMFramesRx     uint64
-	GEMFramesTx     uint64
-	PLOAMsRx        uint64
-	PLOAMsTx        uint64
-	FECCorrected    uint64
-	FECUncorrected  uint64
+	Name           string
+	AdminState     string
+	OperState      string
+	TotalONUs      int
+	ActiveONUs     int
+	InactiveONUs   int
+	BytesRx        uint64
+	BytesTx        uint64
+	FramesRx       uint64
+	FramesTx       uint64
+	GEMFramesRx    uint64
+	GEMFramesTx    uint64
+	PLOAMsRx       uint64
+	PLOAMsTx       uint64
+	FECCorrected   uint64
+	FECUncorrected uint64
 }
 
 // LightspanHardwareInfo represents OLT hardware information
@@ -452,11 +452,11 @@ type LightspanHardwareInfo struct {
 
 // LightspanSlotInfo represents a line card slot
 type LightspanSlotInfo struct {
-	SlotNumber    int
-	CardType      string
-	SerialNumber  string
-	AdminState    string
-	OperState     string
-	PONPorts      int
+	SlotNumber     int
+	CardType       string
+	SerialNumber   string
+	AdminState     string
+	OperState      string
+	PONPorts       int
 	ActivePONPorts int
 }

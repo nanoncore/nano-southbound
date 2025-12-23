@@ -144,7 +144,7 @@ func (a *Adapter) buildGPONCommands(ponPort string, onuID int, serial string, vl
 		// onu-ratelimit <onu-id> upstream <kbps> downstream <kbps>
 		fmt.Sprintf("onu-ratelimit %d upstream %d downstream %d",
 			onuID,
-			bwUp*1000,   // Convert Mbps to kbps
+			bwUp*1000,    // Convert Mbps to kbps
 			bwDown*1000), // Convert Mbps to kbps
 
 		// Activate the ONU

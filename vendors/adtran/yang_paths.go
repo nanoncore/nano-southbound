@@ -92,12 +92,12 @@ const (
 
 // REST API Endpoints (Adtran SDX 6000 also supports REST)
 const (
-	RESTBaseURL       = "/restconf/data"
-	RESTONUs          = "/restconf/data/bbf-xpon:xpon/onus"
-	RESTONUStates     = "/restconf/data/bbf-xpon-onu-states:xpon-onu-states"
-	RESTInterfaces    = "/restconf/data/ietf-interfaces:interfaces"
-	RESTSystem        = "/restconf/data/ietf-system:system"
-	RESTOperations    = "/restconf/operations"
+	RESTBaseURL    = "/restconf/data"
+	RESTONUs       = "/restconf/data/bbf-xpon:xpon/onus"
+	RESTONUStates  = "/restconf/data/bbf-xpon-onu-states:xpon-onu-states"
+	RESTInterfaces = "/restconf/data/ietf-interfaces:interfaces"
+	RESTSystem     = "/restconf/data/ietf-system:system"
+	RESTOperations = "/restconf/operations"
 )
 
 // XML Templates for BBF TR-385 compliant operations
@@ -268,13 +268,13 @@ const GetServiceStatsFilterXML = `
 
 // ONU Presence States (BBF TR-385)
 const (
-	ONUPresenceNotPresent            = "onu-not-present"
-	ONUPresenceOnExpectedCT          = "onu-present-and-on-expected-channel-termination"
-	ONUPresenceOnUnexpectedCT        = "onu-present-and-on-unexpected-channel-termination"
-	ONUPresenceEmergencyStop         = "onu-present-and-in-emergency-stop-state"
-	ONUPresenceDyingGasp             = "onu-present-and-in-dying-gasp-state"
-	ONUPresenceNotPresentWithVANI    = "onu-not-present-with-v-ani"
-	ONUPresencePresentWithoutVANI    = "onu-present-without-v-ani"
+	ONUPresenceNotPresent         = "onu-not-present"
+	ONUPresenceOnExpectedCT       = "onu-present-and-on-expected-channel-termination"
+	ONUPresenceOnUnexpectedCT     = "onu-present-and-on-unexpected-channel-termination"
+	ONUPresenceEmergencyStop      = "onu-present-and-in-emergency-stop-state"
+	ONUPresenceDyingGasp          = "onu-present-and-in-dying-gasp-state"
+	ONUPresenceNotPresentWithVANI = "onu-not-present-with-v-ani"
+	ONUPresencePresentWithoutVANI = "onu-present-without-v-ani"
 )
 
 // Admin States (BBF standard)
@@ -286,12 +286,12 @@ const (
 
 // SDX 6000 Series Model Information
 type SDXModelInfo struct {
-	Model           string
-	PONPorts        int
-	PONType         string // gpon, xgs-pon, combo
-	MaxSubscribers  int
-	UplinkPorts     string
-	FormFactor      string
+	Model          string
+	PONPorts       int
+	PONType        string // gpon, xgs-pon, combo
+	MaxSubscribers int
+	UplinkPorts    string
+	FormFactor     string
 }
 
 // Supported SDX 6000 Models
@@ -352,16 +352,16 @@ type ONUState struct {
 
 // ONUCounters represents ONU traffic counters
 type ONUCounters struct {
-	BytesRx          uint64
-	BytesTx          uint64
-	FramesRx         uint64
-	FramesTx         uint64
-	BroadcastFrames  uint64
-	MulticastFrames  uint64
-	DroppedFrames    uint64
-	ErrorFrames      uint64
-	FECCorrected     uint64
-	FECUncorrected   uint64
+	BytesRx         uint64
+	BytesTx         uint64
+	FramesRx        uint64
+	FramesTx        uint64
+	BroadcastFrames uint64
+	MulticastFrames uint64
+	DroppedFrames   uint64
+	ErrorFrames     uint64
+	FECCorrected    uint64
+	FECUncorrected  uint64
 }
 
 // ChannelTerminationStats represents PON port statistics
@@ -380,25 +380,25 @@ type ChannelTerminationStats struct {
 
 // SystemInfo represents system information
 type SystemInfo struct {
-	Hostname       string
-	Model          string
-	SerialNumber   string
-	SoftwareVer    string
-	UptimeSecs     int64
-	CPUPercent     float64
-	MemoryPercent  float64
-	Temperature    float64
+	Hostname      string
+	Model         string
+	SerialNumber  string
+	SoftwareVer   string
+	UptimeSecs    int64
+	CPUPercent    float64
+	MemoryPercent float64
+	Temperature   float64
 }
 
 // ServiceProfile represents a configured service profile
 type ServiceProfile struct {
-	Name           string
-	Description    string
-	ServiceType    string
-	CVLAN          int
-	SVLAN          int
-	VLANAction     string
-	BWProfileRef   string
+	Name         string
+	Description  string
+	ServiceType  string
+	CVLAN        int
+	SVLAN        int
+	VLANAction   string
+	BWProfileRef string
 }
 
 // BandwidthProfile represents a bandwidth/QoS profile
