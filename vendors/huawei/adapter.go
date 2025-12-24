@@ -992,7 +992,7 @@ func (a *Adapter) DiscoverONUs(ctx context.Context, ponPorts []string) ([]types.
 	// Convert to DriverV2 format
 	results := make([]types.ONUDiscovery, 0, len(discoveries))
 	for _, disc := range discoveries {
-		ponPort := fmt.Sprintf("%d/%d", disc.Slot, disc.Port)
+		ponPort := fmt.Sprintf("%d/%d/%d", disc.Frame, disc.Slot, disc.Port)
 
 		// Filter by PON ports if specified
 		if len(ponPorts) > 0 {
