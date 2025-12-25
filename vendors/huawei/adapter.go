@@ -882,3 +882,394 @@ func (a *Adapter) parseSubscriberID(subscriberID string) (frame, slot, port, ont
 	}
 	return 0, 1, 0, hash
 }
+
+// ============================================================================
+// DriverV2 Interface Implementation
+// ============================================================================
+// These methods adapt the existing Driver v1 implementation to the DriverV2
+// interface expected by nano-agent CLI commands.
+
+// GetONUList returns all provisioned ONUs matching the filter.
+// Adapts the existing BulkScanONUsSNMP() method to DriverV2 format.
+func (a *Adapter) GetONUList(ctx context.Context, filter *types.ONUFilter) ([]types.ONUInfo, error) {
+	if a.snmpExecutor == nil {
+		return nil, fmt.Errorf("SNMP executor not available - Huawei requires SNMP for ONU listing")
+	}
+
+	// Use existing bulk scan method
+	onts, err := a.BulkScanONUsSNMP(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to scan ONUs: %w", err)
+	}
+
+	// Convert to DriverV2 format
+	results := make([]types.ONUInfo, 0, len(onts))
+	for _, ont := range onts {
+		// Build PON port identifier
+		ponPort := fmt.Sprintf("%d/%d", ont.Slot, ont.Port)
+
+		// Map operational state
+		operState := "offline"
+		if ont.IsOnline {
+			operState = "online"
+		}
+
+		info := types.ONUInfo{
+			PONPort:    ponPort,
+			ONUID:      ont.ONUID,
+			Serial:     ont.Serial,
+			AdminState: "enabled", // Assume enabled if provisioned
+			OperState:  operState,
+			IsOnline:   ont.IsOnline,
+			RxPowerDBm: ont.RxPower,
+			TxPowerDBm: ont.TxPower,
+			DistanceM:  0, // TODO: Query distance OID if needed
+			VLAN:       0, // Not available from bulk scan
+			Metadata: map[string]interface{}{
+				"frame":       ont.Frame,
+				"slot":        ont.Slot,
+				"port":        ont.Port,
+				"snmp_index":  ont.Index,
+				"temperature": ont.Temperature,
+				"voltage":     ont.Voltage,
+				"bytes_up":    ont.BytesUp,
+				"bytes_down":  ont.BytesDown,
+			},
+		}
+
+		// Apply filters
+		if filter != nil {
+			if filter.PONPort != "" && filter.PONPort != ponPort {
+				continue
+			}
+			if filter.Status != "" {
+				if filter.Status == "online" && !ont.IsOnline {
+					continue
+				}
+				if filter.Status == "offline" && ont.IsOnline {
+					continue
+				}
+			}
+			if filter.Serial != "" && !strings.Contains(ont.Serial, filter.Serial) {
+				continue
+			}
+		}
+
+		results = append(results, info)
+	}
+
+	return results, nil
+}
+
+// GetONUBySerial finds a specific ONU by serial number.
+func (a *Adapter) GetONUBySerial(ctx context.Context, serial string) (*types.ONUInfo, error) {
+	filter := &types.ONUFilter{Serial: serial}
+	onus, err := a.GetONUList(ctx, filter)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(onus) == 0 {
+		return nil, nil // Not found
+	}
+
+	return &onus[0], nil
+}
+
+// DiscoverONUs finds unprovisioned ONUs on the OLT.
+// Adapts the existing DiscoverONTs() method to new DriverV2 signature.
+func (a *Adapter) DiscoverONUs(ctx context.Context, ponPorts []string) ([]types.ONUDiscovery, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available - Huawei requires CLI for discovery")
+	}
+
+	// Use existing discovery method
+	discoveries, err := a.DiscoverONTs(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to discover ONTs: %w", err)
+	}
+
+	// Convert to DriverV2 format
+	results := make([]types.ONUDiscovery, 0, len(discoveries))
+	for _, disc := range discoveries {
+		ponPort := fmt.Sprintf("%d/%d/%d", disc.Frame, disc.Slot, disc.Port)
+
+		// Filter by PON ports if specified
+		if len(ponPorts) > 0 {
+			found := false
+			for _, filterPort := range ponPorts {
+				if filterPort == ponPort {
+					found = true
+					break
+				}
+			}
+			if !found {
+				continue
+			}
+		}
+
+		discovery := types.ONUDiscovery{
+			PONPort:      ponPort,
+			Serial:       disc.Serial,
+			Model:        disc.EquipID,
+			DistanceM:    disc.Distance,
+			RxPowerDBm:   disc.RxPower,
+			DiscoveredAt: disc.Timestamp,
+			Metadata: map[string]interface{}{
+				"frame":    disc.Frame,
+				"slot":     disc.Slot,
+				"port":     disc.Port,
+				"loid":     disc.LOID,
+				"equip_id": disc.EquipID,
+			},
+		}
+
+		results = append(results, discovery)
+	}
+
+	return results, nil
+}
+
+// RunDiagnostics performs comprehensive diagnostics on an ONU.
+// Combines GetSubscriberStatus() and GetSubscriberStats() data.
+func (a *Adapter) RunDiagnostics(ctx context.Context, ponPort string, onuID int) (*types.ONUDiagnostics, error) {
+	// Build subscriber ID from PON port and ONU ID
+	subscriberID := fmt.Sprintf("ont-%s-%d", ponPort, onuID)
+
+	// Get status information
+	status, err := a.GetSubscriberStatus(ctx, subscriberID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ONU status: %w", err)
+	}
+
+	// Get statistics
+	stats, err := a.GetSubscriberStats(ctx, subscriberID)
+	if err != nil {
+		// Non-fatal, continue with status only
+		stats = &types.SubscriberStats{}
+	}
+
+	// Build diagnostics result
+	diag := &types.ONUDiagnostics{
+		Serial:         "", // Not available without additional lookup
+		PONPort:        ponPort,
+		ONUID:          onuID,
+		AdminState:     "enabled",
+		OperState:      status.State,
+		BytesUp:        stats.BytesUp,
+		BytesDown:      stats.BytesDown,
+		Errors:         stats.ErrorsDown + stats.ErrorsUp,
+		Drops:          stats.Drops,
+		LineProfile:    "",
+		ServiceProfile: "",
+		VLAN:           0,
+		Timestamp:      time.Now(),
+		VendorData:     status.Metadata,
+	}
+
+	// Extract optical power if available
+	if rxPower, ok := status.Metadata["rx_power_dbm"]; ok {
+		if rxStr, ok := rxPower.(string); ok {
+			if rxVal, err := strconv.ParseFloat(rxStr, 64); err == nil {
+				diag.Power = &types.ONUPowerReading{
+					PONPort:    ponPort,
+					ONUID:      onuID,
+					RxPowerDBm: rxVal,
+					Timestamp:  time.Now(),
+				}
+			}
+		}
+	}
+
+	if txPower, ok := status.Metadata["tx_power_dbm"]; ok {
+		if txStr, ok := txPower.(string); ok {
+			if txVal, err := strconv.ParseFloat(txStr, 64); err == nil {
+				if diag.Power == nil {
+					diag.Power = &types.ONUPowerReading{
+						PONPort:   ponPort,
+						ONUID:     onuID,
+						Timestamp: time.Now(),
+					}
+				}
+				diag.Power.TxPowerDBm = txVal
+			}
+		}
+	}
+
+	return diag, nil
+}
+
+// GetOLTStatus returns comprehensive OLT status.
+func (a *Adapter) GetOLTStatus(ctx context.Context) (*types.OLTStatus, error) {
+	status := &types.OLTStatus{
+		OLTID:       a.config.Name,
+		Vendor:      "huawei",
+		Model:       a.detectModel(),
+		IsReachable: a.baseDriver.IsConnected(),
+		IsHealthy:   a.baseDriver.IsConnected(),
+		LastPoll:    time.Now(),
+		Metadata:    make(map[string]interface{}),
+	}
+
+	// Get ONU counts via SNMP
+	if a.snmpExecutor != nil {
+		onts, err := a.BulkScanONUsSNMP(ctx)
+		if err == nil {
+			status.TotalONUs = len(onts)
+			activeCount := 0
+			for _, ont := range onts {
+				if ont.IsOnline {
+					activeCount++
+				}
+			}
+			status.ActiveONUs = activeCount
+		}
+	}
+
+	// Try to get system information via SNMP
+	if a.snmpExecutor != nil {
+		// Query standard system OIDs
+		systemOIDs := []string{
+			"1.3.6.1.2.1.1.1.0", // sysDescr
+			"1.3.6.1.2.1.1.3.0", // sysUpTime
+			"1.3.6.1.2.1.1.5.0", // sysName
+		}
+
+		results, err := a.snmpExecutor.BulkGetSNMP(ctx, systemOIDs)
+		if err == nil {
+			// Parse uptime (in hundredths of seconds)
+			if uptime, ok := results["1.3.6.1.2.1.1.3.0"]; ok {
+				if uptimeVal, ok := uptime.(uint64); ok {
+					status.UptimeSeconds = int64(uptimeVal / 100)
+				}
+			}
+
+			// Parse firmware from sysDescr
+			if descr, ok := results["1.3.6.1.2.1.1.1.0"]; ok {
+				if descrStr, ok := descr.(string); ok {
+					status.Metadata["sys_descr"] = descrStr
+					// Try to extract version from description
+					versionRe := regexp.MustCompile(`V(\d+R\d+C\d+)`)
+					if match := versionRe.FindStringSubmatch(descrStr); len(match) > 1 {
+						status.Firmware = match[1]
+					}
+				}
+			}
+		}
+	}
+
+	// TODO: Query PON port status if needed
+	// This would require walking GPON interface table via SNMP
+
+	return status, nil
+}
+
+// GetPONPower returns optical power readings for a PON port.
+func (a *Adapter) GetPONPower(ctx context.Context, ponPort string) (*types.PONPowerReading, error) {
+	// TODO: Implement PON port optical power query via SNMP
+	// This requires querying interface transceiver OIDs
+	return nil, fmt.Errorf("GetPONPower not yet implemented for Huawei")
+}
+
+// GetONUPower returns optical power readings for a specific ONU.
+func (a *Adapter) GetONUPower(ctx context.Context, ponPort string, onuID int) (*types.ONUPowerReading, error) {
+	subscriberID := fmt.Sprintf("ont-%s-%d", ponPort, onuID)
+
+	// Get statistics which includes optical power
+	stats, err := a.GetSubscriberStats(ctx, subscriberID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get ONU power: %w", err)
+	}
+
+	reading := &types.ONUPowerReading{
+		PONPort:   ponPort,
+		ONUID:     onuID,
+		Timestamp: time.Now(),
+	}
+
+	// Extract optical power from metadata
+	if rxPower, ok := stats.Metadata["rx_power_dbm"]; ok {
+		if rxVal, ok := rxPower.(float64); ok {
+			reading.RxPowerDBm = rxVal
+		}
+	}
+
+	if txPower, ok := stats.Metadata["tx_power_dbm"]; ok {
+		if txVal, ok := txPower.(float64); ok {
+			reading.TxPowerDBm = txVal
+		}
+	}
+
+	// Check if readings are within spec
+	reading.IsWithinSpec = types.IsPowerWithinSpec(reading.RxPowerDBm, reading.TxPowerDBm)
+
+	return reading, nil
+}
+
+// GetONUDistance returns estimated fiber distance to ONU in meters.
+func (a *Adapter) GetONUDistance(ctx context.Context, ponPort string, onuID int) (int, error) {
+	// TODO: Query Huawei distance OID via SNMP
+	// OID: OIDOnuDistance (already defined in snmp_oids.go)
+	return -1, fmt.Errorf("GetONUDistance not yet implemented for Huawei")
+}
+
+// RestartONU triggers a reboot of the specified ONU.
+func (a *Adapter) RestartONU(ctx context.Context, ponPort string, onuID int) error {
+	if a.cliExecutor == nil {
+		return fmt.Errorf("CLI executor not available")
+	}
+
+	// Parse PON port
+	parts := strings.Split(ponPort, "/")
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid PON port format: %s (expected slot/port)", ponPort)
+	}
+
+	slot, _ := strconv.Atoi(parts[0])
+	port, _ := strconv.Atoi(parts[1])
+
+	commands := []string{
+		"config",
+		fmt.Sprintf("interface gpon %d/%d", slot, port),
+		fmt.Sprintf("ont reset %d %d", port, onuID),
+		"quit",
+		"quit",
+	}
+
+	_, err := a.cliExecutor.ExecCommands(ctx, commands)
+	return err
+}
+
+// ApplyProfile applies a bandwidth/service profile to an ONU.
+func (a *Adapter) ApplyProfile(ctx context.Context, ponPort string, onuID int, profile *types.ONUProfile) error {
+	// This would require creating a Subscriber object and calling UpdateSubscriber
+	// For now, not implemented as it requires more context
+	return fmt.Errorf("ApplyProfile not yet implemented for Huawei")
+}
+
+// BulkProvision provisions multiple ONUs in a single session.
+func (a *Adapter) BulkProvision(ctx context.Context, operations []types.BulkProvisionOp) (*types.BulkResult, error) {
+	result := &types.BulkResult{
+		Results: make([]types.BulkOpResult, len(operations)),
+	}
+
+	for i, op := range operations {
+		// This would require calling CreateSubscriber for each operation
+		// For now, return not implemented
+		result.Results[i] = types.BulkOpResult{
+			Serial:    op.Serial,
+			Success:   false,
+			Error:     "BulkProvision not yet implemented",
+			ErrorCode: "NOT_IMPLEMENTED",
+		}
+		result.Failed++
+	}
+
+	return result, nil
+}
+
+// GetAlarms returns active alarms from the OLT.
+func (a *Adapter) GetAlarms(ctx context.Context) ([]types.OLTAlarm, error) {
+	// TODO: Parse "display alarm all" CLI output
+	return []types.OLTAlarm{}, nil // Return empty for now
+}
