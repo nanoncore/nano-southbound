@@ -329,12 +329,12 @@ func (d *Driver) GetSubscriberStats(ctx context.Context, subscriberID string) (*
 	}
 
 	// Simulate traffic growth (nolint:gosec - mock data, not security sensitive)
-	stats.BytesUp += uint64(rand.Intn(1000000))   //nolint:gosec // mock data
+	stats.BytesUp += uint64(rand.Intn(1000000))    //nolint:gosec // mock data
 	stats.BytesDown += uint64(rand.Intn(10000000)) //nolint:gosec // mock data
-	stats.PacketsUp += uint64(rand.Intn(10000))   //nolint:gosec // mock data
+	stats.PacketsUp += uint64(rand.Intn(10000))    //nolint:gosec // mock data
 	stats.PacketsDown += uint64(rand.Intn(100000)) //nolint:gosec // mock data
-	stats.RateUp = uint64(rand.Intn(100000000))   //nolint:gosec // mock data - Up to 100 Mbps
-	stats.RateDown = uint64(rand.Intn(500000000)) //nolint:gosec // mock data - Up to 500 Mbps
+	stats.RateUp = uint64(rand.Intn(100000000))    //nolint:gosec // mock data - Up to 100 Mbps
+	stats.RateDown = uint64(rand.Intn(500000000))  //nolint:gosec // mock data - Up to 500 Mbps
 	stats.Timestamp = time.Now()
 
 	// Return a copy

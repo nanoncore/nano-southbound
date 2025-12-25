@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nanoncore/nano-southbound/model"
 	"github.com/nanoncore/nano-southbound/drivers/netconf"
+	"github.com/nanoncore/nano-southbound/model"
 	"github.com/nanoncore/nano-southbound/types"
 )
 
@@ -79,13 +79,13 @@ func (a *Adapter) CreateSubscriber(ctx context.Context, subscriber *model.Subscr
 		InterfaceName: fmt.Sprintf("pon-%s/ont-%d", params.PONPort, params.ONTID),
 		VLAN:          subscriber.Spec.VLAN,
 		Metadata: map[string]interface{}{
-			"vendor":          "adtran",
-			"model":           a.detectModel(),
-			"pon_port":        params.PONPort,
-			"ont_id":          params.ONTID,
-			"serial_number":   params.SerialNumber,
-			"ont_profile":     params.ONTProfile,
-			"service_profile": params.ServiceProfile,
+			"vendor":            "adtran",
+			"model":             a.detectModel(),
+			"pon_port":          params.PONPort,
+			"ont_id":            params.ONTID,
+			"serial_number":     params.SerialNumber,
+			"ont_profile":       params.ONTProfile,
+			"service_profile":   params.ServiceProfile,
 			"bandwidth_profile": params.BandwidthProfile,
 		},
 	}
@@ -491,11 +491,11 @@ func (a *Adapter) CreateBandwidthProfile(ctx context.Context, tier *model.Servic
 	profileName := fmt.Sprintf("nanoncore-bw-%dM", tier.Spec.BandwidthDown)
 
 	// CIR = 80% of PIR, burst = 128KB
-	cirUp := tier.Spec.BandwidthUp * 800     // kbps
-	pirUp := tier.Spec.BandwidthUp * 1000    // kbps
-	cirDown := tier.Spec.BandwidthDown * 800 // kbps
+	cirUp := tier.Spec.BandwidthUp * 800      // kbps
+	pirUp := tier.Spec.BandwidthUp * 1000     // kbps
+	cirDown := tier.Spec.BandwidthDown * 800  // kbps
 	pirDown := tier.Spec.BandwidthDown * 1000 // kbps
-	burstBytes := 131072 // 128KB
+	burstBytes := 131072                      // 128KB
 
 	// Create upstream bandwidth profile
 	configUp := fmt.Sprintf(`

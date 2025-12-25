@@ -433,28 +433,28 @@ type ONTDiscovery struct {
 	Slot      int       `json:"slot"`
 	Port      int       `json:"port"`
 	Serial    string    `json:"serial"`
-	EquipID   string    `json:"equip_id"`    // Equipment identifier (ONT model)
-	LOID      string    `json:"loid"`        // Logical ONU ID (if LOID auth used)
-	Distance  int       `json:"distance_m"`  // Distance in meters
+	EquipID   string    `json:"equip_id"`   // Equipment identifier (ONT model)
+	LOID      string    `json:"loid"`       // Logical ONU ID (if LOID auth used)
+	Distance  int       `json:"distance_m"` // Distance in meters
 	RxPower   float64   `json:"rx_power_dbm"`
 	Timestamp time.Time `json:"discovered_at"`
 }
 
 // ONTStats represents ONT statistics from SNMP bulk scan
 type ONTStats struct {
-	Index        string  `json:"index"`
-	Serial       string  `json:"serial"`
-	Frame        int     `json:"frame"`
-	Slot         int     `json:"slot"`
-	Port         int     `json:"port"`
-	ONUID        int     `json:"onu_id"`
-	IsOnline     bool    `json:"is_online"`
-	RxPower      float64 `json:"rx_power_dbm"`
-	TxPower      float64 `json:"tx_power_dbm"`
-	Temperature  int64   `json:"temperature_c"`
-	Voltage      float64 `json:"voltage_v"`
-	BytesUp      uint64  `json:"bytes_up"`
-	BytesDown    uint64  `json:"bytes_down"`
+	Index       string  `json:"index"`
+	Serial      string  `json:"serial"`
+	Frame       int     `json:"frame"`
+	Slot        int     `json:"slot"`
+	Port        int     `json:"port"`
+	ONUID       int     `json:"onu_id"`
+	IsOnline    bool    `json:"is_online"`
+	RxPower     float64 `json:"rx_power_dbm"`
+	TxPower     float64 `json:"tx_power_dbm"`
+	Temperature int64   `json:"temperature_c"`
+	Voltage     float64 `json:"voltage_v"`
+	BytesUp     uint64  `json:"bytes_up"`
+	BytesDown   uint64  `json:"bytes_down"`
 }
 
 // BulkScanONUsSNMP performs SNMP walk to get all ONUs (like legacy PHP code)
@@ -915,16 +915,16 @@ func (a *Adapter) GetONUList(ctx context.Context, filter *types.ONUFilter) ([]ty
 		}
 
 		info := types.ONUInfo{
-			PONPort:       ponPort,
-			ONUID:         ont.ONUID,
-			Serial:        ont.Serial,
-			AdminState:    "enabled", // Assume enabled if provisioned
-			OperState:     operState,
-			IsOnline:      ont.IsOnline,
-			RxPowerDBm:    ont.RxPower,
-			TxPowerDBm:    ont.TxPower,
-			DistanceM:     0, // TODO: Query distance OID if needed
-			VLAN:          0, // Not available from bulk scan
+			PONPort:    ponPort,
+			ONUID:      ont.ONUID,
+			Serial:     ont.Serial,
+			AdminState: "enabled", // Assume enabled if provisioned
+			OperState:  operState,
+			IsOnline:   ont.IsOnline,
+			RxPowerDBm: ont.RxPower,
+			TxPowerDBm: ont.TxPower,
+			DistanceM:  0, // TODO: Query distance OID if needed
+			VLAN:       0, // Not available from bulk scan
 			Metadata: map[string]interface{}{
 				"frame":       ont.Frame,
 				"slot":        ont.Slot,

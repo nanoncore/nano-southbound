@@ -31,8 +31,8 @@ var CapabilityMatrix = map[Vendor]VendorCapabilities{
 			ProtocolGNMI,
 			ProtocolCLI,
 		},
-		ConfigMethod:     ProtocolNETCONF,
-		TelemetryMethod:  ProtocolGNMI,
+		ConfigMethod:      ProtocolNETCONF,
+		TelemetryMethod:   ProtocolGNMI,
 		SupportsStreaming: true,
 	},
 	VendorHuawei: {

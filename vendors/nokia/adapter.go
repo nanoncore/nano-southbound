@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nanoncore/nano-southbound/model"
 	"github.com/nanoncore/nano-southbound/drivers/netconf"
+	"github.com/nanoncore/nano-southbound/model"
 	"github.com/nanoncore/nano-southbound/types"
 )
 
@@ -445,10 +445,10 @@ func (a *Adapter) GetSubscriberStats(ctx context.Context, subscriberID string) (
 		Drops:       subStats.IngressDrops + subStats.EgressDrops,
 		Timestamp:   time.Now(),
 		Metadata: map[string]interface{}{
-			"vendor":         "nokia",
-			"source":         "netconf",
-			"ingress_drops":  subStats.IngressDrops,
-			"egress_drops":   subStats.EgressDrops,
+			"vendor":        "nokia",
+			"source":        "netconf",
+			"ingress_drops": subStats.IngressDrops,
+			"egress_drops":  subStats.EgressDrops,
 		},
 	}
 
@@ -620,11 +620,11 @@ func (a *Adapter) CreateQoSProfiles(ctx context.Context, tier *model.ServiceTier
 	profileName := fmt.Sprintf("nanoncore-%dM", tier.Spec.BandwidthDown)
 
 	// CIR = 80% of PIR, burst = 128KB
-	cirUp := tier.Spec.BandwidthUp * 800     // kbps (80% of Mbps * 1000)
-	pirUp := tier.Spec.BandwidthUp * 1000    // kbps
-	cirDown := tier.Spec.BandwidthDown * 800 // kbps
+	cirUp := tier.Spec.BandwidthUp * 800      // kbps (80% of Mbps * 1000)
+	pirUp := tier.Spec.BandwidthUp * 1000     // kbps
+	cirDown := tier.Spec.BandwidthDown * 800  // kbps
 	pirDown := tier.Spec.BandwidthDown * 1000 // kbps
-	mbs := 131072 // 128KB burst size
+	mbs := 131072                             // 128KB burst size
 
 	// Create SAP ingress policy
 	ingressPolicy := fmt.Sprintf(SapIngressPolicyXML,

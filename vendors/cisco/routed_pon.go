@@ -37,55 +37,55 @@ const (
 // Routed PON Controller Configuration Paths
 const (
 	// PON Controller configuration (on IOS-XR router)
-	PathPONController      = "/pon-ctlr"
-	PathPONControllerCfg   = "/pon-ctlr/cfg-file"
-	PathPONControllerVRF   = "/pon-ctlr/vrf"
-	PathPONControllerTLS   = "/pon-ctlr/tls-pem"
+	PathPONController    = "/pon-ctlr"
+	PathPONControllerCfg = "/pon-ctlr/cfg-file"
+	PathPONControllerVRF = "/pon-ctlr/vrf"
+	PathPONControllerTLS = "/pon-ctlr/tls-pem"
 
 	// PON interface configuration
-	PathPONInterface       = "/interface-configurations/interface-configuration[active='act'][interface-name='%s']"
-	PathPONSubinterface    = "/interface-configurations/interface-configuration[active='act'][interface-name='%s.4090']"
+	PathPONInterface    = "/interface-configurations/interface-configuration[active='act'][interface-name='%s']"
+	PathPONSubinterface = "/interface-configurations/interface-configuration[active='act'][interface-name='%s.4090']"
 )
 
 // Routed PON Manager/NETCONF Server Paths (BBF-compliant)
 const (
 	// ONU management via NETCONF Server
-	RPPathONUs           = "/bbf-xpon:xpon/onus"
-	RPPathONU            = "/bbf-xpon:xpon/onus/onu[name='%s']"
-	RPPathONUBySerial    = "/bbf-xpon:xpon/onus/onu[serial-number='%s']"
+	RPPathONUs        = "/bbf-xpon:xpon/onus"
+	RPPathONU         = "/bbf-xpon:xpon/onus/onu[name='%s']"
+	RPPathONUBySerial = "/bbf-xpon:xpon/onus/onu[serial-number='%s']"
 
 	// V-ANI paths
-	RPPathVANIs          = "/bbf-xpon:xpon/v-anis"
-	RPPathVANI           = "/bbf-xpon:xpon/v-anis/v-ani[name='%s']"
+	RPPathVANIs = "/bbf-xpon:xpon/v-anis"
+	RPPathVANI  = "/bbf-xpon:xpon/v-anis/v-ani[name='%s']"
 
 	// Channel termination paths
-	RPPathCTs            = "/bbf-xpon:xpon/channel-terminations"
-	RPPathCT             = "/bbf-xpon:xpon/channel-terminations/channel-termination[name='%s']"
+	RPPathCTs = "/bbf-xpon:xpon/channel-terminations"
+	RPPathCT  = "/bbf-xpon:xpon/channel-terminations/channel-termination[name='%s']"
 
 	// Interface paths
-	RPPathInterfaces     = "/ietf-interfaces:interfaces"
-	RPPathInterface      = "/ietf-interfaces:interfaces/interface[name='%s']"
+	RPPathInterfaces = "/ietf-interfaces:interfaces"
+	RPPathInterface  = "/ietf-interfaces:interfaces/interface[name='%s']"
 )
 
 // Routed PON State Paths
 const (
 	// ONU state (via NETCONF Server)
-	RPPathONUStates       = "/bbf-xpon-onu-states:xpon-onu-states"
-	RPPathONUState        = "/bbf-xpon-onu-states:xpon-onu-states/onu-state[onu-ref='%s']"
+	RPPathONUStates = "/bbf-xpon-onu-states:xpon-onu-states"
+	RPPathONUState  = "/bbf-xpon-onu-states:xpon-onu-states/onu-state[onu-ref='%s']"
 
 	// Interface statistics
-	RPPathInterfaceState  = "/ietf-interfaces:interfaces-state/interface[name='%s']"
-	RPPathInterfaceStats  = "/ietf-interfaces:interfaces-state/interface[name='%s']/statistics"
+	RPPathInterfaceState = "/ietf-interfaces:interfaces-state/interface[name='%s']"
+	RPPathInterfaceStats = "/ietf-interfaces:interfaces-state/interface[name='%s']/statistics"
 )
 
 // gNMI Telemetry Paths for Routed PON
 const (
 	// PON interface telemetry (on IOS-XR)
-	RPGNMIPONInterface     = "/Cisco-IOS-XR-ifmgr-oper:interface-properties/data-nodes/data-node/system-view/interfaces/interface"
+	RPGNMIPONInterface = "/Cisco-IOS-XR-ifmgr-oper:interface-properties/data-nodes/data-node/system-view/interfaces/interface"
 
 	// ONU telemetry (via NETCONF Server subscription)
-	RPGNMIONUState         = "/bbf-xpon-onu-states:xpon-onu-states/onu-state"
-	RPGNMIONUOptical       = "/bbf-xpon-onu-states:xpon-onu-states/onu-state/optical-info"
+	RPGNMIONUState   = "/bbf-xpon-onu-states:xpon-onu-states/onu-state"
+	RPGNMIONUOptical = "/bbf-xpon-onu-states:xpon-onu-states/onu-state/optical-info"
 )
 
 // XML Templates for Routed PON
@@ -194,11 +194,11 @@ const RPGetAllONUsFilterXML = `
 
 // Supported Cisco Routed PON Platforms
 type RoutedPONPlatform struct {
-	Model           string
-	Series          string
-	MaxPONPorts     int // Number of 10GbE ports that can accept PON SFP+
-	PONType         string
-	Description     string
+	Model       string
+	Series      string
+	MaxPONPorts int // Number of 10GbE ports that can accept PON SFP+
+	PONType     string
+	Description string
 }
 
 // CiscoRoutedPONPlatforms lists supported platforms
@@ -259,10 +259,10 @@ type PONSFPModule struct {
 	PartNumber   string
 	Type         string // EML or DML
 	PONStandard  string
-	MaxDistance  int    // km
+	MaxDistance  int // km
 	SplitRatio   string
-	DownstreamWL int    // nm
-	UpstreamWL   int    // nm
+	DownstreamWL int // nm
+	UpstreamWL   int // nm
 	DataRate     string
 }
 
@@ -292,11 +292,11 @@ var CiscoPONSFPModules = map[string]PONSFPModule{
 
 // Cisco PON ONT Products
 type CiscoPONONT struct {
-	Model        string
-	Type         string // Indoor, Outdoor
-	Interfaces   string
-	PONStandard  string
-	Description  string
+	Model       string
+	Type        string // Indoor, Outdoor
+	Interfaces  string
+	PONStandard string
+	Description string
 }
 
 // CiscoPONONTs lists supported ONT models
@@ -328,41 +328,41 @@ var CiscoPONONTs = map[string]CiscoPONONT{
 
 // RoutedPONONUState represents ONU state from Routed PON
 type RoutedPONONUState struct {
-	Name            string
-	SerialNumber    string
-	PONPort         string
-	ONUID           int
-	PresenceState   string
-	AdminState      string
-	OperState       string
-	RxPowerDbm      float64
-	TxPowerDbm      float64
-	Temperature     float64
-	Voltage         float64
-	Distance        int
+	Name              string
+	SerialNumber      string
+	PONPort           string
+	ONUID             int
+	PresenceState     string
+	AdminState        string
+	OperState         string
+	RxPowerDbm        float64
+	TxPowerDbm        float64
+	Temperature       float64
+	Voltage           float64
+	Distance          int
 	EqualizationDelay uint32
 }
 
 // RoutedPONControllerStatus represents PON Controller status
 type RoutedPONControllerStatus struct {
-	Running        bool
-	ContainerID    string
-	Version        string
-	ConnectedOLTs  int
-	TotalONUs      int
-	ActiveONUs     int
-	MongoDBStatus  string
+	Running       bool
+	ContainerID   string
+	Version       string
+	ConnectedOLTs int
+	TotalONUs     int
+	ActiveONUs    int
+	MongoDBStatus string
 }
 
 // RoutedPONPortStats represents PON port statistics
 type RoutedPONPortStats struct {
-	PortName       string
-	AdminState     string
-	OperState      string
-	TotalONUs      int
-	ActiveONUs     int
-	BytesRx        uint64
-	BytesTx        uint64
-	FramesRx       uint64
-	FramesTx       uint64
+	PortName   string
+	AdminState string
+	OperState  string
+	TotalONUs  int
+	ActiveONUs int
+	BytesRx    uint64
+	BytesTx    uint64
+	FramesRx   uint64
+	FramesTx   uint64
 }

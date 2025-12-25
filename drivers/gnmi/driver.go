@@ -44,12 +44,12 @@ type TelemetryHandler func(updates []TelemetryUpdate)
 
 // SubscriptionConfig defines a telemetry subscription
 type SubscriptionConfig struct {
-	Paths          []string         // YANG paths to subscribe to
-	Mode           SubscriptionMode // Subscription mode
-	SampleInterval time.Duration    // Sample interval (for SAMPLE mode)
-	Handler        TelemetryHandler // Callback for updates
-	SuppressRedundant bool          // Suppress redundant updates
-	HeartbeatInterval time.Duration // Heartbeat interval for ON_CHANGE
+	Paths             []string         // YANG paths to subscribe to
+	Mode              SubscriptionMode // Subscription mode
+	SampleInterval    time.Duration    // Sample interval (for SAMPLE mode)
+	Handler           TelemetryHandler // Callback for updates
+	SuppressRedundant bool             // Suppress redundant updates
+	HeartbeatInterval time.Duration    // Heartbeat interval for ON_CHANGE
 }
 
 // GNMIExecutor interface for vendor adapters to use gNMI operations
@@ -103,11 +103,11 @@ type Driver struct {
 
 // subscriptionState tracks an active subscription
 type subscriptionState struct {
-	cancel    context.CancelFunc
-	updates   chan []TelemetryUpdate
-	errors    chan error
-	stopped   bool
-	stopOnce  sync.Once
+	cancel   context.CancelFunc
+	updates  chan []TelemetryUpdate
+	errors   chan error
+	stopped  bool
+	stopOnce sync.Once
 }
 
 func (s *subscriptionState) Stop() error {

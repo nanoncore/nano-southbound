@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/nanoncore/nano-southbound/model"
 	"github.com/gosnmp/gosnmp"
+	"github.com/nanoncore/nano-southbound/model"
 	"github.com/nanoncore/nano-southbound/types"
 )
 
