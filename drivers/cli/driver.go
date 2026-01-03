@@ -13,9 +13,9 @@ import (
 
 // Driver implements the types.Driver interface using SSH CLI
 type Driver struct {
-	config     *types.EquipmentConfig
-	sshClient  *ssh.Client
-	sshSession *ssh.Session
+	config        *types.EquipmentConfig
+	sshClient     *ssh.Client
+	expectSession *ExpectSession
 }
 
 // NewDriver creates a new CLI driver
@@ -70,14 +70,29 @@ func (d *Driver) Connect(ctx context.Context, config *types.EquipmentConfig) err
 
 	d.sshClient = client
 
+	// Create expect session for interactive CLI
+	expectSession, err := NewExpectSession(ExpectSessionConfig{
+		SSHClient:    client,
+		Vendor:       string(d.config.Vendor),
+		Timeout:      d.config.Timeout,
+		DisablePager: true,
+	})
+	if err != nil {
+		client.Close()
+		d.sshClient = nil
+		return fmt.Errorf("failed to create expect session: %w", err)
+	}
+
+	d.expectSession = expectSession
+
 	return nil
 }
 
 // Disconnect closes the SSH connection
 func (d *Driver) Disconnect(ctx context.Context) error {
-	if d.sshSession != nil {
-		_ = d.sshSession.Close()
-		d.sshSession = nil
+	if d.expectSession != nil {
+		_ = d.expectSession.Close()
+		d.expectSession = nil
 	}
 	if d.sshClient != nil {
 		err := d.sshClient.Close()
@@ -89,29 +104,22 @@ func (d *Driver) Disconnect(ctx context.Context) error {
 
 // IsConnected returns true if connected
 func (d *Driver) IsConnected() bool {
-	return d.sshClient != nil
+	return d.sshClient != nil && d.expectSession != nil
 }
 
-// execCommand executes a CLI command over SSH
+// execCommand executes a CLI command over SSH using expect-based PTY session
 func (d *Driver) execCommand(ctx context.Context, command string) (string, error) {
 	if !d.IsConnected() {
 		return "", fmt.Errorf("not connected to device")
 	}
 
-	// Create new session for each command
-	session, err := d.sshClient.NewSession()
+	// Execute command using expect session (handles interactive CLI properly)
+	output, err := d.expectSession.Execute(command)
 	if err != nil {
-		return "", fmt.Errorf("failed to create SSH session: %w", err)
-	}
-	defer session.Close()
-
-	// Execute command
-	output, err := session.CombinedOutput(command)
-	if err != nil {
-		return string(output), fmt.Errorf("command failed: %w", err)
+		return output, fmt.Errorf("command failed: %w", err)
 	}
 
-	return string(output), nil
+	return output, nil
 }
 
 // CreateSubscriber provisions a subscriber using CLI commands
