@@ -13,9 +13,9 @@ import (
 
 // Driver implements the types.Driver interface using SSH CLI
 type Driver struct {
-	config     *types.EquipmentConfig
-	sshClient  *ssh.Client
-	sshSession *ssh.Session
+	config        *types.EquipmentConfig
+	sshClient     *ssh.Client
+	expectSession *ExpectSession
 }
 
 // NewDriver creates a new CLI driver
@@ -43,7 +43,7 @@ func NewDriver(config *types.EquipmentConfig) (types.Driver, error) {
 	}, nil
 }
 
-// Connect establishes an SSH connection
+// Connect establishes an SSH connection with interactive PTY session
 func (d *Driver) Connect(ctx context.Context, config *types.EquipmentConfig) error {
 	if config != nil {
 		d.config = config
@@ -70,15 +70,38 @@ func (d *Driver) Connect(ctx context.Context, config *types.EquipmentConfig) err
 
 	d.sshClient = client
 
+	// Create interactive expect session for CLI commands
+	vendor := ""
+	if d.config.Metadata != nil {
+		vendor = d.config.Metadata["vendor"]
+	}
+
+	expectSession, err := NewExpectSession(ExpectSessionConfig{
+		SSHClient:    client,
+		Vendor:       vendor,
+		Timeout:      d.config.Timeout,
+		DisablePager: true,
+	})
+	if err != nil {
+		// Close SSH client if expect session creation fails
+		client.Close()
+		d.sshClient = nil
+		return fmt.Errorf("failed to create interactive session: %w", err)
+	}
+
+	d.expectSession = expectSession
+
 	return nil
 }
 
 // Disconnect closes the SSH connection
 func (d *Driver) Disconnect(ctx context.Context) error {
-	if d.sshSession != nil {
-		_ = d.sshSession.Close()
-		d.sshSession = nil
+	// Close expect session first
+	if d.expectSession != nil {
+		_ = d.expectSession.Close()
+		d.expectSession = nil
 	}
+	// Then close SSH client
 	if d.sshClient != nil {
 		err := d.sshClient.Close()
 		d.sshClient = nil
@@ -87,31 +110,24 @@ func (d *Driver) Disconnect(ctx context.Context) error {
 	return nil
 }
 
-// IsConnected returns true if connected
+// IsConnected returns true if connected with an active expect session
 func (d *Driver) IsConnected() bool {
-	return d.sshClient != nil
+	return d.sshClient != nil && d.expectSession != nil
 }
 
-// execCommand executes a CLI command over SSH
+// execCommand executes a CLI command using the interactive expect session
 func (d *Driver) execCommand(ctx context.Context, command string) (string, error) {
 	if !d.IsConnected() {
 		return "", fmt.Errorf("not connected to device")
 	}
 
-	// Create new session for each command
-	session, err := d.sshClient.NewSession()
+	// Use the interactive expect session to execute the command
+	output, err := d.expectSession.Execute(command)
 	if err != nil {
-		return "", fmt.Errorf("failed to create SSH session: %w", err)
-	}
-	defer session.Close()
-
-	// Execute command
-	output, err := session.CombinedOutput(command)
-	if err != nil {
-		return string(output), fmt.Errorf("command failed: %w", err)
+		return output, fmt.Errorf("command failed: %w", err)
 	}
 
-	return string(output), nil
+	return output, nil
 }
 
 // CreateSubscriber provisions a subscriber using CLI commands
