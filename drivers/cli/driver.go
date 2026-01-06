@@ -71,11 +71,14 @@ func (d *Driver) Connect(ctx context.Context, config *types.EquipmentConfig) err
 	d.sshClient = client
 
 	// Create expect session for interactive CLI
+	// Pass credentials for double-login scenarios (e.g., V-Sol OLTs)
 	expectSession, err := NewExpectSession(ExpectSessionConfig{
 		SSHClient:    client,
 		Vendor:       string(d.config.Vendor),
 		Timeout:      d.config.Timeout,
 		DisablePager: true,
+		Username:     d.config.Username,
+		Password:     d.config.Password,
 	})
 	if err != nil {
 		client.Close()
