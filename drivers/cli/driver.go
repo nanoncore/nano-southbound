@@ -49,11 +49,21 @@ func (d *Driver) Connect(ctx context.Context, config *types.EquipmentConfig) err
 		d.config = config
 	}
 
-	// Prepare SSH client configuration
+	// Prepare SSH client configuration with multiple auth methods
+	// Some devices (like V-Sol OLTs) may require keyboard-interactive instead of password
+	keyboardInteractive := ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) ([]string, error) {
+		answers := make([]string, len(questions))
+		for i := range questions {
+			answers[i] = d.config.Password
+		}
+		return answers, nil
+	})
+
 	sshConfig := &ssh.ClientConfig{
 		User: d.config.Username,
 		Auth: []ssh.AuthMethod{
 			ssh.Password(d.config.Password),
+			keyboardInteractive,
 		},
 		Timeout:         d.config.Timeout,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // User-controlled via TLSSkipVerify
