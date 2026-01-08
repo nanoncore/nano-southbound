@@ -137,7 +137,7 @@ func NewExpectSession(cfg ExpectSessionConfig) (*ExpectSession, error) {
 		}
 	}
 
-	// For V-Sol OLTs, enter privileged mode with "enable" command
+	// For V-Sol OLTs, enter privileged mode with "enable" command, then "configure terminal"
 	if strings.ToLower(cfg.Vendor) == "vsol" {
 		if err := exp.Send("enable\n"); err != nil {
 			exp.Close()
@@ -164,6 +164,18 @@ func NewExpectSession(cfg ExpectSessionConfig) (*ExpectSession, error) {
 				exp.Close()
 				return nil, fmt.Errorf("failed to detect privileged prompt after enable: %w", err)
 			}
+		}
+
+		// Enter configure terminal mode - required for V-Sol system commands
+		if err := exp.Send("configure terminal\n"); err != nil {
+			exp.Close()
+			return nil, fmt.Errorf("failed to send configure terminal: %w", err)
+		}
+
+		// Wait for config prompt (e.g., gpon-olt-lab(config)#)
+		if _, _, err := exp.Expect(promptRE, cfg.Timeout); err != nil {
+			exp.Close()
+			return nil, fmt.Errorf("failed to detect config prompt: %w", err)
 		}
 	}
 
