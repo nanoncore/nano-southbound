@@ -1128,7 +1128,10 @@ func (a *Adapter) GetOLTStatus(ctx context.Context) (*types.OLTStatus, error) {
 	// Get CPU usage: "show sys cpu-usage"
 	// Output has %idle column, CPU usage = 100 - idle
 	cpuOutput, err := a.cliExecutor.ExecCommand(ctx, "show sys cpu-usage")
-	if err == nil {
+	if err != nil {
+		status.Metadata["cpu_error"] = err.Error()
+	} else {
+		status.Metadata["cpu_output"] = cpuOutput
 		// Parse the "Average:" line for %idle (last column)
 		// "Average:     all    1.75    0.00    1.05    0.00    0.00   22.53    0.00    0.00   74.68"
 		idleRe := regexp.MustCompile(`(?i)average:\s+all\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+([\d.]+)`)
@@ -1136,13 +1139,18 @@ func (a *Adapter) GetOLTStatus(ctx context.Context) (*types.OLTStatus, error) {
 			if idle, err := strconv.ParseFloat(match[1], 64); err == nil {
 				status.CPUPercent = 100 - idle
 			}
+		} else {
+			status.Metadata["cpu_parse_fail"] = "regex did not match"
 		}
 	}
 
 	// Get memory usage: "show sys mem"
 	// MemTotal and MemFree in kB
 	memOutput, err := a.cliExecutor.ExecCommand(ctx, "show sys mem")
-	if err == nil {
+	if err != nil {
+		status.Metadata["mem_error"] = err.Error()
+	} else {
+		status.Metadata["mem_output"] = memOutput
 		var memTotal, memFree float64
 		totalRe := regexp.MustCompile(`(?i)memtotal[:\s]+(\d+)`)
 		freeRe := regexp.MustCompile(`(?i)memfree[:\s]+(\d+)`)
@@ -1154,6 +1162,8 @@ func (a *Adapter) GetOLTStatus(ctx context.Context) (*types.OLTStatus, error) {
 		}
 		if memTotal > 0 {
 			status.MemoryPercent = (memTotal - memFree) / memTotal * 100
+		} else {
+			status.Metadata["mem_parse_fail"] = "memTotal is 0"
 		}
 	}
 
