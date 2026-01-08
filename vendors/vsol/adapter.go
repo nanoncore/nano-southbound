@@ -1106,49 +1106,84 @@ func (a *Adapter) GetOLTStatus(ctx context.Context) (*types.OLTStatus, error) {
 		Metadata:    make(map[string]interface{}),
 	}
 
-	// Get system info
-	output, err := a.cliExecutor.ExecCommand(ctx, "show system")
+	// Get version info (serial, firmware)
+	versionOutput, err := a.cliExecutor.ExecCommand(ctx, "show version")
 	if err != nil {
 		status.IsReachable = false
 		return status, nil
 	}
 
-	outputLower := strings.ToLower(output)
-
-	// Parse firmware version
-	fwRe := regexp.MustCompile(`(?:firmware|version)[:\s]+(\S+)`)
-	if match := fwRe.FindStringSubmatch(outputLower); len(match) > 1 {
-		status.Firmware = match[1]
-	}
-
-	// Parse serial number
-	snRe := regexp.MustCompile(`serial[:\s]+(\S+)`)
-	if match := snRe.FindStringSubmatch(outputLower); len(match) > 1 {
+	// Parse serial number: "Olt Serial Number:           V2104230071"
+	snRe := regexp.MustCompile(`(?i)olt serial number[:\s]+(\S+)`)
+	if match := snRe.FindStringSubmatch(versionOutput); len(match) > 1 {
 		status.SerialNumber = match[1]
 	}
 
-	// Parse uptime
-	uptimeRe := regexp.MustCompile(`uptime[:\s]+(\d+)`)
-	if match := uptimeRe.FindStringSubmatch(outputLower); len(match) > 1 {
-		if uptime, err := strconv.ParseInt(match[1], 10, 64); err == nil {
-			status.UptimeSeconds = uptime
+	// Parse firmware version: "Software Version:            V2.1.6R"
+	fwRe := regexp.MustCompile(`(?i)software version[:\s]+(\S+)`)
+	if match := fwRe.FindStringSubmatch(versionOutput); len(match) > 1 {
+		status.Firmware = match[1]
+	}
+
+	// Get CPU usage: "show sys cpu-usage"
+	// Output has %idle column, CPU usage = 100 - idle
+	cpuOutput, err := a.cliExecutor.ExecCommand(ctx, "show sys cpu-usage")
+	if err == nil {
+		// Parse the "Average:" line for %idle (last column)
+		// "Average:     all    1.75    0.00    1.05    0.00    0.00   22.53    0.00    0.00   74.68"
+		idleRe := regexp.MustCompile(`(?i)average:\s+all\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+([\d.]+)`)
+		if match := idleRe.FindStringSubmatch(cpuOutput); len(match) > 1 {
+			if idle, err := strconv.ParseFloat(match[1], 64); err == nil {
+				status.CPUPercent = 100 - idle
+			}
 		}
 	}
 
-	// Parse CPU
-	cpuRe := regexp.MustCompile(`cpu[:\s]+(\d+)`)
-	if match := cpuRe.FindStringSubmatch(outputLower); len(match) > 1 {
-		if cpu, err := strconv.ParseFloat(match[1], 64); err == nil {
-			status.CPUPercent = cpu
+	// Get memory usage: "show sys mem"
+	// MemTotal and MemFree in kB
+	memOutput, err := a.cliExecutor.ExecCommand(ctx, "show sys mem")
+	if err == nil {
+		var memTotal, memFree float64
+		totalRe := regexp.MustCompile(`(?i)memtotal[:\s]+(\d+)`)
+		freeRe := regexp.MustCompile(`(?i)memfree[:\s]+(\d+)`)
+		if match := totalRe.FindStringSubmatch(memOutput); len(match) > 1 {
+			memTotal, _ = strconv.ParseFloat(match[1], 64)
+		}
+		if match := freeRe.FindStringSubmatch(memOutput); len(match) > 1 {
+			memFree, _ = strconv.ParseFloat(match[1], 64)
+		}
+		if memTotal > 0 {
+			status.MemoryPercent = (memTotal - memFree) / memTotal * 100
 		}
 	}
 
-	// Parse memory
-	memRe := regexp.MustCompile(`mem(?:ory)?[:\s]+(\d+)`)
-	if match := memRe.FindStringSubmatch(outputLower); len(match) > 1 {
-		if mem, err := strconv.ParseFloat(match[1], 64); err == nil {
-			status.MemoryPercent = mem
+	// Get uptime: "show sys running-time"
+	// "Syetem Running Time:         6 Days 3 Hours 5 Minutes 31 Seconds"
+	uptimeOutput, err := a.cliExecutor.ExecCommand(ctx, "show sys running-time")
+	if err == nil {
+		var totalSeconds int64
+		daysRe := regexp.MustCompile(`(\d+)\s*days?`)
+		hoursRe := regexp.MustCompile(`(\d+)\s*hours?`)
+		minsRe := regexp.MustCompile(`(\d+)\s*minutes?`)
+		secsRe := regexp.MustCompile(`(\d+)\s*seconds?`)
+		uptimeLower := strings.ToLower(uptimeOutput)
+		if match := daysRe.FindStringSubmatch(uptimeLower); len(match) > 1 {
+			days, _ := strconv.ParseInt(match[1], 10, 64)
+			totalSeconds += days * 86400
 		}
+		if match := hoursRe.FindStringSubmatch(uptimeLower); len(match) > 1 {
+			hours, _ := strconv.ParseInt(match[1], 10, 64)
+			totalSeconds += hours * 3600
+		}
+		if match := minsRe.FindStringSubmatch(uptimeLower); len(match) > 1 {
+			mins, _ := strconv.ParseInt(match[1], 10, 64)
+			totalSeconds += mins * 60
+		}
+		if match := secsRe.FindStringSubmatch(uptimeLower); len(match) > 1 {
+			secs, _ := strconv.ParseInt(match[1], 10, 64)
+			totalSeconds += secs
+		}
+		status.UptimeSeconds = totalSeconds
 	}
 
 	// Get PON port status
@@ -1165,7 +1200,7 @@ func (a *Adapter) GetOLTStatus(ctx context.Context) (*types.OLTStatus, error) {
 		}
 	}
 
-	status.Metadata["system_output"] = output
+	status.Metadata["version_output"] = versionOutput
 
 	return status, nil
 }
