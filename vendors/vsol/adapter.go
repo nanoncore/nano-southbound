@@ -394,26 +394,91 @@ func (a *Adapter) HealthCheck(ctx context.Context) error {
 // ============================================================================
 
 // DiscoverONUs discovers unprovisioned ONUs on specified PON ports (DriverV2)
+// Note: V1600 series does not support autofind commands. Instead, we return all
+// currently registered ONUs - the caller can filter out already-provisioned ones.
 func (a *Adapter) DiscoverONUs(ctx context.Context, ponPorts []string) ([]types.ONUDiscovery, error) {
 	if a.cliExecutor == nil {
 		return nil, fmt.Errorf("CLI executor not available")
 	}
 
-	// V-SOL CLI command to show autofind ONUs
-	var cmd string
+	var discoveries []types.ONUDiscovery
+
+	// V1600 series doesn't have autofind - get registered ONUs instead
+	// Use the same V1600-style command sequence as GetONUList
 	if a.detectPONType() == "gpon" {
-		cmd = "show onu autofind all"
+		// Determine which ports to scan
+		portsToScan := ponPorts
+		if len(portsToScan) == 0 {
+			portsToScan = a.getPONPortList()
+		}
+
+		for _, ponPort := range portsToScan {
+			commands := []string{
+				"configure terminal",
+				fmt.Sprintf("interface gpon %s", ponPort),
+				"show onu info",
+				"exit",
+				"exit",
+			}
+
+			outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
+			if err != nil {
+				// Try legacy autofind command as fallback (for older V-SOL models)
+				cmd := "show onu autofind all"
+				output, legacyErr := a.cliExecutor.ExecCommand(ctx, cmd)
+				if legacyErr != nil {
+					// If both fail, return empty list (no discovery available on this model)
+					return []types.ONUDiscovery{}, nil
+				}
+				discoveries = append(discoveries, a.parseAutofindOutput(output)...)
+				break // Legacy command gets all ports at once
+			}
+
+			// Parse the "show onu info" output (index 2 in the commands)
+			if len(outputs) > 2 {
+				onus := a.parseV1600ONUList(outputs[2], ponPort)
+				for _, onu := range onus {
+					discovery := types.ONUDiscovery{
+						PONPort:      onu.PONPort,
+						Serial:       onu.Serial,
+						Model:        onu.Model,
+						RxPowerDBm:   onu.RxPowerDBm,
+						DistanceM:    onu.DistanceM,
+						DiscoveredAt: time.Now(),
+					}
+					discoveries = append(discoveries, discovery)
+				}
+			}
+		}
 	} else {
-		cmd = "show llid autofind all"
+		// EPON: try autofind first, fall back to registered LLIDs
+		cmd := "show llid autofind all"
+		output, err := a.cliExecutor.ExecCommand(ctx, cmd)
+		if err != nil {
+			// Try getting all registered LLIDs
+			cmd = "show llid all"
+			output, err = a.cliExecutor.ExecCommand(ctx, cmd)
+			if err != nil {
+				return []types.ONUDiscovery{}, nil
+			}
+			// Parse registered LLIDs as discoveries
+			onus := a.parseONUList(output)
+			for _, onu := range onus {
+				discovery := types.ONUDiscovery{
+					PONPort:      onu.PONPort,
+					Serial:       onu.Serial,
+					MAC:          onu.MAC,
+					Model:        onu.Model,
+					RxPowerDBm:   onu.RxPowerDBm,
+					DistanceM:    onu.DistanceM,
+					DiscoveredAt: time.Now(),
+				}
+				discoveries = append(discoveries, discovery)
+			}
+		} else {
+			discoveries = a.parseAutofindOutput(output)
+		}
 	}
-
-	output, err := a.cliExecutor.ExecCommand(ctx, cmd)
-	if err != nil {
-		return nil, fmt.Errorf("failed to discover ONUs: %w", err)
-	}
-
-	// Parse autofind output
-	discoveries := a.parseAutofindOutput(output)
 
 	// Filter by requested PON ports if specified
 	if len(ponPorts) > 0 {
