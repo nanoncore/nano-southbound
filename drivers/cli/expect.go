@@ -16,10 +16,12 @@ var DefaultPromptPattern = regexp.MustCompile(`(?m)[\w\-\[\]()]+[#>]\s*$`)
 // VendorPrompts contains vendor-specific prompt patterns
 var VendorPrompts = map[string]*regexp.Regexp{
 	"huawei": regexp.MustCompile(`(?m)(<[\w\-]+>|\[[\w\-~]+\])\s*$`),
-	"vsol":   regexp.MustCompile(`(?m)[\w\-]+[#>]\s*$`),
-	"cdata":  regexp.MustCompile(`(?m)[\w\-]+[#>]\s*$`),
-	"zte":    regexp.MustCompile(`(?m)(<[\w\-]+>|\[[\w\-~]+\])\s*$`),
-	"cisco":  regexp.MustCompile(`(?m)[\w\-]+[#>]\s*$`),
+	// V-Sol prompts: OLT#, OLT>, OLT(config)#, OLT(config-if-gpon-0/1)#, etc.
+	"vsol":  regexp.MustCompile(`(?m)[\w\-]+(\([^\)]+\))?[#>]\s*$`),
+	"cdata": regexp.MustCompile(`(?m)[\w\-]+(\([^\)]+\))?[#>]\s*$`),
+	"zte":   regexp.MustCompile(`(?m)(<[\w\-]+>|\[[\w\-~]+\])\s*$`),
+	// Cisco prompts: Router#, Router>, Router(config)#, Router(config-if)#
+	"cisco": regexp.MustCompile(`(?m)[\w\-]+(\([^\)]+\))?[#>]\s*$`),
 }
 
 // PagerDisableCommands contains commands to disable paging per vendor
