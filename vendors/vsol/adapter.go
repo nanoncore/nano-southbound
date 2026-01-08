@@ -440,28 +440,123 @@ func (a *Adapter) GetONUList(ctx context.Context, filter *types.ONUFilter) ([]ty
 		return nil, fmt.Errorf("CLI executor not available")
 	}
 
-	// V-SOL CLI command to list all ONUs
-	var cmd string
+	var allOnus []types.ONUInfo
+
+	// V-SOL V1600 series requires entering config mode and iterating PON ports
+	// Command sequence: configure terminal -> interface gpon X/Y -> show onu info
 	if a.detectPONType() == "gpon" {
-		cmd = "show onu all"
+		// Try V1600 style first (configure terminal -> interface gpon -> show onu info)
+		ponPorts := a.getPONPortList()
+		for _, ponPort := range ponPorts {
+			commands := []string{
+				"configure terminal",
+				fmt.Sprintf("interface gpon %s", ponPort),
+				"show onu info",
+				"exit",
+				"exit",
+			}
+
+			outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
+			if err != nil {
+				// If V1600 style fails, try legacy command
+				cmd := "show onu all"
+				output, legacyErr := a.cliExecutor.ExecCommand(ctx, cmd)
+				if legacyErr != nil {
+					return nil, fmt.Errorf("failed to get ONU list: %w", legacyErr)
+				}
+				onus := a.parseONUList(output)
+				if filter != nil {
+					onus = a.filterONUList(onus, filter)
+				}
+				return onus, nil
+			}
+
+			// Parse the "show onu info" output (index 2 in the commands)
+			if len(outputs) > 2 {
+				onus := a.parseV1600ONUList(outputs[2], ponPort)
+				allOnus = append(allOnus, onus...)
+			}
+		}
 	} else {
-		cmd = "show llid all"
+		// EPON: use legacy command
+		cmd := "show llid all"
+		output, err := a.cliExecutor.ExecCommand(ctx, cmd)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get ONU list: %w", err)
+		}
+		allOnus = a.parseONUList(output)
 	}
-
-	output, err := a.cliExecutor.ExecCommand(ctx, cmd)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get ONU list: %w", err)
-	}
-
-	// Parse ONU list output
-	onus := a.parseONUList(output)
 
 	// Apply filters
 	if filter != nil {
-		onus = a.filterONUList(onus, filter)
+		allOnus = a.filterONUList(allOnus, filter)
 	}
 
-	return onus, nil
+	return allOnus, nil
+}
+
+// getPONPortList returns the list of PON ports to scan
+func (a *Adapter) getPONPortList() []string {
+	// Default PON ports for V1600 series (8 or 16 ports typically)
+	// Start with common ports, can be expanded based on model detection
+	return []string{"0/1", "0/2", "0/3", "0/4", "0/5", "0/6", "0/7", "0/8"}
+}
+
+// parseV1600ONUList parses the V1600 series "show onu info" output format
+// Example output:
+// Onuindex   Model                Profile                Mode    AuthInfo
+// ----------------------------------------------------------------------------
+// GPON0/1:1  unknown              AN5506-04-F1           sn      FHTT5929E410
+// GPON0/1:2  HG6143D              AN5506-04-F1           sn      FHTT59CB8310
+func (a *Adapter) parseV1600ONUList(output string, ponPort string) []types.ONUInfo {
+	onus := []types.ONUInfo{}
+
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "Onuindex") || strings.HasPrefix(line, "-") {
+			continue
+		}
+
+		fields := strings.Fields(line)
+		if len(fields) >= 5 {
+			// Parse Onuindex field (e.g., "GPON0/1:1")
+			onuIndex := fields[0]
+
+			// Extract PON port and ONU ID from index
+			var extractedPort string
+			var onuID int
+
+			// Try to parse format like "GPON0/1:1" or "0/1:1"
+			re := regexp.MustCompile(`(?:GPON)?(\d+/\d+):(\d+)`)
+			if matches := re.FindStringSubmatch(onuIndex); len(matches) == 3 {
+				extractedPort = matches[1]
+				onuID, _ = strconv.Atoi(matches[2])
+			}
+
+			onu := types.ONUInfo{
+				PONPort:     extractedPort,
+				ONUID:       onuID,
+				Model:       fields[1],
+				LineProfile: fields[2],
+				Serial:      fields[4], // AuthInfo field contains serial
+				IsOnline:    true,      // If it appears in list, it's online
+				AdminState:  "enabled",
+				OperState:   "online",
+			}
+
+			// Mode field (fields[3]) indicates auth type (sn = serial number)
+			if len(fields) >= 4 && fields[3] == "sn" {
+				onu.Metadata = map[string]interface{}{
+					"auth_mode": "serial",
+				}
+			}
+
+			onus = append(onus, onu)
+		}
+	}
+
+	return onus
 }
 
 // GetONUBySerial finds a specific ONU by serial number (DriverV2)
