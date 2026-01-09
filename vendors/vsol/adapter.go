@@ -12,6 +12,14 @@ import (
 	"github.com/nanoncore/nano-southbound/types"
 )
 
+// ansiRegex matches ANSI escape sequences (colors, cursor movement, etc.)
+var ansiRegex = regexp.MustCompile(`\x1b\[[0-9;]*[a-zA-Z]`)
+
+// stripANSI removes ANSI escape codes from a string
+func stripANSI(s string) string {
+	return ansiRegex.ReplaceAllString(s, "")
+}
+
 // Adapter wraps a base driver with V-SOL-specific logic
 // V-SOL OLTs (V1600G series) use CLI + SNMP, with optional EMS REST API
 type Adapter struct {
@@ -586,6 +594,7 @@ func (a *Adapter) mergeONUState(onus []types.ONUInfo, states []ONUStateInfo) {
 		key := fmt.Sprintf("%s:%d", state.PONPort, state.ONUID)
 		stateMap[key] = state
 	}
+	fmt.Printf("[vsol] mergeONUState: %d ONUs, %d states in map\n", len(onus), len(stateMap))
 
 	// Update each ONU with state info
 	for i := range onus {
@@ -600,6 +609,7 @@ func (a *Adapter) mergeONUState(onus []types.ONUInfo, states []ONUStateInfo) {
 				switch state.PhaseState {
 				case "working":
 					onus[i].OperState = "online"
+					onus[i].IsOnline = true // Also set IsOnline for working state
 				case "los":
 					onus[i].OperState = "los"
 				case "dying_gasp":
@@ -608,6 +618,10 @@ func (a *Adapter) mergeONUState(onus []types.ONUInfo, states []ONUStateInfo) {
 					onus[i].OperState = "offline"
 				}
 			}
+			fmt.Printf("[vsol] ONU %s state: phase=%s isOnline=%v operState=%s\n",
+				onus[i].Serial, state.PhaseState, onus[i].IsOnline, onus[i].OperState)
+		} else {
+			fmt.Printf("[vsol] ONU %s: no state found for key %s\n", onus[i].Serial, key)
 		}
 	}
 }
@@ -792,6 +806,9 @@ func (a *Adapter) GetAllONUDetails(ctx context.Context, onus []types.ONUInfo) ([
 func (a *Adapter) parseV1600ONUList(output string, ponPort string) []types.ONUInfo {
 	onus := []types.ONUInfo{}
 
+	// Strip ANSI codes from entire output first
+	output = stripANSI(output)
+
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -815,7 +832,7 @@ func (a *Adapter) parseV1600ONUList(output string, ponPort string) []types.ONUIn
 				onuID, _ = strconv.Atoi(matches[2])
 			}
 
-			serial := fields[4] // AuthInfo field contains serial
+			serial := stripANSI(fields[4]) // AuthInfo field contains serial (strip ANSI escape codes)
 
 			onu := types.ONUInfo{
 				PONPort:     extractedPort,
@@ -862,6 +879,9 @@ type ONUStateInfo struct {
 func (a *Adapter) parseONUState(output string) []ONUStateInfo {
 	states := []ONUStateInfo{}
 
+	// Strip ANSI codes from entire output first
+	output = stripANSI(output)
+
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -893,6 +913,9 @@ func (a *Adapter) parseONUState(output string) []ONUStateInfo {
 
 			// ONU is online if phase state is "working"
 			isOnline := phaseState == "working"
+
+			fmt.Printf("[vsol] parseONUState: index=%s port=%s onuID=%d phase=%s isOnline=%v\n",
+				onuIndex, ponPort, onuID, phaseState, isOnline)
 
 			states = append(states, ONUStateInfo{
 				PONPort:    ponPort,
