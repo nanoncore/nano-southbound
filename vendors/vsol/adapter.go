@@ -648,12 +648,13 @@ func (a *Adapter) GetONUDetails(ctx context.Context, ponPort string, onuID int) 
 	}
 
 	// V-SOL V1600 command sequence for detailed ONU info
+	// V1600 series uses "show onu optical X" and "show onu statistics X" format
 	if a.detectPONType() == "gpon" {
 		commands := []string{
 			"configure terminal",
 			fmt.Sprintf("interface gpon %s", ponPort),
-			fmt.Sprintf("show onu %d optical_info", onuID),
-			fmt.Sprintf("show onu %d statistics", onuID),
+			fmt.Sprintf("show onu optical %d", onuID),
+			fmt.Sprintf("show onu statistics %d", onuID),
 			"exit",
 			"exit",
 		}
@@ -718,11 +719,13 @@ func (a *Adapter) GetAllONUDetails(ctx context.Context, onus []types.ONUInfo) ([
 		}
 
 		// Build commands for all ONUs on this port
+		// V1600 series uses "show onu optical X" and "show onu statistics X" format
+		// (not "show onu X optical_info" which returns general info instead)
 		var onuCommands []string
 		for _, onu := range portOnus {
 			onuCommands = append(onuCommands,
-				fmt.Sprintf("show onu %d optical_info", onu.ONUID),
-				fmt.Sprintf("show onu %d statistics", onu.ONUID),
+				fmt.Sprintf("show onu optical %d", onu.ONUID),
+				fmt.Sprintf("show onu statistics %d", onu.ONUID),
 			)
 		}
 
@@ -762,12 +765,12 @@ func (a *Adapter) GetAllONUDetails(ctx context.Context, onus []types.ONUInfo) ([
 								opticalInfo.RxPowerDBm, opticalInfo.TxPowerDBm,
 								opticalInfo.Temperature, opticalInfo.Voltage, opticalInfo.BiasCurrent)
 						} else {
-							// Log raw output for debugging when parsing fails
-							outputSnippet := outputs[outputIdx]
-							if len(outputSnippet) > 200 {
-								outputSnippet = outputSnippet[:200] + "..."
+							// Log raw output for debugging when parsing fails (after ANSI stripping)
+							outputSnippet := stripANSI(outputs[outputIdx])
+							if len(outputSnippet) > 300 {
+								outputSnippet = outputSnippet[:300] + "..."
 							}
-							fmt.Printf("[vsol] ONU %s (PON %s:%d) optical: no data parsed (raw: %q)\n",
+							fmt.Printf("[vsol] ONU %s (PON %s:%d) optical: no data parsed (cleaned output: %q)\n",
 								result[i].Serial, result[i].PONPort, result[i].ONUID, outputSnippet)
 						}
 					}
@@ -776,7 +779,8 @@ func (a *Adapter) GetAllONUDetails(ctx context.Context, onus []types.ONUInfo) ([
 					// Parse statistics
 					if outputIdx < len(outputs) {
 						stats := a.parseONUStatistics(outputs[outputIdx])
-						if stats != nil {
+						hasStatsData := stats != nil && (stats.OutputBytes != 0 || stats.InputBytes != 0 || stats.InputRateBps != 0 || stats.OutputRateBps != 0)
+						if hasStatsData {
 							result[i].BytesUp = stats.OutputBytes
 							result[i].BytesDown = stats.InputBytes
 							result[i].PacketsUp = stats.OutputPackets
@@ -785,6 +789,14 @@ func (a *Adapter) GetAllONUDetails(ctx context.Context, onus []types.ONUInfo) ([
 							result[i].OutputRateBps = stats.OutputRateBps
 							fmt.Printf("[vsol] ONU %s stats: BytesUp=%d BytesDown=%d InRate=%d OutRate=%d\n",
 								result[i].Serial, stats.OutputBytes, stats.InputBytes, stats.InputRateBps, stats.OutputRateBps)
+						} else {
+							// Log raw output for debugging when parsing fails (after ANSI stripping)
+							outputSnippet := stripANSI(outputs[outputIdx])
+							if len(outputSnippet) > 300 {
+								outputSnippet = outputSnippet[:300] + "..."
+							}
+							fmt.Printf("[vsol] ONU %s stats: no data parsed (cleaned output: %q)\n",
+								result[i].Serial, outputSnippet)
 						}
 					}
 					outputIdx++
@@ -949,6 +961,9 @@ type ONUOpticalInfo struct {
 // Laser bias current:           6.220(mA)
 func (a *Adapter) parseONUOpticalInfo(output string) *ONUOpticalInfo {
 	info := &ONUOpticalInfo{}
+
+	// Strip ANSI escape codes from output before parsing
+	output = stripANSI(output)
 	outputLower := strings.ToLower(output)
 
 	// Parse Rx optical level
@@ -1004,6 +1019,9 @@ type ONUStatistics struct {
 // Output packets:               17484
 func (a *Adapter) parseONUStatistics(output string) *ONUStatistics {
 	stats := &ONUStatistics{}
+
+	// Strip ANSI escape codes from output before parsing
+	output = stripANSI(output)
 	outputLower := strings.ToLower(output)
 
 	// Parse Input rate
