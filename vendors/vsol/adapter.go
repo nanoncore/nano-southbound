@@ -526,7 +526,7 @@ func (a *Adapter) GetONUList(ctx context.Context, filter *types.ONUFilter) ([]ty
 	// V-SOL V1600 series requires entering config mode and iterating PON ports
 	// Command sequence: configure terminal -> interface gpon X/Y -> show onu info
 	if a.detectPONType() == "gpon" {
-		// Try V1600 style first (configure terminal -> interface gpon -> show onu info)
+		// V1600 style: configure terminal -> interface gpon -> show onu info
 		ponPorts := a.getPONPortList()
 		for _, ponPort := range ponPorts {
 			commands := []string{
@@ -553,13 +553,13 @@ func (a *Adapter) GetONUList(ctx context.Context, filter *types.ONUFilter) ([]ty
 				return onus, nil
 			}
 
-			// Parse the "show onu info" output (index 2 in the commands)
+			// Parse the "show onu info" output (index 2: config=0, interface=1, info=2)
 			if len(outputs) > 2 {
 				onus := a.parseV1600ONUList(outputs[2], ponPort)
 				allOnus = append(allOnus, onus...)
 			}
 
-			// Parse the "show onu state" output (index 3 in the commands)
+			// Parse the "show onu state" output (index 3)
 			if len(outputs) > 3 {
 				states := a.parseONUState(outputs[3])
 				allStates = append(allStates, states...)
@@ -648,13 +648,12 @@ func (a *Adapter) GetONUDetails(ctx context.Context, ponPort string, onuID int) 
 	}
 
 	// V-SOL V1600 command sequence for detailed ONU info
-	// V1600 series uses "show onu optical X" and "show onu statistics X" format
 	if a.detectPONType() == "gpon" {
 		commands := []string{
 			"configure terminal",
 			fmt.Sprintf("interface gpon %s", ponPort),
-			fmt.Sprintf("show onu optical %d", onuID),
-			fmt.Sprintf("show onu statistics %d", onuID),
+			fmt.Sprintf("show onu %d optical", onuID),
+			fmt.Sprintf("show onu %d statistics", onuID),
 			"exit",
 			"exit",
 		}
@@ -664,7 +663,7 @@ func (a *Adapter) GetONUDetails(ctx context.Context, ponPort string, onuID int) 
 			return nil, fmt.Errorf("failed to get ONU details: %w", err)
 		}
 
-		// Parse optical info (index 2)
+		// Parse optical info (index 2: config=0, interface=1, optical=2)
 		if len(outputs) > 2 {
 			opticalInfo := a.parseONUOpticalInfo(outputs[2])
 			if opticalInfo != nil {
@@ -719,13 +718,12 @@ func (a *Adapter) GetAllONUDetails(ctx context.Context, onus []types.ONUInfo) ([
 		}
 
 		// Build commands for all ONUs on this port
-		// V1600 series uses "show onu optical X" and "show onu statistics X" format
-		// (not "show onu X optical_info" which returns general info instead)
+		// Try "show onu X optical" format (ONU ID before subcommand)
 		var onuCommands []string
 		for _, onu := range portOnus {
 			onuCommands = append(onuCommands,
-				fmt.Sprintf("show onu optical %d", onu.ONUID),
-				fmt.Sprintf("show onu statistics %d", onu.ONUID),
+				fmt.Sprintf("show onu %d optical", onu.ONUID),
+				fmt.Sprintf("show onu %d statistics", onu.ONUID),
 			)
 		}
 
@@ -744,7 +742,7 @@ func (a *Adapter) GetAllONUDetails(ctx context.Context, onus []types.ONUInfo) ([
 		// Log successful command execution for debugging
 		fmt.Printf("[vsol] GetAllONUDetails: PON %s - got %d outputs for %d ONUs\n", ponPort, len(outputs), len(portOnus))
 
-		// Parse outputs for each ONU (starting at index 2)
+		// Parse outputs for each ONU (starting at index 2: config=0, interface=1, first cmd=2)
 		outputIdx := 2
 		for _, onu := range portOnus {
 			// Find this ONU in result slice
@@ -897,8 +895,10 @@ func (a *Adapter) parseONUState(output string) []ONUStateInfo {
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
+		// Skip empty lines, headers, and error messages
 		if line == "" || strings.HasPrefix(line, "OnuIndex") || strings.HasPrefix(line, "-") ||
-			strings.HasPrefix(line, "ONU Number") {
+			strings.HasPrefix(line, "ONU Number") || strings.HasPrefix(line, "Error") ||
+			strings.HasPrefix(line, "%") {
 			continue
 		}
 
