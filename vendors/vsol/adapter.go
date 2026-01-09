@@ -658,8 +658,8 @@ func (a *Adapter) GetONUDetails(ctx context.Context, ponPort string, onuID int) 
 		if len(outputs) > 3 {
 			stats := a.parseONUStatistics(outputs[3])
 			if stats != nil {
-				onu.BytesUp = stats.OutputBytes    // ONU output = upstream
-				onu.BytesDown = stats.InputBytes   // ONU input = downstream
+				onu.BytesUp = stats.OutputBytes  // ONU output = upstream
+				onu.BytesDown = stats.InputBytes // ONU input = downstream
 				onu.PacketsUp = stats.OutputPackets
 				onu.PacketsDown = stats.InputPackets
 				onu.InputRateBps = stats.InputRateBps
@@ -937,12 +937,12 @@ func (a *Adapter) parseONUOpticalInfo(output string) *ONUOpticalInfo {
 
 // ONUStatistics holds parsed traffic stats from "show onu X statistics"
 type ONUStatistics struct {
-	InputRateBps   uint64
-	OutputRateBps  uint64
-	InputBytes     uint64
-	OutputBytes    uint64
-	InputPackets   uint64
-	OutputPackets  uint64
+	InputRateBps  uint64
+	OutputRateBps uint64
+	InputBytes    uint64
+	OutputBytes   uint64
+	InputPackets  uint64
+	OutputPackets uint64
 }
 
 // parseONUStatistics parses the V1600 series "show onu X statistics" output
