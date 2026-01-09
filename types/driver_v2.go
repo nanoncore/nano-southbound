@@ -159,6 +159,36 @@ type ONUInfo struct {
 	// DistanceM is the fiber distance in meters
 	DistanceM int `json:"distance_m,omitempty"`
 
+	// Vendor is the ONU vendor (detected from serial prefix, e.g., "FiberHome", "Huawei")
+	Vendor string `json:"vendor,omitempty"`
+
+	// Temperature is the ONU temperature in Celsius
+	Temperature float64 `json:"temperature_c,omitempty"`
+
+	// Voltage is the ONU power supply voltage in Volts
+	Voltage float64 `json:"voltage_v,omitempty"`
+
+	// BiasCurrent is the laser bias current in mA
+	BiasCurrent float64 `json:"bias_ma,omitempty"`
+
+	// BytesUp is the total bytes transmitted upstream
+	BytesUp uint64 `json:"bytes_up,omitempty"`
+
+	// BytesDown is the total bytes received downstream
+	BytesDown uint64 `json:"bytes_down,omitempty"`
+
+	// PacketsUp is the total packets transmitted upstream
+	PacketsUp uint64 `json:"packets_up,omitempty"`
+
+	// PacketsDown is the total packets received downstream
+	PacketsDown uint64 `json:"packets_down,omitempty"`
+
+	// InputRateBps is the current input rate in bytes per second
+	InputRateBps uint64 `json:"input_rate_bps,omitempty"`
+
+	// OutputRateBps is the current output rate in bytes per second
+	OutputRateBps uint64 `json:"output_rate_bps,omitempty"`
+
 	// LineProfile is the assigned line profile
 	LineProfile string `json:"line_profile,omitempty"`
 

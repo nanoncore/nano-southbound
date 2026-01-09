@@ -506,6 +506,7 @@ func (a *Adapter) GetONUList(ctx context.Context, filter *types.ONUFilter) ([]ty
 	}
 
 	var allOnus []types.ONUInfo
+	var allStates []ONUStateInfo
 
 	// V-SOL V1600 series requires entering config mode and iterating PON ports
 	// Command sequence: configure terminal -> interface gpon X/Y -> show onu info
@@ -517,6 +518,7 @@ func (a *Adapter) GetONUList(ctx context.Context, filter *types.ONUFilter) ([]ty
 				"configure terminal",
 				fmt.Sprintf("interface gpon %s", ponPort),
 				"show onu info",
+				"show onu state", // Also get state for online/offline status
 				"exit",
 				"exit",
 			}
@@ -541,7 +543,16 @@ func (a *Adapter) GetONUList(ctx context.Context, filter *types.ONUFilter) ([]ty
 				onus := a.parseV1600ONUList(outputs[2], ponPort)
 				allOnus = append(allOnus, onus...)
 			}
+
+			// Parse the "show onu state" output (index 3 in the commands)
+			if len(outputs) > 3 {
+				states := a.parseONUState(outputs[3])
+				allStates = append(allStates, states...)
+			}
 		}
+
+		// Merge state info into ONU list
+		a.mergeONUState(allOnus, allStates)
 	} else {
 		// EPON: use legacy command
 		cmd := "show llid all"
@@ -560,11 +571,190 @@ func (a *Adapter) GetONUList(ctx context.Context, filter *types.ONUFilter) ([]ty
 	return allOnus, nil
 }
 
+// mergeONUState merges state info into ONU list
+func (a *Adapter) mergeONUState(onus []types.ONUInfo, states []ONUStateInfo) {
+	// Create a map for quick lookup by PON port + ONU ID
+	stateMap := make(map[string]ONUStateInfo)
+	for _, state := range states {
+		key := fmt.Sprintf("%s:%d", state.PONPort, state.ONUID)
+		stateMap[key] = state
+	}
+
+	// Update each ONU with state info
+	for i := range onus {
+		key := fmt.Sprintf("%s:%d", onus[i].PONPort, onus[i].ONUID)
+		if state, ok := stateMap[key]; ok {
+			onus[i].IsOnline = state.IsOnline
+			onus[i].AdminState = state.AdminState
+			if state.IsOnline {
+				onus[i].OperState = "online"
+			} else {
+				// Map phase state to oper state
+				switch state.PhaseState {
+				case "working":
+					onus[i].OperState = "online"
+				case "los":
+					onus[i].OperState = "los"
+				case "dying_gasp":
+					onus[i].OperState = "dying_gasp"
+				default:
+					onus[i].OperState = "offline"
+				}
+			}
+		}
+	}
+}
+
 // getPONPortList returns the list of PON ports to scan
 func (a *Adapter) getPONPortList() []string {
 	// Default PON ports for V1600 series (8 or 16 ports typically)
 	// Start with common ports, can be expanded based on model detection
 	return []string{"0/1", "0/2", "0/3", "0/4", "0/5", "0/6", "0/7", "0/8"}
+}
+
+// GetONUDetails fetches detailed information for a specific ONU including
+// optical power, temperature, voltage, bias current, and traffic statistics.
+// This should be called less frequently than GetONUList (e.g., every 10 minutes)
+// to avoid overloading the OLT with per-ONU commands.
+func (a *Adapter) GetONUDetails(ctx context.Context, ponPort string, onuID int) (*types.ONUInfo, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+
+	onu := &types.ONUInfo{
+		PONPort: ponPort,
+		ONUID:   onuID,
+	}
+
+	// V-SOL V1600 command sequence for detailed ONU info
+	if a.detectPONType() == "gpon" {
+		commands := []string{
+			"configure terminal",
+			fmt.Sprintf("interface gpon %s", ponPort),
+			fmt.Sprintf("show onu %d optical_info", onuID),
+			fmt.Sprintf("show onu %d statistics", onuID),
+			"exit",
+			"exit",
+		}
+
+		outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get ONU details: %w", err)
+		}
+
+		// Parse optical info (index 2)
+		if len(outputs) > 2 {
+			opticalInfo := a.parseONUOpticalInfo(outputs[2])
+			if opticalInfo != nil {
+				onu.RxPowerDBm = opticalInfo.RxPowerDBm
+				onu.TxPowerDBm = opticalInfo.TxPowerDBm
+				onu.Temperature = opticalInfo.Temperature
+				onu.Voltage = opticalInfo.Voltage
+				onu.BiasCurrent = opticalInfo.BiasCurrent
+			}
+		}
+
+		// Parse statistics (index 3)
+		if len(outputs) > 3 {
+			stats := a.parseONUStatistics(outputs[3])
+			if stats != nil {
+				onu.BytesUp = stats.OutputBytes    // ONU output = upstream
+				onu.BytesDown = stats.InputBytes   // ONU input = downstream
+				onu.PacketsUp = stats.OutputPackets
+				onu.PacketsDown = stats.InputPackets
+				onu.InputRateBps = stats.InputRateBps
+				onu.OutputRateBps = stats.OutputRateBps
+			}
+		}
+	}
+
+	return onu, nil
+}
+
+// GetAllONUDetails fetches detailed information for all ONUs.
+// This is more efficient than calling GetONUDetails for each ONU individually
+// as it batches commands per PON port.
+func (a *Adapter) GetAllONUDetails(ctx context.Context, onus []types.ONUInfo) ([]types.ONUInfo, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+
+	// Group ONUs by PON port for efficient batching
+	onusByPort := make(map[string][]types.ONUInfo)
+	for _, onu := range onus {
+		onusByPort[onu.PONPort] = append(onusByPort[onu.PONPort], onu)
+	}
+
+	result := make([]types.ONUInfo, len(onus))
+	copy(result, onus)
+
+	// Process each PON port
+	for ponPort, portOnus := range onusByPort {
+		// Enter interface context once per port
+		enterCommands := []string{
+			"configure terminal",
+			fmt.Sprintf("interface gpon %s", ponPort),
+		}
+
+		// Build commands for all ONUs on this port
+		var onuCommands []string
+		for _, onu := range portOnus {
+			onuCommands = append(onuCommands,
+				fmt.Sprintf("show onu %d optical_info", onu.ONUID),
+				fmt.Sprintf("show onu %d statistics", onu.ONUID),
+			)
+		}
+
+		exitCommands := []string{"exit", "exit"}
+
+		allCommands := append(enterCommands, onuCommands...)
+		allCommands = append(allCommands, exitCommands...)
+
+		outputs, err := a.cliExecutor.ExecCommands(ctx, allCommands)
+		if err != nil {
+			// Log error but continue with other ports
+			continue
+		}
+
+		// Parse outputs for each ONU (starting at index 2)
+		outputIdx := 2
+		for _, onu := range portOnus {
+			// Find this ONU in result slice
+			for i := range result {
+				if result[i].PONPort == onu.PONPort && result[i].ONUID == onu.ONUID {
+					// Parse optical info
+					if outputIdx < len(outputs) {
+						opticalInfo := a.parseONUOpticalInfo(outputs[outputIdx])
+						if opticalInfo != nil {
+							result[i].RxPowerDBm = opticalInfo.RxPowerDBm
+							result[i].TxPowerDBm = opticalInfo.TxPowerDBm
+							result[i].Temperature = opticalInfo.Temperature
+							result[i].Voltage = opticalInfo.Voltage
+							result[i].BiasCurrent = opticalInfo.BiasCurrent
+						}
+					}
+					outputIdx++
+
+					// Parse statistics
+					if outputIdx < len(outputs) {
+						stats := a.parseONUStatistics(outputs[outputIdx])
+						if stats != nil {
+							result[i].BytesUp = stats.OutputBytes
+							result[i].BytesDown = stats.InputBytes
+							result[i].PacketsUp = stats.OutputPackets
+							result[i].PacketsDown = stats.InputPackets
+							result[i].InputRateBps = stats.InputRateBps
+							result[i].OutputRateBps = stats.OutputRateBps
+						}
+					}
+					outputIdx++
+					break
+				}
+			}
+		}
+	}
+
+	return result, nil
 }
 
 // parseV1600ONUList parses the V1600 series "show onu info" output format
@@ -599,15 +789,18 @@ func (a *Adapter) parseV1600ONUList(output string, ponPort string) []types.ONUIn
 				onuID, _ = strconv.Atoi(matches[2])
 			}
 
+			serial := fields[4] // AuthInfo field contains serial
+
 			onu := types.ONUInfo{
 				PONPort:     extractedPort,
 				ONUID:       onuID,
 				Model:       fields[1],
 				LineProfile: fields[2],
-				Serial:      fields[4], // AuthInfo field contains serial
-				IsOnline:    true,      // If it appears in list, it's online
+				Serial:      serial,
+				Vendor:      detectONUVendor(serial), // Detect vendor from serial prefix
+				IsOnline:    true,                    // Default to true, will be updated from state
 				AdminState:  "enabled",
-				OperState:   "online",
+				OperState:   "unknown", // Will be updated from show onu state
 			}
 
 			// Mode field (fields[3]) indicates auth type (sn = serial number)
@@ -622,6 +815,210 @@ func (a *Adapter) parseV1600ONUList(output string, ponPort string) []types.ONUIn
 	}
 
 	return onus
+}
+
+// ONUStateInfo holds parsed state info from "show onu state"
+type ONUStateInfo struct {
+	PONPort    string
+	ONUID      int
+	AdminState string
+	OMCCState  string
+	PhaseState string
+	IsOnline   bool
+}
+
+// parseONUState parses the V1600 series "show onu state" output format
+// Example output:
+// OnuIndex    Admin State    OMCC State    Phase State    Channel
+// ---------------------------------------------------------------
+// 1/1/1:1     enable         enable        working        1(GPON)
+// 1/1/1:2     enable         enable        working        1(GPON)
+func (a *Adapter) parseONUState(output string) []ONUStateInfo {
+	states := []ONUStateInfo{}
+
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "OnuIndex") || strings.HasPrefix(line, "-") ||
+			strings.HasPrefix(line, "ONU Number") {
+			continue
+		}
+
+		fields := strings.Fields(line)
+		if len(fields) >= 4 {
+			// Parse OnuIndex field (e.g., "1/1/1:1" means slot/frame/port:onuid)
+			onuIndex := fields[0]
+
+			var ponPort string
+			var onuID int
+
+			// Try to parse format like "1/1/1:1" (slot/frame/port:onuid)
+			re := regexp.MustCompile(`(\d+/\d+)/(\d+):(\d+)`)
+			if matches := re.FindStringSubmatch(onuIndex); len(matches) == 4 {
+				// Convert "1/1/1:1" to PON port "0/1" format
+				portNum := matches[2]
+				ponPort = "0/" + portNum
+				onuID, _ = strconv.Atoi(matches[3])
+			}
+
+			adminState := strings.ToLower(fields[1])
+			omccState := strings.ToLower(fields[2])
+			phaseState := strings.ToLower(fields[3])
+
+			// ONU is online if phase state is "working"
+			isOnline := phaseState == "working"
+
+			states = append(states, ONUStateInfo{
+				PONPort:    ponPort,
+				ONUID:      onuID,
+				AdminState: adminState,
+				OMCCState:  omccState,
+				PhaseState: phaseState,
+				IsOnline:   isOnline,
+			})
+		}
+	}
+
+	return states
+}
+
+// ONUOpticalInfo holds parsed optical info from "show onu X optical_info"
+type ONUOpticalInfo struct {
+	RxPowerDBm  float64
+	TxPowerDBm  float64
+	Temperature float64
+	Voltage     float64
+	BiasCurrent float64
+}
+
+// parseONUOpticalInfo parses the V1600 series "show onu X optical_info" output
+// Example output:
+// Rx optical level:             -28.530(dBm)
+// Tx optical level:             2.520(dBm)
+// Temperature:                  48.430(C)
+// Power feed voltage:           3.28(V)
+// Laser bias current:           6.220(mA)
+func (a *Adapter) parseONUOpticalInfo(output string) *ONUOpticalInfo {
+	info := &ONUOpticalInfo{}
+	outputLower := strings.ToLower(output)
+
+	// Parse Rx optical level
+	rxRe := regexp.MustCompile(`rx\s*optical\s*level[:\s]+(-?\d+\.?\d*)`)
+	if match := rxRe.FindStringSubmatch(outputLower); len(match) > 1 {
+		info.RxPowerDBm, _ = strconv.ParseFloat(match[1], 64)
+	}
+
+	// Parse Tx optical level
+	txRe := regexp.MustCompile(`tx\s*optical\s*level[:\s]+(-?\d+\.?\d*)`)
+	if match := txRe.FindStringSubmatch(outputLower); len(match) > 1 {
+		info.TxPowerDBm, _ = strconv.ParseFloat(match[1], 64)
+	}
+
+	// Parse Temperature
+	tempRe := regexp.MustCompile(`temperature[:\s]+(-?\d+\.?\d*)`)
+	if match := tempRe.FindStringSubmatch(outputLower); len(match) > 1 {
+		info.Temperature, _ = strconv.ParseFloat(match[1], 64)
+	}
+
+	// Parse Voltage (Power feed voltage)
+	voltRe := regexp.MustCompile(`(?:power\s*feed\s*)?voltage[:\s]+(-?\d+\.?\d*)`)
+	if match := voltRe.FindStringSubmatch(outputLower); len(match) > 1 {
+		info.Voltage, _ = strconv.ParseFloat(match[1], 64)
+	}
+
+	// Parse Laser bias current
+	biasRe := regexp.MustCompile(`(?:laser\s*)?bias\s*current[:\s]+(-?\d+\.?\d*)`)
+	if match := biasRe.FindStringSubmatch(outputLower); len(match) > 1 {
+		info.BiasCurrent, _ = strconv.ParseFloat(match[1], 64)
+	}
+
+	return info
+}
+
+// ONUStatistics holds parsed traffic stats from "show onu X statistics"
+type ONUStatistics struct {
+	InputRateBps   uint64
+	OutputRateBps  uint64
+	InputBytes     uint64
+	OutputBytes    uint64
+	InputPackets   uint64
+	OutputPackets  uint64
+}
+
+// parseONUStatistics parses the V1600 series "show onu X statistics" output
+// Example output:
+// Input rate(Bps):              0
+// Output rate(Bps):             2
+// Input bytes:                  18830
+// Output bytes:                 1144072
+// Input packets:                0
+// Output packets:               17484
+func (a *Adapter) parseONUStatistics(output string) *ONUStatistics {
+	stats := &ONUStatistics{}
+	outputLower := strings.ToLower(output)
+
+	// Parse Input rate
+	inputRateRe := regexp.MustCompile(`input\s*rate\s*\(bps\)[:\s]+(\d+)`)
+	if match := inputRateRe.FindStringSubmatch(outputLower); len(match) > 1 {
+		stats.InputRateBps, _ = strconv.ParseUint(match[1], 10, 64)
+	}
+
+	// Parse Output rate
+	outputRateRe := regexp.MustCompile(`output\s*rate\s*\(bps\)[:\s]+(\d+)`)
+	if match := outputRateRe.FindStringSubmatch(outputLower); len(match) > 1 {
+		stats.OutputRateBps, _ = strconv.ParseUint(match[1], 10, 64)
+	}
+
+	// Parse Input bytes
+	inputBytesRe := regexp.MustCompile(`input\s*bytes[:\s]+(\d+)`)
+	if match := inputBytesRe.FindStringSubmatch(outputLower); len(match) > 1 {
+		stats.InputBytes, _ = strconv.ParseUint(match[1], 10, 64)
+	}
+
+	// Parse Output bytes
+	outputBytesRe := regexp.MustCompile(`output\s*bytes[:\s]+(\d+)`)
+	if match := outputBytesRe.FindStringSubmatch(outputLower); len(match) > 1 {
+		stats.OutputBytes, _ = strconv.ParseUint(match[1], 10, 64)
+	}
+
+	// Parse Input packets
+	inputPacketsRe := regexp.MustCompile(`input\s*packets[:\s]+(\d+)`)
+	if match := inputPacketsRe.FindStringSubmatch(outputLower); len(match) > 1 {
+		stats.InputPackets, _ = strconv.ParseUint(match[1], 10, 64)
+	}
+
+	// Parse Output packets
+	outputPacketsRe := regexp.MustCompile(`output\s*packets[:\s]+(\d+)`)
+	if match := outputPacketsRe.FindStringSubmatch(outputLower); len(match) > 1 {
+		stats.OutputPackets, _ = strconv.ParseUint(match[1], 10, 64)
+	}
+
+	return stats
+}
+
+// detectONUVendor detects ONU vendor from serial number prefix
+func detectONUVendor(serial string) string {
+	if len(serial) < 4 {
+		return ""
+	}
+
+	prefix := strings.ToUpper(serial[:4])
+	vendorMap := map[string]string{
+		"FHTT": "FiberHome",
+		"HWTC": "Huawei",
+		"ZTEG": "ZTE",
+		"ALCL": "Nokia",
+		"SMBS": "Sercomm",
+		"VSOL": "V-Sol",
+		"GPON": "Generic",
+		"UBNT": "Ubiquiti",
+		"TPLI": "TP-Link",
+	}
+
+	if vendor, ok := vendorMap[prefix]; ok {
+		return vendor
+	}
+	return ""
 }
 
 // GetONUBySerial finds a specific ONU by serial number (DriverV2)
