@@ -411,6 +411,7 @@ func (a *Adapter) DiscoverONUs(ctx context.Context, ponPorts []string) ([]types.
 		if len(portsToScan) == 0 {
 			portsToScan = a.getPONPortList()
 		}
+		fmt.Printf("[vsol] DiscoverONUs: scanning %d PON ports: %v\n", len(portsToScan), portsToScan)
 
 		for _, ponPort := range portsToScan {
 			commands := []string{
@@ -423,11 +424,13 @@ func (a *Adapter) DiscoverONUs(ctx context.Context, ponPorts []string) ([]types.
 
 			outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
 			if err != nil {
+				fmt.Printf("[vsol] DiscoverONUs: PON %s - ExecCommands failed: %v, trying autofind\n", ponPort, err)
 				// Try legacy autofind command as fallback (for older V-SOL models)
 				cmd := "show onu autofind all"
 				output, legacyErr := a.cliExecutor.ExecCommand(ctx, cmd)
 				if legacyErr != nil {
 					// If both fail, return empty list (no discovery available on this model)
+					fmt.Printf("[vsol] DiscoverONUs: autofind also failed: %v, returning empty\n", legacyErr)
 					return []types.ONUDiscovery{}, nil
 				}
 				discoveries = append(discoveries, a.parseAutofindOutput(output)...)
@@ -437,6 +440,7 @@ func (a *Adapter) DiscoverONUs(ctx context.Context, ponPorts []string) ([]types.
 			// Parse the "show onu info" output (index 2 in the commands)
 			if len(outputs) > 2 {
 				onus := a.parseV1600ONUList(outputs[2], ponPort)
+				fmt.Printf("[vsol] DiscoverONUs: PON %s - found %d ONUs\n", ponPort, len(onus))
 				for _, onu := range onus {
 					discovery := types.ONUDiscovery{
 						PONPort:      onu.PONPort,
@@ -448,6 +452,8 @@ func (a *Adapter) DiscoverONUs(ctx context.Context, ponPorts []string) ([]types.
 					}
 					discoveries = append(discoveries, discovery)
 				}
+			} else {
+				fmt.Printf("[vsol] DiscoverONUs: PON %s - unexpected output count: %d\n", ponPort, len(outputs))
 			}
 		}
 	} else {
@@ -496,6 +502,7 @@ func (a *Adapter) DiscoverONUs(ctx context.Context, ponPorts []string) ([]types.
 		return filtered, nil
 	}
 
+	fmt.Printf("[vsol] DiscoverONUs: total discoveries: %d\n", len(discoveries))
 	return discoveries, nil
 }
 
@@ -712,9 +719,13 @@ func (a *Adapter) GetAllONUDetails(ctx context.Context, onus []types.ONUInfo) ([
 
 		outputs, err := a.cliExecutor.ExecCommands(ctx, allCommands)
 		if err != nil {
-			// Log error but continue with other ports
+			// Log error with detail for debugging - this was previously silent
+			fmt.Printf("[vsol] GetAllONUDetails: failed to exec commands for PON %s: %v (commands: %v)\n", ponPort, err, allCommands)
 			continue
 		}
+
+		// Log successful command execution for debugging
+		fmt.Printf("[vsol] GetAllONUDetails: PON %s - got %d outputs for %d ONUs\n", ponPort, len(outputs), len(portOnus))
 
 		// Parse outputs for each ONU (starting at index 2)
 		outputIdx := 2
@@ -725,12 +736,25 @@ func (a *Adapter) GetAllONUDetails(ctx context.Context, onus []types.ONUInfo) ([
 					// Parse optical info
 					if outputIdx < len(outputs) {
 						opticalInfo := a.parseONUOpticalInfo(outputs[outputIdx])
-						if opticalInfo != nil {
+						hasOpticalData := opticalInfo.RxPowerDBm != 0 || opticalInfo.TxPowerDBm != 0 || opticalInfo.Temperature != 0
+						if hasOpticalData {
 							result[i].RxPowerDBm = opticalInfo.RxPowerDBm
 							result[i].TxPowerDBm = opticalInfo.TxPowerDBm
 							result[i].Temperature = opticalInfo.Temperature
 							result[i].Voltage = opticalInfo.Voltage
 							result[i].BiasCurrent = opticalInfo.BiasCurrent
+							fmt.Printf("[vsol] ONU %s (PON %s:%d) optical: Rx=%.2fdBm Tx=%.2fdBm Temp=%.2fC V=%.2fV Bias=%.2fmA\n",
+								result[i].Serial, result[i].PONPort, result[i].ONUID,
+								opticalInfo.RxPowerDBm, opticalInfo.TxPowerDBm,
+								opticalInfo.Temperature, opticalInfo.Voltage, opticalInfo.BiasCurrent)
+						} else {
+							// Log raw output for debugging when parsing fails
+							outputSnippet := outputs[outputIdx]
+							if len(outputSnippet) > 200 {
+								outputSnippet = outputSnippet[:200] + "..."
+							}
+							fmt.Printf("[vsol] ONU %s (PON %s:%d) optical: no data parsed (raw: %q)\n",
+								result[i].Serial, result[i].PONPort, result[i].ONUID, outputSnippet)
 						}
 					}
 					outputIdx++
@@ -745,6 +769,8 @@ func (a *Adapter) GetAllONUDetails(ctx context.Context, onus []types.ONUInfo) ([
 							result[i].PacketsDown = stats.InputPackets
 							result[i].InputRateBps = stats.InputRateBps
 							result[i].OutputRateBps = stats.OutputRateBps
+							fmt.Printf("[vsol] ONU %s stats: BytesUp=%d BytesDown=%d InRate=%d OutRate=%d\n",
+								result[i].Serial, stats.OutputBytes, stats.InputBytes, stats.InputRateBps, stats.OutputRateBps)
 						}
 					}
 					outputIdx++
