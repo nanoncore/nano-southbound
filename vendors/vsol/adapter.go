@@ -1106,6 +1106,10 @@ func (a *Adapter) GetOLTStatus(ctx context.Context) (*types.OLTStatus, error) {
 		Metadata:    make(map[string]interface{}),
 	}
 
+	// Ensure we're in config mode - required for "show sys" commands on V-Sol
+	// (GetONUList may have left us in exec mode after its exit commands)
+	_, _ = a.cliExecutor.ExecCommand(ctx, "configure terminal")
+
 	// Get version info (serial, firmware)
 	versionOutput, err := a.cliExecutor.ExecCommand(ctx, "show version")
 	if err != nil {
