@@ -75,6 +75,10 @@ func (d *Driver) Connect(ctx context.Context, config *types.EquipmentConfig) err
 	if d.config.Metadata != nil {
 		vendor = d.config.Metadata["vendor"]
 	}
+	// Fallback to config.Vendor if metadata doesn't have vendor
+	if vendor == "" && d.config.Vendor != "" {
+		vendor = string(d.config.Vendor)
+	}
 
 	expectSession, err := NewExpectSession(ExpectSessionConfig{
 		SSHClient:    client,

@@ -17,11 +17,12 @@ import (
 var DefaultPromptPattern = regexp.MustCompile(`(?m)[\w\-\[\]()]+[#>]\s*$`)
 
 // VendorPrompts contains vendor-specific prompt patterns
+// Note: Huawei/ZTE prompts include interface names like [OLT-gpon-0/0/1] with slashes
 var VendorPrompts = map[string]*regexp.Regexp{
-	"huawei": regexp.MustCompile(`(?m)(<[\w\-]+>|\[[\w\-~]+\])\s*$`),
+	"huawei": regexp.MustCompile(`(?m)(<[\w\-]+>|\[[\w\-~/]+\])\s*$`),
 	"vsol":   regexp.MustCompile(`(?m)[\w\-]+[#>]\s*$`),
 	"cdata":  regexp.MustCompile(`(?m)[\w\-]+[#>]\s*$`),
-	"zte":    regexp.MustCompile(`(?m)(<[\w\-]+>|\[[\w\-~]+\])\s*$`),
+	"zte":    regexp.MustCompile(`(?m)(<[\w\-]+>|\[[\w\-~/]+\])\s*$`),
 	"cisco":  regexp.MustCompile(`(?m)[\w\-]+[#>]\s*$`),
 }
 
@@ -75,7 +76,6 @@ func NewExpectSession(cfg ExpectSessionConfig) (*ExpectSession, error) {
 
 	// Spawn expect session over SSH
 	exp, _, err := expect.SpawnSSH(cfg.SSHClient, cfg.Timeout,
-		expect.Verbose(false),
 		expect.CheckDuration(500*time.Millisecond),
 	)
 	if err != nil {

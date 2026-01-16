@@ -83,6 +83,16 @@ type EquipmentConfig struct {
 
 	// Metadata contains vendor-specific configuration
 	Metadata map[string]string
+
+	// SecondaryPort is the port for secondary protocol (e.g., SNMP port when primary is CLI)
+	// If 0, uses protocol default (161 for SNMP, 22 for CLI)
+	SecondaryPort int
+
+	// SNMPCommunity is the SNMP community string (default: "public")
+	SNMPCommunity string
+
+	// SNMPVersion is the SNMP version: "1", "2c" (default), or "3"
+	SNMPVersion string
 }
 
 // Driver is the interface that all southbound drivers must implement

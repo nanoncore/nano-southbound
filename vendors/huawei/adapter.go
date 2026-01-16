@@ -8,44 +8,118 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nanoncore/nano-southbound/drivers/snmp"
 	"github.com/nanoncore/nano-southbound/model"
 	"github.com/nanoncore/nano-southbound/types"
 )
 
 // Adapter wraps a base driver with Huawei-specific logic
-// Huawei OLTs (MA5600T/MA5800-X series) primarily use CLI + SNMP
+// Huawei OLTs (MA5600T/MA5800-X series) require BOTH protocols:
+// - CLI for configuration (provisioning, deletion, updates)
+// - SNMP for monitoring (ONU listing, power readings, stats)
 type Adapter struct {
-	baseDriver   types.Driver
-	cliExecutor  types.CLIExecutor
-	snmpExecutor types.SNMPExecutor
-	config       *types.EquipmentConfig
+	baseDriver      types.Driver
+	secondaryDriver types.Driver // SNMP driver when primary is CLI
+	cliExecutor     types.CLIExecutor
+	snmpExecutor    types.SNMPExecutor
+	config          *types.EquipmentConfig
 }
 
 // NewAdapter creates a new Huawei adapter
+// If the base driver is CLI, it automatically creates an SNMP driver for monitoring
 func NewAdapter(baseDriver types.Driver, config *types.EquipmentConfig) types.Driver {
 	adapter := &Adapter{
 		baseDriver: baseDriver,
 		config:     config,
 	}
 
-	// Check if base driver supports CLI execution
+	// Extract executors from base driver
 	if executor, ok := baseDriver.(types.CLIExecutor); ok {
 		adapter.cliExecutor = executor
 	}
-
-	// Check if base driver supports SNMP execution
 	if executor, ok := baseDriver.(types.SNMPExecutor); ok {
 		adapter.snmpExecutor = executor
+	}
+
+	// Create secondary SNMP driver if base is CLI and SNMP not available
+	if adapter.cliExecutor != nil && adapter.snmpExecutor == nil {
+		adapter.createSNMPDriver()
 	}
 
 	return adapter
 }
 
+// createSNMPDriver creates an SNMP driver for monitoring operations
+func (a *Adapter) createSNMPDriver() {
+	snmpConfig := *a.config
+	snmpConfig.Protocol = types.ProtocolSNMP
+
+	// Use secondary port or SNMP default (161)
+	if a.config.SecondaryPort > 0 {
+		snmpConfig.Port = a.config.SecondaryPort
+	} else {
+		snmpConfig.Port = 161
+	}
+
+	// Set SNMP metadata
+	if snmpConfig.Metadata == nil {
+		snmpConfig.Metadata = make(map[string]string)
+	}
+	community := a.config.SNMPCommunity
+	if community == "" {
+		community = "public"
+	}
+	snmpConfig.Metadata["snmp_community"] = community
+
+	version := a.config.SNMPVersion
+	if version == "" {
+		version = "2c"
+	}
+	snmpConfig.Metadata["snmp_version"] = version
+
+	snmpDriver, err := snmp.NewDriver(&snmpConfig)
+	if err != nil {
+		return // SNMP creation failed, continue without it
+	}
+
+	a.secondaryDriver = snmpDriver
+	if executor, ok := snmpDriver.(types.SNMPExecutor); ok {
+		a.snmpExecutor = executor
+	}
+}
+
 func (a *Adapter) Connect(ctx context.Context, config *types.EquipmentConfig) error {
-	return a.baseDriver.Connect(ctx, config)
+	// Connect primary driver
+	if err := a.baseDriver.Connect(ctx, config); err != nil {
+		return fmt.Errorf("primary driver connect failed: %w", err)
+	}
+
+	// Connect secondary driver if present (uses its own config set during creation)
+	if a.secondaryDriver != nil {
+		// Create SNMP-specific config for secondary driver
+		snmpConfig := *a.config
+		snmpConfig.Protocol = types.ProtocolSNMP
+		if a.config.SecondaryPort > 0 {
+			snmpConfig.Port = a.config.SecondaryPort
+		} else {
+			snmpConfig.Port = 161
+		}
+		if err := a.secondaryDriver.Connect(ctx, &snmpConfig); err != nil {
+			// Log but don't fail - secondary is optional for some operations
+			// SNMP may not be required if only doing CLI operations
+		}
+	}
+
+	return nil
 }
 
 func (a *Adapter) Disconnect(ctx context.Context) error {
+	// Disconnect secondary driver first (if present)
+	if a.secondaryDriver != nil {
+		_ = a.secondaryDriver.Disconnect(ctx)
+	}
+
+	// Disconnect primary driver
 	return a.baseDriver.Disconnect(ctx)
 }
 
@@ -109,6 +183,9 @@ func (a *Adapter) buildProvisioningCommands(frame, slot, port, ontID int, serial
 	// Based on Huawei SmartAX MA5800-X series CLI documentation
 
 	commands := []string{
+		// Enter privileged exec mode first (required before config)
+		"enable",
+
 		// Enter global config mode
 		"config",
 
@@ -208,6 +285,7 @@ func (a *Adapter) DeleteSubscriber(ctx context.Context, subscriberID string) err
 	frame, slot, port, ontID := a.parseSubscriberID(subscriberID)
 
 	commands := []string{
+		"enable",
 		"config",
 		fmt.Sprintf("interface gpon %d/%d", frame, slot),
 
@@ -230,6 +308,7 @@ func (a *Adapter) SuspendSubscriber(ctx context.Context, subscriberID string) er
 	frame, slot, port, ontID := a.parseSubscriberID(subscriberID)
 
 	commands := []string{
+		"enable",
 		"config",
 		fmt.Sprintf("interface gpon %d/%d", frame, slot),
 
@@ -252,6 +331,7 @@ func (a *Adapter) ResumeSubscriber(ctx context.Context, subscriberID string) err
 	frame, slot, port, ontID := a.parseSubscriberID(subscriberID)
 
 	commands := []string{
+		"enable",
 		"config",
 		fmt.Sprintf("interface gpon %d/%d", frame, slot),
 
@@ -610,9 +690,18 @@ func (a *Adapter) parseAutofindOutput(output string) []ONTDiscovery {
 				continue
 			}
 
-			frame, _ := strconv.Atoi(fspParts[0])
-			slot, _ := strconv.Atoi(fspParts[1])
-			port, _ := strconv.Atoi(fspParts[2])
+			frame, err := strconv.Atoi(fspParts[0])
+			if err != nil {
+				continue // skip entries with invalid F/S/P data
+			}
+			slot, err := strconv.Atoi(fspParts[1])
+			if err != nil {
+				continue
+			}
+			port, err := strconv.Atoi(fspParts[2])
+			if err != nil {
+				continue
+			}
 
 			discovery := ONTDiscovery{
 				Frame:     frame,
@@ -785,7 +874,7 @@ func (a *Adapter) detectModel() string {
 func (a *Adapter) parseFSP(subscriber *model.Subscriber) (frame, slot, port int) {
 	// Default values
 	frame = 0
-	slot = 1
+	slot = 0
 	port = 0
 
 	// Check subscriber annotations
@@ -793,8 +882,16 @@ func (a *Adapter) parseFSP(subscriber *model.Subscriber) (frame, slot, port int)
 		return
 	}
 
-	// nanoncore.com/gpon-fsp: "0/1/0"
-	if fsp, ok := subscriber.Annotations["nanoncore.com/gpon-fsp"]; ok {
+	// Check for FSP in annotations (support both annotation formats)
+	// Format: "0/0/1" or "0/1/0" (frame/slot/port)
+	fsp := ""
+	if v, ok := subscriber.Annotations["nanoncore.com/gpon-fsp"]; ok {
+		fsp = v
+	} else if v, ok := subscriber.Annotations["nano.io/pon-port"]; ok {
+		fsp = v
+	}
+
+	if fsp != "" {
 		parts := strings.Split(fsp, "/")
 		if len(parts) == 3 {
 			frame, _ = strconv.Atoi(parts[0])
@@ -808,9 +905,16 @@ func (a *Adapter) parseFSP(subscriber *model.Subscriber) (frame, slot, port int)
 
 // getONTID extracts or generates ONT ID
 func (a *Adapter) getONTID(subscriber *model.Subscriber) int {
-	// Check subscriber annotations
+	// Check subscriber annotations (support both annotation formats)
 	if subscriber.Annotations != nil {
+		// Try nanoncore.com/ont-id first
 		if idStr, ok := subscriber.Annotations["nanoncore.com/ont-id"]; ok {
+			if id, err := strconv.Atoi(idStr); err == nil {
+				return id
+			}
+		}
+		// Try nano.io/onu-id
+		if idStr, ok := subscriber.Annotations["nano.io/onu-id"]; ok {
 			if id, err := strconv.Atoi(idStr); err == nil {
 				return id
 			}
@@ -822,6 +926,9 @@ func (a *Adapter) getONTID(subscriber *model.Subscriber) int {
 
 // getLineProfileID returns the line profile ID for a service tier
 func (a *Adapter) getLineProfileID(tier *model.ServiceTier) int {
+	if tier == nil {
+		return 1 // default profile ID
+	}
 	// Check tier annotations for custom profile ID
 	if tier.Annotations != nil {
 		if idStr, ok := tier.Annotations["nanoncore.com/line-profile-id"]; ok {
@@ -836,6 +943,9 @@ func (a *Adapter) getLineProfileID(tier *model.ServiceTier) int {
 
 // getServiceProfileID returns the service profile ID for a service tier
 func (a *Adapter) getServiceProfileID(tier *model.ServiceTier) int {
+	if tier == nil {
+		return 1 // default service profile ID
+	}
 	// Check tier annotations for custom profile ID
 	if tier.Annotations != nil {
 		if idStr, ok := tier.Annotations["nanoncore.com/srv-profile-id"]; ok {
@@ -850,6 +960,9 @@ func (a *Adapter) getServiceProfileID(tier *model.ServiceTier) int {
 
 // getTrafficTableID returns the traffic table ID for a service tier
 func (a *Adapter) getTrafficTableID(tier *model.ServiceTier) int {
+	if tier == nil {
+		return 1 // default traffic table ID
+	}
 	// Check tier annotations for custom traffic table ID
 	if tier.Annotations != nil {
 		if idStr, ok := tier.Annotations["nanoncore.com/traffic-table-id"]; ok {
@@ -905,8 +1018,8 @@ func (a *Adapter) GetONUList(ctx context.Context, filter *types.ONUFilter) ([]ty
 	// Convert to DriverV2 format
 	results := make([]types.ONUInfo, 0, len(onts))
 	for _, ont := range onts {
-		// Build PON port identifier
-		ponPort := fmt.Sprintf("%d/%d", ont.Slot, ont.Port)
+		// Build PON port identifier (frame/slot/port format)
+		ponPort := fmt.Sprintf("%d/%d/%d", ont.Frame, ont.Slot, ont.Port)
 
 		// Map operational state
 		operState := "offline"
@@ -915,25 +1028,26 @@ func (a *Adapter) GetONUList(ctx context.Context, filter *types.ONUFilter) ([]ty
 		}
 
 		info := types.ONUInfo{
-			PONPort:    ponPort,
-			ONUID:      ont.ONUID,
-			Serial:     ont.Serial,
-			AdminState: "enabled", // Assume enabled if provisioned
-			OperState:  operState,
-			IsOnline:   ont.IsOnline,
-			RxPowerDBm: ont.RxPower,
-			TxPowerDBm: ont.TxPower,
-			DistanceM:  0, // TODO: Query distance OID if needed
-			VLAN:       0, // Not available from bulk scan
+			PONPort:     ponPort,
+			ONUID:       ont.ONUID,
+			Serial:      ont.Serial,
+			AdminState:  "enabled", // Assume enabled if provisioned
+			OperState:   operState,
+			IsOnline:    ont.IsOnline,
+			RxPowerDBm:  ont.RxPower,
+			TxPowerDBm:  ont.TxPower,
+			DistanceM:   0, // TODO: Query distance OID if needed
+			VLAN:        0, // Not available from bulk scan
+			Vendor:      "huawei",
+			Temperature: float64(ont.Temperature),
+			Voltage:     ont.Voltage,
+			BytesUp:     ont.BytesUp,
+			BytesDown:   ont.BytesDown,
 			Metadata: map[string]interface{}{
-				"frame":       ont.Frame,
-				"slot":        ont.Slot,
-				"port":        ont.Port,
-				"snmp_index":  ont.Index,
-				"temperature": ont.Temperature,
-				"voltage":     ont.Voltage,
-				"bytes_up":    ont.BytesUp,
-				"bytes_down":  ont.BytesDown,
+				"frame":      ont.Frame,
+				"slot":       ont.Slot,
+				"port":       ont.Port,
+				"snmp_index": ont.Index,
 			},
 		}
 
@@ -1219,19 +1333,22 @@ func (a *Adapter) RestartONU(ctx context.Context, ponPort string, onuID int) err
 		return fmt.Errorf("CLI executor not available")
 	}
 
-	// Parse PON port
+	// Parse PON port (format: frame/slot/port, e.g., "0/0/1")
 	parts := strings.Split(ponPort, "/")
-	if len(parts) != 2 {
-		return fmt.Errorf("invalid PON port format: %s (expected slot/port)", ponPort)
+	if len(parts) != 3 {
+		return fmt.Errorf("invalid PON port format: %s (expected frame/slot/port)", ponPort)
 	}
 
-	slot, _ := strconv.Atoi(parts[0])
-	port, _ := strconv.Atoi(parts[1])
+	frame, _ := strconv.Atoi(parts[0])
+	slot, _ := strconv.Atoi(parts[1])
+	port, _ := strconv.Atoi(parts[2])
 
 	commands := []string{
+		"enable",
 		"config",
-		fmt.Sprintf("interface gpon %d/%d", slot, port),
+		fmt.Sprintf("interface gpon %d/%d", frame, slot),
 		fmt.Sprintf("ont reset %d %d", port, onuID),
+		"quit",
 		"quit",
 		"quit",
 	}
