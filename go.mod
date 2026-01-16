@@ -1,6 +1,6 @@
 module github.com/nanoncore/nano-southbound
 
-go 1.24.0
+go 1.23
 
 require (
 	github.com/google/goexpect v0.0.0-20210430020637-ab937bf7fd6f

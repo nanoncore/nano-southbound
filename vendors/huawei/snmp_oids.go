@@ -86,9 +86,16 @@ func IsOnuOnline(rxPowerRaw int64) bool {
 }
 
 // DecodeHexSerial converts hex serial number to readable format
-// Input: "485754430011D168" -> Output: "HWTC0011D168"
+// Handles both hex-encoded serials (e.g., "485754430011D168" -> "HWTC0011D168")
+// and already-ASCII serials (e.g., "HWTC00000101" -> "HWTC00000101")
 func DecodeHexSerial(hexSerial string) string {
 	if len(hexSerial) < 8 {
+		return hexSerial
+	}
+
+	// Check if serial is already in ASCII format (starts with letters like "HWTC", "ZTEG", etc.)
+	// ASCII ONU serials typically have 4 letter prefix followed by numbers
+	if isASCIISerial(hexSerial) {
 		return hexSerial
 	}
 
@@ -108,6 +115,21 @@ func DecodeHexSerial(hexSerial string) string {
 	serialPart := hexSerial[8:]
 
 	return vendorID + serialPart
+}
+
+// isASCIISerial checks if the serial is already in ASCII format (not hex-encoded)
+func isASCIISerial(serial string) bool {
+	if len(serial) < 4 {
+		return false
+	}
+	// Check if first 4 chars are uppercase letters (typical ONU vendor ID)
+	for i := 0; i < 4; i++ {
+		c := serial[i]
+		if c < 'A' || c > 'Z' {
+			return false
+		}
+	}
+	return true
 }
 
 func hexToByte(hex string) byte {
@@ -133,15 +155,30 @@ func ParseONUIndex(index string) (slot, port, onuID int) {
 	// portIndex is typically calculated from frame/slot/port
 	// This is vendor-specific and may vary by model
 
+	// Strip leading dot if present (gosnmp returns OIDs with leading dots)
+	if len(index) > 0 && index[0] == '.' {
+		index = index[1:]
+	}
+
 	// Simple parsing - assumes format like "portIndex.onuId"
 	var portIndex int
 	_, _ = fmt.Sscanf(index, "%d.%d", &portIndex, &onuID)
 
 	// Decode portIndex to slot/port (this varies by OLT model)
-	// Common formula: portIndex = (slot * 256) + port
-	// Or for some models: portIndex = (frame * 65536) + (slot * 256) + port
-	slot = (portIndex >> 8) & 0xFF
-	port = portIndex & 0xFF
+	// For real Huawei OLTs: portIndex = (frame * 65536) + (slot * 256) + port
+	// For simulators or simple OLTs: portIndex is just the port number directly
+	//
+	// Heuristic: if portIndex < 256, treat it as direct port number (slot=0)
+	// This handles both production OLTs and simulators correctly
+	if portIndex < 256 {
+		// Simple format: portIndex is the port number directly
+		slot = 0
+		port = portIndex
+	} else {
+		// Encoded format: decode slot and port from portIndex
+		slot = (portIndex >> 8) & 0xFF
+		port = portIndex & 0xFF
+	}
 
 	return
 }
