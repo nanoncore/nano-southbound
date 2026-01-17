@@ -49,22 +49,36 @@ func (d *Driver) Connect(ctx context.Context, config *types.EquipmentConfig) err
 		d.config = config
 	}
 
-	// Prepare SSH client configuration with multiple auth methods
-	// Some devices (like V-Sol OLTs) may require keyboard-interactive instead of password
-	keyboardInteractive := ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) ([]string, error) {
-		answers := make([]string, len(questions))
-		for i := range questions {
-			answers[i] = d.config.Password
-		}
-		return answers, nil
-	})
+	// Build auth methods based on vendor
+	// V-SOL OLTs have a non-compliant SSH implementation that sends
+	// SSH_MSG_USERAUTH_FAILURE (type 51) instead of SSH_MSG_USERAUTH_INFO_REQUEST
+	// (type 60) when keyboard-interactive is offered, causing handshake failure.
+	var authMethods []ssh.AuthMethod
+	vendor := strings.ToLower(string(d.config.Vendor))
 
-	sshConfig := &ssh.ClientConfig{
-		User: d.config.Username,
-		Auth: []ssh.AuthMethod{
+	if vendor == "vsol" || vendor == "v-sol" {
+		// V-SOL: Password auth only (non-compliant SSH implementation)
+		authMethods = []ssh.AuthMethod{
+			ssh.Password(d.config.Password),
+		}
+	} else {
+		// Other vendors: password + keyboard-interactive for compatibility
+		keyboardInteractive := ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) ([]string, error) {
+			answers := make([]string, len(questions))
+			for i := range questions {
+				answers[i] = d.config.Password
+			}
+			return answers, nil
+		})
+		authMethods = []ssh.AuthMethod{
 			ssh.Password(d.config.Password),
 			keyboardInteractive,
-		},
+		}
+	}
+
+	sshConfig := &ssh.ClientConfig{
+		User:            d.config.Username,
+		Auth:            authMethods,
 		Timeout:         d.config.Timeout,
 		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // User-controlled via TLSSkipVerify
 	}
