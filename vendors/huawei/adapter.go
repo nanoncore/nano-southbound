@@ -1390,3 +1390,202 @@ func (a *Adapter) GetAlarms(ctx context.Context) ([]types.OLTAlarm, error) {
 	// TODO: Parse "display alarm all" CLI output
 	return []types.OLTAlarm{}, nil // Return empty for now
 }
+
+// ListPorts returns status for all PON ports on the OLT.
+// Uses SNMP to query interface status and counts ONUs per port.
+func (a *Adapter) ListPorts(ctx context.Context) ([]*types.PONPortStatus, error) {
+	if a.snmpExecutor == nil {
+		return nil, fmt.Errorf("SNMP executor not available - Huawei requires SNMP for port listing")
+	}
+
+	// Walk interface descriptions to identify PON/GPON ports
+	descrResults, err := a.snmpExecutor.WalkSNMP(ctx, OIDIfDescr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk interface descriptions: %w", err)
+	}
+
+	// Walk admin status
+	adminResults, err := a.snmpExecutor.WalkSNMP(ctx, OIDIfAdminStatus)
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk admin status: %w", err)
+	}
+
+	// Walk oper status
+	operResults, err := a.snmpExecutor.WalkSNMP(ctx, OIDIfOperStatus)
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk oper status: %w", err)
+	}
+
+	// Walk interface aliases (port descriptions)
+	aliasResults, err := a.snmpExecutor.WalkSNMP(ctx, OIDIfAlias)
+	if err != nil {
+		// Non-fatal, continue without aliases
+		aliasResults = make(map[string]interface{})
+	}
+
+	// Get ONU list to count ONUs per port
+	onus, err := a.GetONUList(ctx, nil)
+	if err != nil {
+		// Non-fatal, continue without ONU counts
+		onus = []types.ONUInfo{}
+	}
+
+	// Count ONUs per port
+	onuCountByPort := make(map[string]int)
+	for _, onu := range onus {
+		onuCountByPort[onu.PONPort]++
+	}
+
+	// Build port list
+	ports := make([]*types.PONPortStatus, 0)
+
+	for index, descrVal := range descrResults {
+		descr, ok := descrVal.(string)
+		if !ok {
+			continue
+		}
+
+		// Filter to PON/GPON ports only
+		descrLower := strings.ToLower(descr)
+		if !strings.Contains(descrLower, "gpon") && !strings.Contains(descrLower, "pon") {
+			continue
+		}
+
+		// Parse port identifier from description (e.g., "GPON 0/0/1")
+		portID := a.parsePortFromDescr(descr)
+		if portID == "" {
+			portID = descr // Use description as-is if parsing fails
+		}
+
+		port := &types.PONPortStatus{
+			Port:       portID,
+			AdminState: "unknown",
+			OperState:  "unknown",
+			ONUCount:   onuCountByPort[portID],
+			MaxONUs:    128, // Typical GPON limit
+		}
+
+		// Get admin status (1=up, 2=down, 3=testing)
+		if adminVal, ok := adminResults[index]; ok {
+			if adminInt := toInt(adminVal); adminInt >= 0 {
+				switch adminInt {
+				case 1:
+					port.AdminState = "enabled"
+				case 2:
+					port.AdminState = "disabled"
+				default:
+					port.AdminState = "testing"
+				}
+			}
+		}
+
+		// Get oper status (1=up, 2=down, etc.)
+		if operVal, ok := operResults[index]; ok {
+			if operInt := toInt(operVal); operInt >= 0 {
+				switch operInt {
+				case 1:
+					port.OperState = "up"
+				case 2:
+					port.OperState = "down"
+				default:
+					port.OperState = "unknown"
+				}
+			}
+		}
+
+		// Get port description/alias
+		if aliasVal, ok := aliasResults[index]; ok {
+			if aliasStr, ok := aliasVal.(string); ok {
+				port.Description = aliasStr
+			}
+		}
+
+		ports = append(ports, port)
+	}
+
+	return ports, nil
+}
+
+// parsePortFromDescr extracts port identifier from interface description.
+// Example: "GPON 0/0/1" -> "0/0/1"
+func (a *Adapter) parsePortFromDescr(descr string) string {
+	// Try to extract frame/slot/port pattern
+	re := regexp.MustCompile(`(\d+)/(\d+)/(\d+)`)
+	if match := re.FindStringSubmatch(descr); len(match) == 4 {
+		return fmt.Sprintf("%s/%s/%s", match[1], match[2], match[3])
+	}
+	return ""
+}
+
+// SetPortState enables or disables a PON port administratively.
+// Uses CLI to execute shutdown/undo shutdown commands.
+func (a *Adapter) SetPortState(ctx context.Context, port string, enabled bool) error {
+	if a.cliExecutor == nil {
+		return fmt.Errorf("CLI executor not available - Huawei requires CLI for port management")
+	}
+
+	// Parse PON port (format: frame/slot/port, e.g., "0/0/1")
+	parts := strings.Split(port, "/")
+	if len(parts) != 3 {
+		return fmt.Errorf("invalid PON port format: %s (expected frame/slot/port)", port)
+	}
+
+	frame, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return fmt.Errorf("invalid frame number: %s", parts[0])
+	}
+	slot, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return fmt.Errorf("invalid slot number: %s", parts[1])
+	}
+	portNum, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return fmt.Errorf("invalid port number: %s", parts[2])
+	}
+
+	// Build CLI commands
+	var portCmd string
+	if enabled {
+		portCmd = fmt.Sprintf("undo port %d shutdown", portNum)
+	} else {
+		portCmd = fmt.Sprintf("port %d shutdown", portNum)
+	}
+
+	commands := []string{
+		"enable",
+		"config",
+		fmt.Sprintf("interface gpon %d/%d", frame, slot),
+		portCmd,
+		"quit",
+		"quit",
+		"quit",
+	}
+
+	_, err = a.cliExecutor.ExecCommands(ctx, commands)
+	if err != nil {
+		action := "enable"
+		if !enabled {
+			action = "disable"
+		}
+		return fmt.Errorf("failed to %s port %s: %w", action, port, err)
+	}
+
+	return nil
+}
+
+// toInt converts various integer types to int. Returns -1 if conversion fails.
+// Handles int, int64, uint, uint64 from SNMP responses.
+func toInt(val interface{}) int {
+	switch v := val.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case uint:
+		return int(v)
+	case uint64:
+		return int(v)
+	default:
+		return -1
+	}
+}
