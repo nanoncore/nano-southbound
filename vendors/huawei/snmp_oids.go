@@ -1,6 +1,9 @@
 package huawei
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Huawei GPON MIB OIDs
 // Based on legacy production code and Huawei documentation
@@ -150,37 +153,42 @@ func hexToByte(hex string) byte {
 	return b
 }
 
-// ParseONUIndex extracts slot, port, and ONU ID from SNMP index
+// ParseONUIndex extracts frame, slot, port, and ONU ID from SNMP index
 // Huawei uses portIndex.onuIndex format where portIndex encodes slot/port
-func ParseONUIndex(index string) (slot, port, onuID int) {
-	// Index format: <portIndex>.<onuIndex>
-	// portIndex is typically calculated from frame/slot/port
-	// This is vendor-specific and may vary by model
-
+// Supports both 2-component (portIndex.onuIndex) and 3-component (frame.portIndex.onuIndex) formats
+func ParseONUIndex(index string) (frame, slot, port, onuID int, err error) {
 	// Strip leading dot if present (gosnmp returns OIDs with leading dots)
 	if len(index) > 0 && index[0] == '.' {
 		index = index[1:]
 	}
 
-	// Simple parsing - assumes format like "portIndex.onuId"
-	var portIndex int
-	_, _ = fmt.Sscanf(index, "%d.%d", &portIndex, &onuID)
+	parts := strings.Split(index, ".")
 
-	// Decode portIndex to slot/port (this varies by OLT model)
-	// For real Huawei OLTs: portIndex = (frame * 65536) + (slot * 256) + port
-	// For simulators or simple OLTs: portIndex is just the port number directly
-	//
-	// Heuristic: if portIndex < 256, treat it as direct port number (slot=0)
-	// This handles both production OLTs and simulators correctly
-	if portIndex < 256 {
-		// Simple format: portIndex is the port number directly
-		slot = 0
-		port = portIndex
-	} else {
-		// Encoded format: decode slot and port from portIndex
+	switch len(parts) {
+	case 3:
+		// "frame.portIndex.onuIndex" format from simulator
+		var portIndex int
+		if _, err := fmt.Sscanf(index, "%d.%d.%d", &frame, &portIndex, &onuID); err != nil {
+			return 0, 0, 0, 0, fmt.Errorf("invalid 3-component ONU index format: %s", index)
+		}
+		// Decode portIndex to get slot and port
 		slot = (portIndex >> 8) & 0xFF
 		port = portIndex & 0xFF
+
+	case 2:
+		// "portIndex.onuIndex" format (existing logic for real OLTs)
+		var portIndex int
+		if _, err := fmt.Sscanf(index, "%d.%d", &portIndex, &onuID); err != nil {
+			return 0, 0, 0, 0, fmt.Errorf("invalid 2-component ONU index format: %s", index)
+		}
+		// Decode portIndex to frame/slot/port
+		frame = (portIndex >> 16) & 0xFF
+		slot = (portIndex >> 8) & 0xFF
+		port = portIndex & 0xFF
+
+	default:
+		return 0, 0, 0, 0, fmt.Errorf("invalid ONU index format (expected 2 or 3 components): %s", index)
 	}
 
-	return
+	return frame, slot, port, onuID, nil
 }

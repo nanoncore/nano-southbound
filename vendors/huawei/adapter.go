@@ -3,6 +3,7 @@ package huawei
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
@@ -599,12 +600,16 @@ func (a *Adapter) BulkScanONUsSNMP(ctx context.Context) ([]ONTStats, error) {
 		serial := DecodeHexSerial(hexSerial)
 
 		// Parse index to get frame/slot/port/onuID
-		slot, port, onuID := ParseONUIndex(index)
+		frame, slot, port, onuID, err := ParseONUIndex(index)
+		if err != nil {
+			slog.Debug("failed to parse ONU index", "index", index, "error", err)
+			continue
+		}
 
 		onu := ONTStats{
 			Index:  index,
 			Serial: serial,
-			Frame:  0, // Usually 0 for single-frame OLTs
+			Frame:  frame,
 			Slot:   slot,
 			Port:   port,
 			ONUID:  onuID,
