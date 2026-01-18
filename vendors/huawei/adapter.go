@@ -1589,3 +1589,415 @@ func toInt(val interface{}) int {
 		return -1
 	}
 }
+
+// ==================== VLAN Management Methods ====================
+
+// ListVLANs returns all configured VLANs on the OLT.
+func (a *Adapter) ListVLANs(ctx context.Context) ([]types.VLANInfo, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available - Huawei requires CLI for VLAN listing")
+	}
+
+	cmd := "display vlan all"
+	output, err := a.cliExecutor.ExecCommand(ctx, cmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list VLANs: %w", err)
+	}
+
+	return a.parseVLANList(output), nil
+}
+
+// parseVLANList parses Huawei CLI output for VLAN list.
+func (a *Adapter) parseVLANList(output string) []types.VLANInfo {
+	vlans := []types.VLANInfo{}
+
+	lines := strings.Split(output, "\n")
+	inTable := false
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+
+		// Skip empty lines and headers
+		if line == "" || strings.HasPrefix(line, "-") {
+			if strings.HasPrefix(line, "-") {
+				inTable = true
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "VLAN ID") || strings.HasPrefix(line, "Total") {
+			continue
+		}
+
+		if !inTable {
+			continue
+		}
+
+		// Parse VLAN line: "100       Customer_VLAN_100          smart     5               Customer traffic"
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+
+		vlanID, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+
+		vlan := types.VLANInfo{
+			ID:   vlanID,
+			Name: fields[1],
+			Type: "smart",
+		}
+
+		if len(fields) >= 3 {
+			vlan.Type = fields[2]
+		}
+		if len(fields) >= 4 {
+			vlan.ServicePortCount, _ = strconv.Atoi(fields[3])
+		}
+		if len(fields) >= 5 {
+			vlan.Description = strings.Join(fields[4:], " ")
+		}
+
+		vlans = append(vlans, vlan)
+	}
+
+	return vlans
+}
+
+// GetVLAN retrieves a specific VLAN by ID.
+func (a *Adapter) GetVLAN(ctx context.Context, vlanID int) (*types.VLANInfo, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+
+	cmd := fmt.Sprintf("display vlan %d", vlanID)
+	output, err := a.cliExecutor.ExecCommand(ctx, cmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get VLAN %d: %w", vlanID, err)
+	}
+
+	// Check if VLAN doesn't exist
+	if strings.Contains(output, "does not exist") || strings.Contains(output, "Error") {
+		return nil, nil
+	}
+
+	// Parse single VLAN output
+	vlan := &types.VLANInfo{
+		ID:   vlanID,
+		Type: "smart",
+	}
+
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Name") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				vlan.Name = strings.TrimSpace(parts[1])
+			}
+		} else if strings.HasPrefix(line, "Description") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				vlan.Description = strings.TrimSpace(parts[1])
+			}
+		} else if strings.HasPrefix(line, "Service Port Count") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				vlan.ServicePortCount, _ = strconv.Atoi(strings.TrimSpace(parts[1]))
+			}
+		} else if strings.HasPrefix(line, "Type") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				vlan.Type = strings.TrimSpace(parts[1])
+			}
+		}
+	}
+
+	return vlan, nil
+}
+
+// CreateVLAN creates a new VLAN on the OLT.
+func (a *Adapter) CreateVLAN(ctx context.Context, req *types.CreateVLANRequest) error {
+	if a.cliExecutor == nil {
+		return fmt.Errorf("CLI executor not available")
+	}
+
+	// Validate VLAN ID range
+	if req.ID < 1 || req.ID > 4094 {
+		return &types.HumanError{
+			Code:    types.ErrCodeInvalidVLANID,
+			Message: fmt.Sprintf("VLAN ID %d is out of range (1-4094)", req.ID),
+			Vendor:  "huawei",
+		}
+	}
+
+	// Build commands
+	commands := []string{
+		"enable",
+		"config",
+		fmt.Sprintf("vlan %d smart", req.ID),
+	}
+
+	if req.Name != "" {
+		commands = append(commands, fmt.Sprintf("name %s", req.Name))
+	}
+	if req.Description != "" {
+		commands = append(commands, fmt.Sprintf("description %s", req.Description))
+	}
+
+	commands = append(commands, "quit", "quit")
+
+	outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
+	output := strings.Join(outputs, "\n")
+	if err != nil {
+		if strings.Contains(err.Error(), "already exists") || strings.Contains(output, "already exists") {
+			return &types.HumanError{
+				Code:    types.ErrCodeVLANExists,
+				Message: fmt.Sprintf("VLAN %d already exists", req.ID),
+				Vendor:  "huawei",
+			}
+		}
+		return fmt.Errorf("failed to create VLAN: %w", err)
+	}
+
+	// Check output for errors
+	if strings.Contains(output, "Error") || strings.Contains(output, "already exists") {
+		return &types.HumanError{
+			Code:    types.ErrCodeVLANExists,
+			Message: fmt.Sprintf("VLAN %d already exists", req.ID),
+			Vendor:  "huawei",
+			Raw:     output,
+		}
+	}
+
+	return nil
+}
+
+// DeleteVLAN removes a VLAN from the OLT.
+func (a *Adapter) DeleteVLAN(ctx context.Context, vlanID int, force bool) error {
+	if a.cliExecutor == nil {
+		return fmt.Errorf("CLI executor not available")
+	}
+
+	// Check if VLAN exists and has service ports
+	vlan, err := a.GetVLAN(ctx, vlanID)
+	if err != nil {
+		return err
+	}
+	if vlan == nil {
+		return &types.HumanError{
+			Code:    types.ErrCodeVLANNotFound,
+			Message: fmt.Sprintf("VLAN %d not found", vlanID),
+			Vendor:  "huawei",
+		}
+	}
+
+	if vlan.ServicePortCount > 0 && !force {
+		return &types.HumanError{
+			Code:    types.ErrCodeVLANHasServicePorts,
+			Message: fmt.Sprintf("VLAN %d has %d service port(s) configured", vlanID, vlan.ServicePortCount),
+			Action:  "Use --force to delete anyway, or remove service ports first",
+			Vendor:  "huawei",
+		}
+	}
+
+	commands := []string{
+		"enable",
+		"config",
+		fmt.Sprintf("undo vlan %d", vlanID),
+		"quit",
+	}
+
+	outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
+	output := strings.Join(outputs, "\n")
+	if err != nil {
+		return fmt.Errorf("failed to delete VLAN: %w", err)
+	}
+
+	// Check for warning about service ports
+	if strings.Contains(output, "service port") && !force {
+		return &types.HumanError{
+			Code:    types.ErrCodeVLANHasServicePorts,
+			Message: fmt.Sprintf("VLAN %d has service ports configured", vlanID),
+			Action:  "Use --force to delete anyway",
+			Vendor:  "huawei",
+			Raw:     output,
+		}
+	}
+
+	return nil
+}
+
+// ==================== Service Port Management Methods ====================
+
+// ListServicePorts returns all service port configurations.
+func (a *Adapter) ListServicePorts(ctx context.Context) ([]types.ServicePort, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+
+	cmd := "display service-port all"
+	output, err := a.cliExecutor.ExecCommand(ctx, cmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list service ports: %w", err)
+	}
+
+	return a.parseServicePortList(output), nil
+}
+
+// parseServicePortList parses Huawei CLI output for service port list.
+func (a *Adapter) parseServicePortList(output string) []types.ServicePort {
+	servicePorts := []types.ServicePort{}
+
+	lines := strings.Split(output, "\n")
+	inTable := false
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+
+		// Skip empty lines and headers
+		if line == "" || strings.HasPrefix(line, "-") {
+			if strings.HasPrefix(line, "-") {
+				inTable = true
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "Index") || strings.HasPrefix(line, "Total") || strings.Contains(line, "No service") {
+			continue
+		}
+
+		if !inTable {
+			continue
+		}
+
+		// Parse line: "1       100     0/0/1           101     1         100          translate"
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+
+		index, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+
+		vlan, _ := strconv.Atoi(fields[1])
+		ontID, _ := strconv.Atoi(fields[3])
+		gemport, _ := strconv.Atoi(fields[4])
+
+		sp := types.ServicePort{
+			Index:     index,
+			VLAN:      vlan,
+			Interface: fields[2],
+			ONTID:     ontID,
+			GemPort:   gemport,
+		}
+
+		if len(fields) >= 6 {
+			sp.UserVLAN, _ = strconv.Atoi(fields[5])
+		}
+		if len(fields) >= 7 {
+			sp.TagTransform = fields[6]
+		}
+
+		servicePorts = append(servicePorts, sp)
+	}
+
+	return servicePorts
+}
+
+// AddServicePort creates a service port mapping.
+func (a *Adapter) AddServicePort(ctx context.Context, req *types.AddServicePortRequest) error {
+	if a.cliExecutor == nil {
+		return fmt.Errorf("CLI executor not available")
+	}
+
+	// Default values
+	gemPort := req.GemPort
+	if gemPort == 0 {
+		gemPort = 1
+	}
+	userVLAN := req.UserVLAN
+	if userVLAN == 0 {
+		userVLAN = req.VLAN
+	}
+
+	// Build command
+	cmd := fmt.Sprintf(
+		"service-port vlan %d gpon %s ont %d gemport %d multi-service user-vlan %d",
+		req.VLAN, req.PONPort, req.ONTID, gemPort, userVLAN,
+	)
+
+	commands := []string{
+		"enable",
+		"config",
+		cmd,
+		"quit",
+	}
+
+	outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
+	output := strings.Join(outputs, "\n")
+	if err != nil {
+		if strings.Contains(err.Error(), "does not exist") {
+			return &types.HumanError{
+				Code:    types.ErrCodeONUNotFound,
+				Message: fmt.Sprintf("ONT %d on port %s not found", req.ONTID, req.PONPort),
+				Vendor:  "huawei",
+			}
+		}
+		if strings.Contains(err.Error(), "VLAN") && strings.Contains(err.Error(), "not exist") {
+			return &types.HumanError{
+				Code:    types.ErrCodeVLANNotFound,
+				Message: fmt.Sprintf("VLAN %d does not exist", req.VLAN),
+				Vendor:  "huawei",
+			}
+		}
+		return fmt.Errorf("failed to add service port: %w", err)
+	}
+
+	// Check output for errors
+	if strings.Contains(output, "Error") || strings.Contains(output, "does not exist") {
+		if strings.Contains(output, "ONT") || strings.Contains(output, "ont") {
+			return &types.HumanError{
+				Code:    types.ErrCodeONUNotFound,
+				Message: fmt.Sprintf("ONT %d on port %s not found", req.ONTID, req.PONPort),
+				Vendor:  "huawei",
+				Raw:     output,
+			}
+		}
+		if strings.Contains(output, "VLAN") || strings.Contains(output, "vlan") {
+			return &types.HumanError{
+				Code:    types.ErrCodeVLANNotFound,
+				Message: fmt.Sprintf("VLAN %d does not exist", req.VLAN),
+				Vendor:  "huawei",
+				Raw:     output,
+			}
+		}
+	}
+
+	return nil
+}
+
+// DeleteServicePort removes a service port mapping.
+func (a *Adapter) DeleteServicePort(ctx context.Context, ponPort string, ontID int) error {
+	if a.cliExecutor == nil {
+		return fmt.Errorf("CLI executor not available")
+	}
+
+	cmd := fmt.Sprintf("undo service-port port %s ont %d", ponPort, ontID)
+
+	commands := []string{
+		"enable",
+		"config",
+		cmd,
+		"quit",
+	}
+
+	_, err := a.cliExecutor.ExecCommands(ctx, commands)
+	if err != nil {
+		return fmt.Errorf("failed to delete service port: %w", err)
+	}
+
+	return nil
+}
