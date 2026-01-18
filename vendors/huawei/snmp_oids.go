@@ -42,6 +42,8 @@ const (
 
 	// Standard MIB-II Interface Counters
 	OIDIfDescr       = "1.3.6.1.2.1.2.2.1.2"     // Interface description
+	OIDIfAdminStatus = "1.3.6.1.2.1.2.2.1.7"     // Admin status (1=up, 2=down, 3=testing)
+	OIDIfOperStatus  = "1.3.6.1.2.1.2.2.1.8"     // Oper status (1=up, 2=down, 3=testing, etc.)
 	OIDIfInOctets    = "1.3.6.1.2.1.2.2.1.10"    // 32-bit input bytes
 	OIDIfOutOctets   = "1.3.6.1.2.1.2.2.1.16"    // 32-bit output bytes
 	OIDIfHCInOctets  = "1.3.6.1.2.1.31.1.1.1.6"  // 64-bit input bytes
