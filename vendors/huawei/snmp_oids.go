@@ -13,6 +13,17 @@ const (
 	// Enterprise OID prefix for Huawei
 	OIDHuaweiEnterprise = "1.3.6.1.4.1.2011"
 
+	// Standard MIB-II System OIDs (RFC 1213)
+	OIDSysDescr  = "1.3.6.1.2.1.1.1.0" // System description
+	OIDSysUpTime = "1.3.6.1.2.1.1.3.0" // System uptime in hundredths of seconds
+	OIDSysName   = "1.3.6.1.2.1.1.5.0" // System name
+
+	// Huawei SmartAX System Telemetry OIDs
+	// These are the OIDs used by SmartAX MA5600T/MA5800-X series for system metrics
+	OIDSmartAXCPU         = "1.3.6.1.4.1.2011.6.128.1.1.2.98.1.1.1.1" // CPU utilization %
+	OIDSmartAXMemory      = "1.3.6.1.4.1.2011.6.128.1.1.2.98.1.2.1.1" // Memory utilization %
+	OIDSmartAXTemperature = "1.3.6.1.4.1.2011.2.6.7.1.1.2.1.10"       // Board temperature in Celsius
+
 	// ONU Serial Number - returns hex-encoded serial (e.g., "485754430011D168" = HWTC0011D168)
 	// Index: <portIndex>.<onuIndex>
 	OIDOnuSerialNumber = "1.3.6.1.4.1.2011.6.128.1.1.2.43.1.3"
@@ -20,13 +31,16 @@ const (
 	// ONU Optical Parameters (1.3.6.1.4.1.2011.6.128.1.1.2.51.1.x)
 	// Index: <portIndex>.<onuIndex>
 	// Note: Value 2147483647 (0x7FFFFFFF) indicates offline/invalid
-	OIDOnuTemperature = "1.3.6.1.4.1.2011.6.128.1.1.2.51.1.1" // Temperature in Celsius
+	OIDOnuTemperature = "1.3.6.1.4.1.2011.6.128.1.1.2.51.1.1" // Temperature (value / 256 = °C)
 	OIDOnuCurrent     = "1.3.6.1.4.1.2011.6.128.1.1.2.51.1.2" // Bias current in uA
 	OIDOnuTxPower     = "1.3.6.1.4.1.2011.6.128.1.1.2.51.1.3" // Tx power (value * 0.01 dBm)
 	OIDOnuRxPower     = "1.3.6.1.4.1.2011.6.128.1.1.2.51.1.4" // Rx power (value * 0.01 dBm)
 	OIDOnuVoltage     = "1.3.6.1.4.1.2011.6.128.1.1.2.51.1.5" // Voltage (value * 0.001 V)
 	OIDOltRxPower     = "1.3.6.1.4.1.2011.6.128.1.1.2.51.1.6" // OLT Rx from ONU ((value-10000)*0.01 dBm)
 	OIDOnuCatvRx      = "1.3.6.1.4.1.2011.6.128.1.1.2.51.1.7" // CATV Rx power
+
+	// ONU Distance (from ONU info table 1.3.6.1.4.1.2011.6.128.1.1.2.43.1.x)
+	OIDOnuDistance = "1.3.6.1.4.1.2011.6.128.1.1.2.43.1.12" // Distance in meters
 
 	// OLT PON Port Optical Parameters (1.3.6.1.4.1.2011.6.128.1.1.2.23.1.x)
 	OIDOltPonTemperature = "1.3.6.1.4.1.2011.6.128.1.1.2.23.1.1"
@@ -82,6 +96,15 @@ func ConvertVoltage(rawValue int64) float64 {
 		return 0.0
 	}
 	return float64(rawValue) * 0.001
+}
+
+// ConvertTemperature converts raw SNMP value to Celsius
+// Formula: value / 256
+func ConvertTemperature(rawValue int64) float64 {
+	if rawValue == SNMPInvalidValue || rawValue == 0 {
+		return 0.0
+	}
+	return float64(rawValue) / 256.0
 }
 
 // IsOnuOnline checks if ONU is online based on Rx power value
@@ -191,4 +214,45 @@ func ParseONUIndex(index string) (frame, slot, port, onuID int, err error) {
 	}
 
 	return frame, slot, port, onuID, nil
+}
+
+// GetSNMPResult looks up an OID in SNMP results, handling the leading dot issue.
+// gosnmp returns OIDs with a leading dot (e.g., ".1.3.6.1..."), but our constants
+// don't have the leading dot. This function tries both formats.
+func GetSNMPResult(results map[string]interface{}, oid string) (interface{}, bool) {
+	// Try without leading dot
+	if val, ok := results[oid]; ok {
+		return val, true
+	}
+	// Try with leading dot
+	if val, ok := results["."+oid]; ok {
+		return val, true
+	}
+	return nil, false
+}
+
+// ParseNumericSNMPValue extracts a float64 from various numeric types
+// that SNMP libraries may return (int, int64, uint, uint64, etc.)
+// Returns the value and true if successful, or 0 and false if the type is not numeric.
+func ParseNumericSNMPValue(value interface{}) (float64, bool) {
+	switch v := value.(type) {
+	case int:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case uint:
+		return float64(v), true
+	case uint32:
+		return float64(v), true
+	case uint64:
+		return float64(v), true
+	case float32:
+		return float64(v), true
+	case float64:
+		return v, true
+	default:
+		return 0, false
+	}
 }

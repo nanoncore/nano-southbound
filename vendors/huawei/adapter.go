@@ -532,8 +532,10 @@ type ONTStats struct {
 	IsOnline    bool    `json:"is_online"`
 	RxPower     float64 `json:"rx_power_dbm"`
 	TxPower     float64 `json:"tx_power_dbm"`
-	Temperature int64   `json:"temperature_c"`
+	Temperature float64 `json:"temperature_c"`
 	Voltage     float64 `json:"voltage_v"`
+	Distance    int     `json:"distance_m"`
+	BiasCurrent float64 `json:"bias_current_ma"`
 	BytesUp     uint64  `json:"bytes_up"`
 	BytesDown   uint64  `json:"bytes_down"`
 }
@@ -574,6 +576,18 @@ func (a *Adapter) BulkScanONUsSNMP(ctx context.Context) ([]ONTStats, error) {
 	voltages, err := a.snmpExecutor.WalkSNMP(ctx, OIDOnuVoltage)
 	if err != nil {
 		voltages = make(map[string]interface{})
+	}
+
+	// Walk distance
+	distances, err := a.snmpExecutor.WalkSNMP(ctx, OIDOnuDistance)
+	if err != nil {
+		distances = make(map[string]interface{})
+	}
+
+	// Walk bias current
+	biasCurrents, err := a.snmpExecutor.WalkSNMP(ctx, OIDOnuCurrent)
+	if err != nil {
+		biasCurrents = make(map[string]interface{})
 	}
 
 	// Walk traffic counters
@@ -634,11 +648,11 @@ func (a *Adapter) BulkScanONUsSNMP(ctx context.Context) ([]ONTStats, error) {
 			}
 		}
 
-		// Temperature
+		// Temperature (convert from raw to Celsius)
 		if tempVal, ok := temperatures[index]; ok {
 			if tempRaw, ok := tempVal.(int64); ok {
 				if tempRaw != SNMPInvalidValue {
-					onu.Temperature = tempRaw
+					onu.Temperature = ConvertTemperature(tempRaw)
 				}
 			}
 		}
@@ -648,6 +662,22 @@ func (a *Adapter) BulkScanONUsSNMP(ctx context.Context) ([]ONTStats, error) {
 			if voltRaw, ok := voltVal.(int64); ok {
 				if voltRaw != SNMPInvalidValue {
 					onu.Voltage = ConvertVoltage(voltRaw)
+				}
+			}
+		}
+
+		// Distance
+		if distVal, ok := distances[index]; ok {
+			if distRaw, ok := distVal.(int64); ok {
+				onu.Distance = int(distRaw)
+			}
+		}
+
+		// Bias current (convert from µA to mA)
+		if biasVal, ok := biasCurrents[index]; ok {
+			if biasRaw, ok := biasVal.(int64); ok {
+				if biasRaw != SNMPInvalidValue {
+					onu.BiasCurrent = float64(biasRaw) / 1000.0
 				}
 			}
 		}
@@ -1041,11 +1071,12 @@ func (a *Adapter) GetONUList(ctx context.Context, filter *types.ONUFilter) ([]ty
 			IsOnline:    ont.IsOnline,
 			RxPowerDBm:  ont.RxPower,
 			TxPowerDBm:  ont.TxPower,
-			DistanceM:   0, // TODO: Query distance OID if needed
+			DistanceM:   ont.Distance,
 			VLAN:        0, // Not available from bulk scan
 			Vendor:      "huawei",
-			Temperature: float64(ont.Temperature),
+			Temperature: ont.Temperature,
 			Voltage:     ont.Voltage,
+			BiasCurrent: ont.BiasCurrent,
 			BytesUp:     ont.BytesUp,
 			BytesDown:   ont.BytesDown,
 			Metadata: map[string]interface{}{
@@ -1247,24 +1278,27 @@ func (a *Adapter) GetOLTStatus(ctx context.Context) (*types.OLTStatus, error) {
 
 	// Try to get system information via SNMP
 	if a.snmpExecutor != nil {
-		// Query standard system OIDs
+		// Query standard MIB-II system OIDs and Huawei SmartAX telemetry OIDs
 		systemOIDs := []string{
-			"1.3.6.1.2.1.1.1.0", // sysDescr
-			"1.3.6.1.2.1.1.3.0", // sysUpTime
-			"1.3.6.1.2.1.1.5.0", // sysName
+			OIDSysDescr,
+			OIDSysUpTime,
+			OIDSysName,
+			OIDSmartAXCPU,
+			OIDSmartAXMemory,
+			OIDSmartAXTemperature,
 		}
 
 		results, err := a.snmpExecutor.BulkGetSNMP(ctx, systemOIDs)
 		if err == nil {
 			// Parse uptime (in hundredths of seconds)
-			if uptime, ok := results["1.3.6.1.2.1.1.3.0"]; ok {
-				if uptimeVal, ok := uptime.(uint64); ok {
+			if uptime, ok := GetSNMPResult(results, OIDSysUpTime); ok {
+				if uptimeVal, ok := ParseNumericSNMPValue(uptime); ok {
 					status.UptimeSeconds = int64(uptimeVal / 100)
 				}
 			}
 
 			// Parse firmware from sysDescr
-			if descr, ok := results["1.3.6.1.2.1.1.1.0"]; ok {
+			if descr, ok := GetSNMPResult(results, OIDSysDescr); ok {
 				if descrStr, ok := descr.(string); ok {
 					status.Metadata["sys_descr"] = descrStr
 					// Try to extract version from description
@@ -1272,6 +1306,27 @@ func (a *Adapter) GetOLTStatus(ctx context.Context) (*types.OLTStatus, error) {
 					if match := versionRe.FindStringSubmatch(descrStr); len(match) > 1 {
 						status.Firmware = match[1]
 					}
+				}
+			}
+
+			// Parse CPU utilization
+			if cpu, ok := GetSNMPResult(results, OIDSmartAXCPU); ok {
+				if cpuVal, ok := ParseNumericSNMPValue(cpu); ok {
+					status.CPUPercent = cpuVal
+				}
+			}
+
+			// Parse memory utilization
+			if mem, ok := GetSNMPResult(results, OIDSmartAXMemory); ok {
+				if memVal, ok := ParseNumericSNMPValue(mem); ok {
+					status.MemoryPercent = memVal
+				}
+			}
+
+			// Parse board temperature
+			if temp, ok := GetSNMPResult(results, OIDSmartAXTemperature); ok {
+				if tempVal, ok := ParseNumericSNMPValue(temp); ok {
+					status.Temperature = tempVal
 				}
 			}
 		}
