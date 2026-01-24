@@ -1340,9 +1340,75 @@ func (a *Adapter) GetOLTStatus(ctx context.Context) (*types.OLTStatus, error) {
 
 // GetPONPower returns optical power readings for a PON port.
 func (a *Adapter) GetPONPower(ctx context.Context, ponPort string) (*types.PONPowerReading, error) {
-	// TODO: Implement PON port optical power query via SNMP
-	// This requires querying interface transceiver OIDs
-	return nil, fmt.Errorf("GetPONPower not yet implemented for Huawei")
+	if a.snmpExecutor == nil {
+		return nil, fmt.Errorf("SNMP executor not available - Huawei requires SNMP for PON power query")
+	}
+
+	// Parse PON port (format: frame/slot/port)
+	parts := strings.Split(ponPort, "/")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid PON port format: %s (expected frame/slot/port)", ponPort)
+	}
+
+	frame, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return nil, fmt.Errorf("invalid frame number: %s", parts[0])
+	}
+	slot, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("invalid slot number: %s", parts[1])
+	}
+	port, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return nil, fmt.Errorf("invalid port number: %s", parts[2])
+	}
+
+	// Build SNMP index (portIndex = (frame << 16) | (slot << 8) | port)
+	portIndex := (frame << 16) | (slot << 8) | port
+
+	// Query OLT PON port optical parameters
+	oids := []string{
+		fmt.Sprintf("%s.%d", OIDOltPonTxPower, portIndex),
+		fmt.Sprintf("%s.%d", OIDOltPonTemperature, portIndex),
+		fmt.Sprintf("%s.%d", OIDOltPonVoltage, portIndex),
+	}
+
+	results, err := a.snmpExecutor.BulkGetSNMP(ctx, oids)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get PON power: %w", err)
+	}
+
+	reading := &types.PONPowerReading{
+		PONPort:   ponPort,
+		Timestamp: time.Now(),
+		Metadata:  make(map[string]interface{}),
+	}
+
+	// Parse Tx power (value * 0.01 dBm)
+	if val, ok := GetSNMPResult(results, oids[0]); ok {
+		if v, ok := ParseNumericSNMPValue(val); ok {
+			reading.TxPowerDBm = ConvertOpticalPower(int64(v))
+		}
+	}
+
+	// Parse temperature (value / 256 = °C)
+	if val, ok := GetSNMPResult(results, oids[1]); ok {
+		if v, ok := ParseNumericSNMPValue(val); ok {
+			reading.Temperature = ConvertTemperature(int64(v))
+		}
+	}
+
+	// Parse voltage (value * 0.001 V)
+	if val, ok := GetSNMPResult(results, oids[2]); ok {
+		if v, ok := ParseNumericSNMPValue(val); ok {
+			reading.Metadata["voltage_v"] = ConvertVoltage(int64(v))
+		}
+	}
+
+	reading.Metadata["port_index"] = portIndex
+	reading.Metadata["source"] = "snmp"
+
+	return reading, nil
 }
 
 // GetONUPower returns optical power readings for a specific ONU.
@@ -1382,9 +1448,52 @@ func (a *Adapter) GetONUPower(ctx context.Context, ponPort string, onuID int) (*
 
 // GetONUDistance returns estimated fiber distance to ONU in meters.
 func (a *Adapter) GetONUDistance(ctx context.Context, ponPort string, onuID int) (int, error) {
-	// TODO: Query Huawei distance OID via SNMP
-	// OID: OIDOnuDistance (already defined in snmp_oids.go)
-	return -1, fmt.Errorf("GetONUDistance not yet implemented for Huawei")
+	if a.snmpExecutor == nil {
+		return -1, fmt.Errorf("SNMP executor not available - Huawei requires SNMP for distance query")
+	}
+
+	// Parse PON port (format: frame/slot/port)
+	parts := strings.Split(ponPort, "/")
+	if len(parts) != 3 {
+		return -1, fmt.Errorf("invalid PON port format: %s (expected frame/slot/port)", ponPort)
+	}
+
+	frame, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return -1, fmt.Errorf("invalid frame number: %s", parts[0])
+	}
+	slot, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return -1, fmt.Errorf("invalid slot number: %s", parts[1])
+	}
+	port, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return -1, fmt.Errorf("invalid port number: %s", parts[2])
+	}
+
+	// Build SNMP index (Huawei format: portIndex.onuID)
+	// portIndex = (frame << 16) | (slot << 8) | port
+	portIndex := (frame << 16) | (slot << 8) | port
+	snmpIndex := fmt.Sprintf("%d.%d", portIndex, onuID)
+
+	oid := fmt.Sprintf("%s.%s", OIDOnuDistance, snmpIndex)
+	result, err := a.snmpExecutor.GetSNMP(ctx, oid)
+	if err != nil {
+		return -1, fmt.Errorf("failed to get ONU distance: %w", err)
+	}
+
+	// Parse result - distance is in meters
+	if dist, ok := result.(int64); ok {
+		return int(dist), nil
+	}
+	if dist, ok := result.(int); ok {
+		return dist, nil
+	}
+	if dist, ok := result.(uint64); ok {
+		return int(dist), nil
+	}
+
+	return -1, nil
 }
 
 // RestartONU triggers a reboot of the specified ONU.
@@ -1419,27 +1528,220 @@ func (a *Adapter) RestartONU(ctx context.Context, ponPort string, onuID int) err
 
 // ApplyProfile applies a bandwidth/service profile to an ONU.
 func (a *Adapter) ApplyProfile(ctx context.Context, ponPort string, onuID int, profile *types.ONUProfile) error {
-	// This would require creating a Subscriber object and calling UpdateSubscriber
-	// For now, not implemented as it requires more context
-	return fmt.Errorf("ApplyProfile not yet implemented for Huawei")
+	if a.cliExecutor == nil {
+		return fmt.Errorf("CLI executor not available - Huawei requires CLI for profile management")
+	}
+
+	if profile == nil {
+		return fmt.Errorf("profile cannot be nil")
+	}
+
+	// Parse PON port (format: frame/slot/port)
+	parts := strings.Split(ponPort, "/")
+	if len(parts) != 3 {
+		return fmt.Errorf("invalid PON port format: %s (expected frame/slot/port)", ponPort)
+	}
+
+	frame, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return fmt.Errorf("invalid frame number: %s", parts[0])
+	}
+	slot, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return fmt.Errorf("invalid slot number: %s", parts[1])
+	}
+	port, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return fmt.Errorf("invalid port number: %s", parts[2])
+	}
+
+	commands := []string{
+		"enable",
+		"config",
+		fmt.Sprintf("interface gpon %d/%d", frame, slot),
+	}
+
+	// Update line profile if specified
+	if profile.LineProfile != "" {
+		// Try to use profile name directly (ont modify supports both name and ID)
+		commands = append(commands,
+			fmt.Sprintf("ont modify %d %d ont-lineprofile-name %s", port, onuID, profile.LineProfile))
+	}
+
+	// Update service profile if specified
+	if profile.ServiceProfile != "" {
+		commands = append(commands,
+			fmt.Sprintf("ont modify %d %d ont-srvprofile-name %s", port, onuID, profile.ServiceProfile))
+	}
+
+	// Update VLAN if specified
+	if profile.VLAN > 0 {
+		priority := profile.Priority
+		if priority < 0 || priority > 7 {
+			priority = 0
+		}
+		commands = append(commands,
+			fmt.Sprintf("ont port native-vlan %d %d eth 1 vlan %d priority %d", port, onuID, profile.VLAN, priority))
+	}
+
+	commands = append(commands, "quit")
+
+	// Apply bandwidth/traffic profile if specified
+	if profile.BandwidthDown > 0 || profile.BandwidthUp > 0 {
+		// Look up traffic table ID from profile metadata or use bandwidth-based ID
+		trafficTableID := 1
+		if profile.Metadata != nil {
+			if id, ok := profile.Metadata["traffic_table_id"].(int); ok {
+				trafficTableID = id
+			}
+		}
+		// Fallback: use bandwidth in Mbps as table ID (common Huawei convention)
+		if trafficTableID == 1 && profile.BandwidthDown > 0 {
+			trafficTableID = profile.BandwidthDown / 1000 // Convert kbps to Mbps
+			if trafficTableID == 0 {
+				trafficTableID = 1
+			}
+		}
+
+		commands = append(commands,
+			fmt.Sprintf("interface gpon %d/%d", frame, slot),
+			fmt.Sprintf("ont traffic-policy %d %d profile-id %d", port, onuID, trafficTableID),
+			"quit")
+	}
+
+	commands = append(commands, "quit")
+
+	outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
+	if err != nil {
+		output := strings.Join(outputs, "\n")
+		// Check for common errors
+		if strings.Contains(output, "does not exist") || strings.Contains(err.Error(), "does not exist") {
+			return &types.HumanError{
+				Code:    types.ErrCodeONUNotFound,
+				Message: fmt.Sprintf("ONT %d on port %s not found", onuID, ponPort),
+				Vendor:  "huawei",
+				Raw:     output,
+			}
+		}
+		if strings.Contains(output, "profile") && strings.Contains(output, "not exist") {
+			return &types.HumanError{
+				Code:    types.ErrCodeProfileNotFound,
+				Message: fmt.Sprintf("Profile not found: %s / %s", profile.LineProfile, profile.ServiceProfile),
+				Vendor:  "huawei",
+				Raw:     output,
+			}
+		}
+		return fmt.Errorf("failed to apply profile: %w", err)
+	}
+
+	return nil
 }
 
 // BulkProvision provisions multiple ONUs in a single session.
 func (a *Adapter) BulkProvision(ctx context.Context, operations []types.BulkProvisionOp) (*types.BulkResult, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available - Huawei requires CLI for provisioning")
+	}
+
 	result := &types.BulkResult{
 		Results: make([]types.BulkOpResult, len(operations)),
 	}
 
 	for i, op := range operations {
-		// This would require calling CreateSubscriber for each operation
-		// For now, return not implemented
-		result.Results[i] = types.BulkOpResult{
-			Serial:    op.Serial,
-			Success:   false,
-			Error:     "BulkProvision not yet implemented",
-			ErrorCode: "NOT_IMPLEMENTED",
+		opResult := types.BulkOpResult{
+			Serial:   op.Serial,
+			PONPort:  op.PONPort,
+			ONUID:    op.ONUID,
+			Metadata: make(map[string]interface{}),
 		}
-		result.Failed++
+
+		// Build subscriber from operation
+		subscriber := &model.Subscriber{
+			Name:        fmt.Sprintf("bulk-%s", op.Serial),
+			Annotations: make(map[string]string),
+			Spec: model.SubscriberSpec{
+				ONUSerial: op.Serial,
+			},
+		}
+
+		// Set PON port annotation
+		if op.PONPort != "" {
+			subscriber.Annotations["nanoncore.com/gpon-fsp"] = op.PONPort
+		}
+
+		// Set ONU ID annotation
+		if op.ONUID > 0 {
+			subscriber.Annotations["nanoncore.com/ont-id"] = strconv.Itoa(op.ONUID)
+		}
+
+		// Build tier from profile
+		var tier *model.ServiceTier
+		if op.Profile != nil {
+			subscriber.Spec.VLAN = op.Profile.VLAN
+
+			tier = &model.ServiceTier{
+				Name:        fmt.Sprintf("bulk-tier-%s", op.Serial),
+				Annotations: make(map[string]string),
+				Spec: model.ServiceTierSpec{
+					BandwidthDown: op.Profile.BandwidthDown / 1000, // Convert kbps to Mbps
+					BandwidthUp:   op.Profile.BandwidthUp / 1000,
+				},
+			}
+
+			// Set profile annotations if specified
+			if op.Profile.LineProfile != "" {
+				tier.Annotations["nanoncore.com/line-profile-name"] = op.Profile.LineProfile
+			}
+			if op.Profile.ServiceProfile != "" {
+				tier.Annotations["nanoncore.com/srv-profile-name"] = op.Profile.ServiceProfile
+			}
+		} else {
+			// Default tier with no bandwidth limits
+			tier = &model.ServiceTier{
+				Name: fmt.Sprintf("bulk-tier-%s", op.Serial),
+				Spec: model.ServiceTierSpec{
+					BandwidthDown: 100, // Default 100 Mbps
+					BandwidthUp:   50,  // Default 50 Mbps
+				},
+			}
+		}
+
+		// Call CreateSubscriber
+		subResult, err := a.CreateSubscriber(ctx, subscriber, tier)
+		if err != nil {
+			opResult.Success = false
+			opResult.Error = err.Error()
+
+			// Map error to code
+			switch {
+			case strings.Contains(err.Error(), "exists") || strings.Contains(err.Error(), "already"):
+				opResult.ErrorCode = types.ErrCodeONUExists
+			case strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not exist"):
+				opResult.ErrorCode = types.ErrCodeONUNotFound
+			case strings.Contains(err.Error(), "timeout"):
+				opResult.ErrorCode = types.ErrCodeTimeout
+			case strings.Contains(err.Error(), "serial"):
+				opResult.ErrorCode = types.ErrCodeInvalidSerial
+			default:
+				opResult.ErrorCode = types.ErrCodeUnknown
+			}
+
+			result.Failed++
+		} else {
+			opResult.Success = true
+			result.Succeeded++
+
+			// Extract ONU ID from result metadata
+			if subResult != nil && subResult.Metadata != nil {
+				if ontID, ok := subResult.Metadata["ont_id"].(int); ok {
+					opResult.ONUID = ontID
+				}
+				opResult.Metadata["session_id"] = subResult.SessionID
+				opResult.Metadata["interface"] = subResult.InterfaceName
+			}
+		}
+
+		result.Results[i] = opResult
 	}
 
 	return result, nil
@@ -1447,8 +1749,149 @@ func (a *Adapter) BulkProvision(ctx context.Context, operations []types.BulkProv
 
 // GetAlarms returns active alarms from the OLT.
 func (a *Adapter) GetAlarms(ctx context.Context) ([]types.OLTAlarm, error) {
-	// TODO: Parse "display alarm all" CLI output
-	return []types.OLTAlarm{}, nil // Return empty for now
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available - Huawei requires CLI for alarm query")
+	}
+
+	output, err := a.cliExecutor.ExecCommand(ctx, "display alarm active all")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get alarms: %w", err)
+	}
+
+	return a.parseAlarms(output), nil
+}
+
+// parseAlarms parses Huawei CLI output for active alarms.
+// Huawei alarm format varies by model, but typically:
+// Alarm ID   Severity   Type         Source            Time                    Description
+// 12345      Critical   LOS          0/0/1:5           2024-01-15 10:30:00    Loss of signal
+func (a *Adapter) parseAlarms(output string) []types.OLTAlarm {
+	alarms := []types.OLTAlarm{}
+
+	lines := strings.Split(output, "\n")
+	inTable := false
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+
+		// Skip empty lines and detect table start
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "-") {
+			inTable = true
+			continue
+		}
+		// Skip header lines
+		if strings.HasPrefix(line, "Alarm") || strings.HasPrefix(line, "alarm") ||
+			strings.Contains(line, "Severity") || strings.Contains(line, "Total") ||
+			strings.Contains(line, "No alarm") {
+			continue
+		}
+
+		if !inTable {
+			continue
+		}
+
+		// Parse alarm line
+		// Try to extract fields - format varies by Huawei model
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+
+		alarm := types.OLTAlarm{
+			ID:       fields[0],
+			Metadata: make(map[string]interface{}),
+		}
+
+		// Map severity
+		if len(fields) >= 2 {
+			severity := strings.ToLower(fields[1])
+			switch {
+			case strings.Contains(severity, "critical"):
+				alarm.Severity = "critical"
+			case strings.Contains(severity, "major"):
+				alarm.Severity = "major"
+			case strings.Contains(severity, "minor"):
+				alarm.Severity = "minor"
+			case strings.Contains(severity, "warning"):
+				alarm.Severity = "warning"
+			default:
+				alarm.Severity = "unknown"
+			}
+		}
+
+		// Map alarm type
+		if len(fields) >= 3 {
+			alarmType := strings.ToLower(fields[2])
+			switch {
+			case strings.Contains(alarmType, "los"):
+				alarm.Type = "los"
+				alarm.Source = "onu"
+			case strings.Contains(alarmType, "power"):
+				alarm.Type = "power"
+				alarm.Source = "onu"
+			case strings.Contains(alarmType, "dying"):
+				alarm.Type = "dying_gasp"
+				alarm.Source = "onu"
+			case strings.Contains(alarmType, "config"):
+				alarm.Type = "config"
+				alarm.Source = "system"
+			case strings.Contains(alarmType, "link"):
+				alarm.Type = "link"
+				alarm.Source = "port"
+			default:
+				alarm.Type = alarmType
+				alarm.Source = "unknown"
+			}
+		}
+
+		// Extract source ID (e.g., PON port or ONU identifier)
+		if len(fields) >= 4 {
+			alarm.SourceID = fields[3]
+			// Try to determine source type from ID format
+			if strings.Contains(alarm.SourceID, ":") {
+				// Format: 0/0/1:5 suggests ONU
+				alarm.Source = "onu"
+			} else if strings.Contains(alarm.SourceID, "/") {
+				// Format: 0/0/1 suggests port
+				alarm.Source = "port"
+			}
+		}
+
+		// Try to parse timestamp (format: YYYY-MM-DD HH:MM:SS)
+		for i := 4; i < len(fields)-1; i++ {
+			if len(fields[i]) == 10 && strings.Contains(fields[i], "-") {
+				// Found date part
+				if i+1 < len(fields) && strings.Contains(fields[i+1], ":") {
+					timeStr := fields[i] + " " + fields[i+1]
+					if t, err := time.Parse("2006-01-02 15:04:05", timeStr); err == nil {
+						alarm.RaisedAt = t
+					}
+					// Collect remaining fields as message
+					if i+2 < len(fields) {
+						alarm.Message = strings.Join(fields[i+2:], " ")
+					}
+					break
+				}
+			}
+		}
+
+		// If no timestamp found, use current time and build message from remaining fields
+		if alarm.RaisedAt.IsZero() {
+			alarm.RaisedAt = time.Now()
+			if len(fields) >= 5 {
+				alarm.Message = strings.Join(fields[4:], " ")
+			}
+		}
+
+		alarm.Metadata["raw_line"] = line
+
+		alarms = append(alarms, alarm)
+	}
+
+	return alarms
 }
 
 // ListPorts returns status for all PON ports on the OLT.
