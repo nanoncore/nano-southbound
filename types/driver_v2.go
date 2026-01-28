@@ -128,6 +128,9 @@ type ONUDiscovery struct {
 	// Vendor is the ONU vendor (optional, may differ from OLT vendor)
 	Vendor string `json:"vendor,omitempty"`
 
+	// State is the discovery state (e.g., "unknow" for V-SOL auto-find)
+	State string `json:"state,omitempty"`
+
 	// DistanceM is the estimated fiber distance in meters
 	DistanceM int `json:"distance_m,omitempty"`
 
