@@ -74,6 +74,41 @@ type DriverV2 interface {
 	// GetOLTStatus returns comprehensive OLT status including
 	// PON port status, resource utilization, and uptime.
 	GetOLTStatus(ctx context.Context) (*OLTStatus, error)
+
+	// === Port Management ===
+
+	// ListPorts returns status for all PON ports on the OLT.
+	ListPorts(ctx context.Context) ([]*PONPortStatus, error)
+
+	// SetPortState enables or disables a PON port administratively.
+	SetPortState(ctx context.Context, port string, enabled bool) error
+
+	// === VLAN Management ===
+
+	// ListVLANs returns all configured VLANs on the OLT.
+	ListVLANs(ctx context.Context) ([]VLANInfo, error)
+
+	// GetVLAN retrieves a specific VLAN by ID.
+	// Returns nil if not found.
+	GetVLAN(ctx context.Context, vlanID int) (*VLANInfo, error)
+
+	// CreateVLAN creates a new VLAN on the OLT.
+	CreateVLAN(ctx context.Context, req *CreateVLANRequest) error
+
+	// DeleteVLAN removes a VLAN from the OLT.
+	// If force is false, returns error if VLAN has associated service ports.
+	DeleteVLAN(ctx context.Context, vlanID int, force bool) error
+
+	// === Service Port Management ===
+
+	// ListServicePorts returns all service port configurations.
+	ListServicePorts(ctx context.Context) ([]ServicePort, error)
+
+	// AddServicePort creates a service port mapping between VLAN and ONU.
+	AddServicePort(ctx context.Context, req *AddServicePortRequest) error
+
+	// DeleteServicePort removes a service port mapping.
+	DeleteServicePort(ctx context.Context, ponPort string, ontID int) error
 }
 
 // ONUDiscovery represents an unprovisioned ONU found during discovery.
@@ -92,6 +127,9 @@ type ONUDiscovery struct {
 
 	// Vendor is the ONU vendor (optional, may differ from OLT vendor)
 	Vendor string `json:"vendor,omitempty"`
+
+	// State is the discovery state (e.g., "unknow" for V-SOL auto-find)
+	State string `json:"state,omitempty"`
 
 	// DistanceM is the estimated fiber distance in meters
 	DistanceM int `json:"distance_m,omitempty"`
@@ -504,6 +542,9 @@ type PONPortStatus struct {
 
 	// TxPowerDBm is the port transmit power
 	TxPowerDBm float64 `json:"tx_power_dbm,omitempty"`
+
+	// Description is the port description
+	Description string `json:"description,omitempty"`
 
 	// Metadata contains vendor-specific port data
 	Metadata map[string]interface{} `json:"metadata,omitempty"`

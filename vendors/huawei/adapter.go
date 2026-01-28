@@ -3,49 +3,125 @@ package huawei
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/nanoncore/nano-southbound/drivers/snmp"
 	"github.com/nanoncore/nano-southbound/model"
 	"github.com/nanoncore/nano-southbound/types"
 )
 
 // Adapter wraps a base driver with Huawei-specific logic
-// Huawei OLTs (MA5600T/MA5800-X series) primarily use CLI + SNMP
+// Huawei OLTs (MA5600T/MA5800-X series) require BOTH protocols:
+// - CLI for configuration (provisioning, deletion, updates)
+// - SNMP for monitoring (ONU listing, power readings, stats)
 type Adapter struct {
-	baseDriver   types.Driver
-	cliExecutor  types.CLIExecutor
-	snmpExecutor types.SNMPExecutor
-	config       *types.EquipmentConfig
+	baseDriver      types.Driver
+	secondaryDriver types.Driver // SNMP driver when primary is CLI
+	cliExecutor     types.CLIExecutor
+	snmpExecutor    types.SNMPExecutor
+	config          *types.EquipmentConfig
 }
 
 // NewAdapter creates a new Huawei adapter
+// If the base driver is CLI, it automatically creates an SNMP driver for monitoring
 func NewAdapter(baseDriver types.Driver, config *types.EquipmentConfig) types.Driver {
 	adapter := &Adapter{
 		baseDriver: baseDriver,
 		config:     config,
 	}
 
-	// Check if base driver supports CLI execution
+	// Extract executors from base driver
 	if executor, ok := baseDriver.(types.CLIExecutor); ok {
 		adapter.cliExecutor = executor
 	}
-
-	// Check if base driver supports SNMP execution
 	if executor, ok := baseDriver.(types.SNMPExecutor); ok {
 		adapter.snmpExecutor = executor
+	}
+
+	// Create secondary SNMP driver if base is CLI and SNMP not available
+	if adapter.cliExecutor != nil && adapter.snmpExecutor == nil {
+		adapter.createSNMPDriver()
 	}
 
 	return adapter
 }
 
+// createSNMPDriver creates an SNMP driver for monitoring operations
+func (a *Adapter) createSNMPDriver() {
+	snmpConfig := *a.config
+	snmpConfig.Protocol = types.ProtocolSNMP
+
+	// Use secondary port or SNMP default (161)
+	if a.config.SecondaryPort > 0 {
+		snmpConfig.Port = a.config.SecondaryPort
+	} else {
+		snmpConfig.Port = 161
+	}
+
+	// Set SNMP metadata
+	if snmpConfig.Metadata == nil {
+		snmpConfig.Metadata = make(map[string]string)
+	}
+	community := a.config.SNMPCommunity
+	if community == "" {
+		community = "public"
+	}
+	snmpConfig.Metadata["snmp_community"] = community
+
+	version := a.config.SNMPVersion
+	if version == "" {
+		version = "2c"
+	}
+	snmpConfig.Metadata["snmp_version"] = version
+
+	snmpDriver, err := snmp.NewDriver(&snmpConfig)
+	if err != nil {
+		return // SNMP creation failed, continue without it
+	}
+
+	a.secondaryDriver = snmpDriver
+	if executor, ok := snmpDriver.(types.SNMPExecutor); ok {
+		a.snmpExecutor = executor
+	}
+}
+
 func (a *Adapter) Connect(ctx context.Context, config *types.EquipmentConfig) error {
-	return a.baseDriver.Connect(ctx, config)
+	// Connect primary driver
+	if err := a.baseDriver.Connect(ctx, config); err != nil {
+		return fmt.Errorf("primary driver connect failed: %w", err)
+	}
+
+	// Connect secondary driver if present (uses its own config set during creation)
+	if a.secondaryDriver != nil {
+		// Create SNMP-specific config for secondary driver
+		snmpConfig := *a.config
+		snmpConfig.Protocol = types.ProtocolSNMP
+		if a.config.SecondaryPort > 0 {
+			snmpConfig.Port = a.config.SecondaryPort
+		} else {
+			snmpConfig.Port = 161
+		}
+		if err := a.secondaryDriver.Connect(ctx, &snmpConfig); err != nil {
+			// Log but don't fail - secondary is optional for some operations
+			// SNMP may not be required if only doing CLI operations
+			_ = err // Explicitly ignore error - secondary driver is optional
+		}
+	}
+
+	return nil
 }
 
 func (a *Adapter) Disconnect(ctx context.Context) error {
+	// Disconnect secondary driver first (if present)
+	if a.secondaryDriver != nil {
+		_ = a.secondaryDriver.Disconnect(ctx)
+	}
+
+	// Disconnect primary driver
 	return a.baseDriver.Disconnect(ctx)
 }
 
@@ -109,6 +185,9 @@ func (a *Adapter) buildProvisioningCommands(frame, slot, port, ontID int, serial
 	// Based on Huawei SmartAX MA5800-X series CLI documentation
 
 	commands := []string{
+		// Enter privileged exec mode first (required before config)
+		"enable",
+
 		// Enter global config mode
 		"config",
 
@@ -208,6 +287,7 @@ func (a *Adapter) DeleteSubscriber(ctx context.Context, subscriberID string) err
 	frame, slot, port, ontID := a.parseSubscriberID(subscriberID)
 
 	commands := []string{
+		"enable",
 		"config",
 		fmt.Sprintf("interface gpon %d/%d", frame, slot),
 
@@ -230,6 +310,7 @@ func (a *Adapter) SuspendSubscriber(ctx context.Context, subscriberID string) er
 	frame, slot, port, ontID := a.parseSubscriberID(subscriberID)
 
 	commands := []string{
+		"enable",
 		"config",
 		fmt.Sprintf("interface gpon %d/%d", frame, slot),
 
@@ -252,6 +333,7 @@ func (a *Adapter) ResumeSubscriber(ctx context.Context, subscriberID string) err
 	frame, slot, port, ontID := a.parseSubscriberID(subscriberID)
 
 	commands := []string{
+		"enable",
 		"config",
 		fmt.Sprintf("interface gpon %d/%d", frame, slot),
 
@@ -451,8 +533,10 @@ type ONTStats struct {
 	IsOnline    bool    `json:"is_online"`
 	RxPower     float64 `json:"rx_power_dbm"`
 	TxPower     float64 `json:"tx_power_dbm"`
-	Temperature int64   `json:"temperature_c"`
+	Temperature float64 `json:"temperature_c"`
 	Voltage     float64 `json:"voltage_v"`
+	Distance    int     `json:"distance_m"`
+	BiasCurrent float64 `json:"bias_current_ma"`
 	BytesUp     uint64  `json:"bytes_up"`
 	BytesDown   uint64  `json:"bytes_down"`
 }
@@ -495,6 +579,18 @@ func (a *Adapter) BulkScanONUsSNMP(ctx context.Context) ([]ONTStats, error) {
 		voltages = make(map[string]interface{})
 	}
 
+	// Walk distance
+	distances, err := a.snmpExecutor.WalkSNMP(ctx, OIDOnuDistance)
+	if err != nil {
+		distances = make(map[string]interface{})
+	}
+
+	// Walk bias current
+	biasCurrents, err := a.snmpExecutor.WalkSNMP(ctx, OIDOnuCurrent)
+	if err != nil {
+		biasCurrents = make(map[string]interface{})
+	}
+
 	// Walk traffic counters
 	upBytes, err := a.snmpExecutor.WalkSNMP(ctx, OIDOnuUpBytes)
 	if err != nil {
@@ -519,12 +615,16 @@ func (a *Adapter) BulkScanONUsSNMP(ctx context.Context) ([]ONTStats, error) {
 		serial := DecodeHexSerial(hexSerial)
 
 		// Parse index to get frame/slot/port/onuID
-		slot, port, onuID := ParseONUIndex(index)
+		frame, slot, port, onuID, err := ParseONUIndex(index)
+		if err != nil {
+			slog.Debug("failed to parse ONU index", "index", index, "error", err)
+			continue
+		}
 
 		onu := ONTStats{
 			Index:  index,
 			Serial: serial,
-			Frame:  0, // Usually 0 for single-frame OLTs
+			Frame:  frame,
 			Slot:   slot,
 			Port:   port,
 			ONUID:  onuID,
@@ -549,11 +649,11 @@ func (a *Adapter) BulkScanONUsSNMP(ctx context.Context) ([]ONTStats, error) {
 			}
 		}
 
-		// Temperature
+		// Temperature (convert from raw to Celsius)
 		if tempVal, ok := temperatures[index]; ok {
 			if tempRaw, ok := tempVal.(int64); ok {
 				if tempRaw != SNMPInvalidValue {
-					onu.Temperature = tempRaw
+					onu.Temperature = ConvertTemperature(tempRaw)
 				}
 			}
 		}
@@ -563,6 +663,22 @@ func (a *Adapter) BulkScanONUsSNMP(ctx context.Context) ([]ONTStats, error) {
 			if voltRaw, ok := voltVal.(int64); ok {
 				if voltRaw != SNMPInvalidValue {
 					onu.Voltage = ConvertVoltage(voltRaw)
+				}
+			}
+		}
+
+		// Distance
+		if distVal, ok := distances[index]; ok {
+			if distRaw, ok := distVal.(int64); ok {
+				onu.Distance = int(distRaw)
+			}
+		}
+
+		// Bias current (convert from µA to mA)
+		if biasVal, ok := biasCurrents[index]; ok {
+			if biasRaw, ok := biasVal.(int64); ok {
+				if biasRaw != SNMPInvalidValue {
+					onu.BiasCurrent = float64(biasRaw) / 1000.0
 				}
 			}
 		}
@@ -610,9 +726,18 @@ func (a *Adapter) parseAutofindOutput(output string) []ONTDiscovery {
 				continue
 			}
 
-			frame, _ := strconv.Atoi(fspParts[0])
-			slot, _ := strconv.Atoi(fspParts[1])
-			port, _ := strconv.Atoi(fspParts[2])
+			frame, err := strconv.Atoi(fspParts[0])
+			if err != nil {
+				continue // skip entries with invalid F/S/P data
+			}
+			slot, err := strconv.Atoi(fspParts[1])
+			if err != nil {
+				continue
+			}
+			port, err := strconv.Atoi(fspParts[2])
+			if err != nil {
+				continue
+			}
 
 			discovery := ONTDiscovery{
 				Frame:     frame,
@@ -785,7 +910,7 @@ func (a *Adapter) detectModel() string {
 func (a *Adapter) parseFSP(subscriber *model.Subscriber) (frame, slot, port int) {
 	// Default values
 	frame = 0
-	slot = 1
+	slot = 0
 	port = 0
 
 	// Check subscriber annotations
@@ -793,8 +918,16 @@ func (a *Adapter) parseFSP(subscriber *model.Subscriber) (frame, slot, port int)
 		return
 	}
 
-	// nanoncore.com/gpon-fsp: "0/1/0"
-	if fsp, ok := subscriber.Annotations["nanoncore.com/gpon-fsp"]; ok {
+	// Check for FSP in annotations (support both annotation formats)
+	// Format: "0/0/1" or "0/1/0" (frame/slot/port)
+	fsp := ""
+	if v, ok := subscriber.Annotations["nanoncore.com/gpon-fsp"]; ok {
+		fsp = v
+	} else if v, ok := subscriber.Annotations["nano.io/pon-port"]; ok {
+		fsp = v
+	}
+
+	if fsp != "" {
 		parts := strings.Split(fsp, "/")
 		if len(parts) == 3 {
 			frame, _ = strconv.Atoi(parts[0])
@@ -808,9 +941,16 @@ func (a *Adapter) parseFSP(subscriber *model.Subscriber) (frame, slot, port int)
 
 // getONTID extracts or generates ONT ID
 func (a *Adapter) getONTID(subscriber *model.Subscriber) int {
-	// Check subscriber annotations
+	// Check subscriber annotations (support both annotation formats)
 	if subscriber.Annotations != nil {
+		// Try nanoncore.com/ont-id first
 		if idStr, ok := subscriber.Annotations["nanoncore.com/ont-id"]; ok {
+			if id, err := strconv.Atoi(idStr); err == nil {
+				return id
+			}
+		}
+		// Try nano.io/onu-id
+		if idStr, ok := subscriber.Annotations["nano.io/onu-id"]; ok {
 			if id, err := strconv.Atoi(idStr); err == nil {
 				return id
 			}
@@ -822,6 +962,9 @@ func (a *Adapter) getONTID(subscriber *model.Subscriber) int {
 
 // getLineProfileID returns the line profile ID for a service tier
 func (a *Adapter) getLineProfileID(tier *model.ServiceTier) int {
+	if tier == nil {
+		return 1 // default profile ID
+	}
 	// Check tier annotations for custom profile ID
 	if tier.Annotations != nil {
 		if idStr, ok := tier.Annotations["nanoncore.com/line-profile-id"]; ok {
@@ -836,6 +979,9 @@ func (a *Adapter) getLineProfileID(tier *model.ServiceTier) int {
 
 // getServiceProfileID returns the service profile ID for a service tier
 func (a *Adapter) getServiceProfileID(tier *model.ServiceTier) int {
+	if tier == nil {
+		return 1 // default service profile ID
+	}
 	// Check tier annotations for custom profile ID
 	if tier.Annotations != nil {
 		if idStr, ok := tier.Annotations["nanoncore.com/srv-profile-id"]; ok {
@@ -850,6 +996,9 @@ func (a *Adapter) getServiceProfileID(tier *model.ServiceTier) int {
 
 // getTrafficTableID returns the traffic table ID for a service tier
 func (a *Adapter) getTrafficTableID(tier *model.ServiceTier) int {
+	if tier == nil {
+		return 1 // default traffic table ID
+	}
 	// Check tier annotations for custom traffic table ID
 	if tier.Annotations != nil {
 		if idStr, ok := tier.Annotations["nanoncore.com/traffic-table-id"]; ok {
@@ -905,8 +1054,8 @@ func (a *Adapter) GetONUList(ctx context.Context, filter *types.ONUFilter) ([]ty
 	// Convert to DriverV2 format
 	results := make([]types.ONUInfo, 0, len(onts))
 	for _, ont := range onts {
-		// Build PON port identifier
-		ponPort := fmt.Sprintf("%d/%d", ont.Slot, ont.Port)
+		// Build PON port identifier (frame/slot/port format)
+		ponPort := fmt.Sprintf("%d/%d/%d", ont.Frame, ont.Slot, ont.Port)
 
 		// Map operational state
 		operState := "offline"
@@ -915,25 +1064,27 @@ func (a *Adapter) GetONUList(ctx context.Context, filter *types.ONUFilter) ([]ty
 		}
 
 		info := types.ONUInfo{
-			PONPort:    ponPort,
-			ONUID:      ont.ONUID,
-			Serial:     ont.Serial,
-			AdminState: "enabled", // Assume enabled if provisioned
-			OperState:  operState,
-			IsOnline:   ont.IsOnline,
-			RxPowerDBm: ont.RxPower,
-			TxPowerDBm: ont.TxPower,
-			DistanceM:  0, // TODO: Query distance OID if needed
-			VLAN:       0, // Not available from bulk scan
+			PONPort:     ponPort,
+			ONUID:       ont.ONUID,
+			Serial:      ont.Serial,
+			AdminState:  "enabled", // Assume enabled if provisioned
+			OperState:   operState,
+			IsOnline:    ont.IsOnline,
+			RxPowerDBm:  ont.RxPower,
+			TxPowerDBm:  ont.TxPower,
+			DistanceM:   ont.Distance,
+			VLAN:        0, // Not available from bulk scan
+			Vendor:      "huawei",
+			Temperature: ont.Temperature,
+			Voltage:     ont.Voltage,
+			BiasCurrent: ont.BiasCurrent,
+			BytesUp:     ont.BytesUp,
+			BytesDown:   ont.BytesDown,
 			Metadata: map[string]interface{}{
-				"frame":       ont.Frame,
-				"slot":        ont.Slot,
-				"port":        ont.Port,
-				"snmp_index":  ont.Index,
-				"temperature": ont.Temperature,
-				"voltage":     ont.Voltage,
-				"bytes_up":    ont.BytesUp,
-				"bytes_down":  ont.BytesDown,
+				"frame":      ont.Frame,
+				"slot":       ont.Slot,
+				"port":       ont.Port,
+				"snmp_index": ont.Index,
 			},
 		}
 
@@ -1128,24 +1279,27 @@ func (a *Adapter) GetOLTStatus(ctx context.Context) (*types.OLTStatus, error) {
 
 	// Try to get system information via SNMP
 	if a.snmpExecutor != nil {
-		// Query standard system OIDs
+		// Query standard MIB-II system OIDs and Huawei SmartAX telemetry OIDs
 		systemOIDs := []string{
-			"1.3.6.1.2.1.1.1.0", // sysDescr
-			"1.3.6.1.2.1.1.3.0", // sysUpTime
-			"1.3.6.1.2.1.1.5.0", // sysName
+			OIDSysDescr,
+			OIDSysUpTime,
+			OIDSysName,
+			OIDSmartAXCPU,
+			OIDSmartAXMemory,
+			OIDSmartAXTemperature,
 		}
 
 		results, err := a.snmpExecutor.BulkGetSNMP(ctx, systemOIDs)
 		if err == nil {
 			// Parse uptime (in hundredths of seconds)
-			if uptime, ok := results["1.3.6.1.2.1.1.3.0"]; ok {
-				if uptimeVal, ok := uptime.(uint64); ok {
+			if uptime, ok := GetSNMPResult(results, OIDSysUpTime); ok {
+				if uptimeVal, ok := ParseNumericSNMPValue(uptime); ok {
 					status.UptimeSeconds = int64(uptimeVal / 100)
 				}
 			}
 
 			// Parse firmware from sysDescr
-			if descr, ok := results["1.3.6.1.2.1.1.1.0"]; ok {
+			if descr, ok := GetSNMPResult(results, OIDSysDescr); ok {
 				if descrStr, ok := descr.(string); ok {
 					status.Metadata["sys_descr"] = descrStr
 					// Try to extract version from description
@@ -1153,6 +1307,27 @@ func (a *Adapter) GetOLTStatus(ctx context.Context) (*types.OLTStatus, error) {
 					if match := versionRe.FindStringSubmatch(descrStr); len(match) > 1 {
 						status.Firmware = match[1]
 					}
+				}
+			}
+
+			// Parse CPU utilization
+			if cpu, ok := GetSNMPResult(results, OIDSmartAXCPU); ok {
+				if cpuVal, ok := ParseNumericSNMPValue(cpu); ok {
+					status.CPUPercent = cpuVal
+				}
+			}
+
+			// Parse memory utilization
+			if mem, ok := GetSNMPResult(results, OIDSmartAXMemory); ok {
+				if memVal, ok := ParseNumericSNMPValue(mem); ok {
+					status.MemoryPercent = memVal
+				}
+			}
+
+			// Parse board temperature
+			if temp, ok := GetSNMPResult(results, OIDSmartAXTemperature); ok {
+				if tempVal, ok := ParseNumericSNMPValue(temp); ok {
+					status.Temperature = tempVal
 				}
 			}
 		}
@@ -1166,9 +1341,75 @@ func (a *Adapter) GetOLTStatus(ctx context.Context) (*types.OLTStatus, error) {
 
 // GetPONPower returns optical power readings for a PON port.
 func (a *Adapter) GetPONPower(ctx context.Context, ponPort string) (*types.PONPowerReading, error) {
-	// TODO: Implement PON port optical power query via SNMP
-	// This requires querying interface transceiver OIDs
-	return nil, fmt.Errorf("GetPONPower not yet implemented for Huawei")
+	if a.snmpExecutor == nil {
+		return nil, fmt.Errorf("SNMP executor not available - Huawei requires SNMP for PON power query")
+	}
+
+	// Parse PON port (format: frame/slot/port)
+	parts := strings.Split(ponPort, "/")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid PON port format: %s (expected frame/slot/port)", ponPort)
+	}
+
+	frame, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return nil, fmt.Errorf("invalid frame number: %s", parts[0])
+	}
+	slot, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return nil, fmt.Errorf("invalid slot number: %s", parts[1])
+	}
+	port, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return nil, fmt.Errorf("invalid port number: %s", parts[2])
+	}
+
+	// Build SNMP index (portIndex = (frame << 16) | (slot << 8) | port)
+	portIndex := (frame << 16) | (slot << 8) | port
+
+	// Query OLT PON port optical parameters
+	oids := []string{
+		fmt.Sprintf("%s.%d", OIDOltPonTxPower, portIndex),
+		fmt.Sprintf("%s.%d", OIDOltPonTemperature, portIndex),
+		fmt.Sprintf("%s.%d", OIDOltPonVoltage, portIndex),
+	}
+
+	results, err := a.snmpExecutor.BulkGetSNMP(ctx, oids)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get PON power: %w", err)
+	}
+
+	reading := &types.PONPowerReading{
+		PONPort:   ponPort,
+		Timestamp: time.Now(),
+		Metadata:  make(map[string]interface{}),
+	}
+
+	// Parse Tx power (value * 0.01 dBm)
+	if val, ok := GetSNMPResult(results, oids[0]); ok {
+		if v, ok := ParseNumericSNMPValue(val); ok {
+			reading.TxPowerDBm = ConvertOpticalPower(int64(v))
+		}
+	}
+
+	// Parse temperature (value / 256 = °C)
+	if val, ok := GetSNMPResult(results, oids[1]); ok {
+		if v, ok := ParseNumericSNMPValue(val); ok {
+			reading.Temperature = ConvertTemperature(int64(v))
+		}
+	}
+
+	// Parse voltage (value * 0.001 V)
+	if val, ok := GetSNMPResult(results, oids[2]); ok {
+		if v, ok := ParseNumericSNMPValue(val); ok {
+			reading.Metadata["voltage_v"] = ConvertVoltage(int64(v))
+		}
+	}
+
+	reading.Metadata["port_index"] = portIndex
+	reading.Metadata["source"] = "snmp"
+
+	return reading, nil
 }
 
 // GetONUPower returns optical power readings for a specific ONU.
@@ -1208,9 +1449,52 @@ func (a *Adapter) GetONUPower(ctx context.Context, ponPort string, onuID int) (*
 
 // GetONUDistance returns estimated fiber distance to ONU in meters.
 func (a *Adapter) GetONUDistance(ctx context.Context, ponPort string, onuID int) (int, error) {
-	// TODO: Query Huawei distance OID via SNMP
-	// OID: OIDOnuDistance (already defined in snmp_oids.go)
-	return -1, fmt.Errorf("GetONUDistance not yet implemented for Huawei")
+	if a.snmpExecutor == nil {
+		return -1, fmt.Errorf("SNMP executor not available - Huawei requires SNMP for distance query")
+	}
+
+	// Parse PON port (format: frame/slot/port)
+	parts := strings.Split(ponPort, "/")
+	if len(parts) != 3 {
+		return -1, fmt.Errorf("invalid PON port format: %s (expected frame/slot/port)", ponPort)
+	}
+
+	frame, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return -1, fmt.Errorf("invalid frame number: %s", parts[0])
+	}
+	slot, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return -1, fmt.Errorf("invalid slot number: %s", parts[1])
+	}
+	port, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return -1, fmt.Errorf("invalid port number: %s", parts[2])
+	}
+
+	// Build SNMP index (Huawei format: portIndex.onuID)
+	// portIndex = (frame << 16) | (slot << 8) | port
+	portIndex := (frame << 16) | (slot << 8) | port
+	snmpIndex := fmt.Sprintf("%d.%d", portIndex, onuID)
+
+	oid := fmt.Sprintf("%s.%s", OIDOnuDistance, snmpIndex)
+	result, err := a.snmpExecutor.GetSNMP(ctx, oid)
+	if err != nil {
+		return -1, fmt.Errorf("failed to get ONU distance: %w", err)
+	}
+
+	// Parse result - distance is in meters
+	if dist, ok := result.(int64); ok {
+		return int(dist), nil
+	}
+	if dist, ok := result.(int); ok {
+		return dist, nil
+	}
+	if dist, ok := result.(uint64); ok {
+		return int(dist), nil
+	}
+
+	return -1, nil
 }
 
 // RestartONU triggers a reboot of the specified ONU.
@@ -1219,19 +1503,22 @@ func (a *Adapter) RestartONU(ctx context.Context, ponPort string, onuID int) err
 		return fmt.Errorf("CLI executor not available")
 	}
 
-	// Parse PON port
+	// Parse PON port (format: frame/slot/port, e.g., "0/0/1")
 	parts := strings.Split(ponPort, "/")
-	if len(parts) != 2 {
-		return fmt.Errorf("invalid PON port format: %s (expected slot/port)", ponPort)
+	if len(parts) != 3 {
+		return fmt.Errorf("invalid PON port format: %s (expected frame/slot/port)", ponPort)
 	}
 
-	slot, _ := strconv.Atoi(parts[0])
-	port, _ := strconv.Atoi(parts[1])
+	frame, _ := strconv.Atoi(parts[0])
+	slot, _ := strconv.Atoi(parts[1])
+	port, _ := strconv.Atoi(parts[2])
 
 	commands := []string{
+		"enable",
 		"config",
-		fmt.Sprintf("interface gpon %d/%d", slot, port),
+		fmt.Sprintf("interface gpon %d/%d", frame, slot),
 		fmt.Sprintf("ont reset %d %d", port, onuID),
+		"quit",
 		"quit",
 		"quit",
 	}
@@ -1242,27 +1529,220 @@ func (a *Adapter) RestartONU(ctx context.Context, ponPort string, onuID int) err
 
 // ApplyProfile applies a bandwidth/service profile to an ONU.
 func (a *Adapter) ApplyProfile(ctx context.Context, ponPort string, onuID int, profile *types.ONUProfile) error {
-	// This would require creating a Subscriber object and calling UpdateSubscriber
-	// For now, not implemented as it requires more context
-	return fmt.Errorf("ApplyProfile not yet implemented for Huawei")
+	if a.cliExecutor == nil {
+		return fmt.Errorf("CLI executor not available - Huawei requires CLI for profile management")
+	}
+
+	if profile == nil {
+		return fmt.Errorf("profile cannot be nil")
+	}
+
+	// Parse PON port (format: frame/slot/port)
+	parts := strings.Split(ponPort, "/")
+	if len(parts) != 3 {
+		return fmt.Errorf("invalid PON port format: %s (expected frame/slot/port)", ponPort)
+	}
+
+	frame, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return fmt.Errorf("invalid frame number: %s", parts[0])
+	}
+	slot, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return fmt.Errorf("invalid slot number: %s", parts[1])
+	}
+	port, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return fmt.Errorf("invalid port number: %s", parts[2])
+	}
+
+	commands := []string{
+		"enable",
+		"config",
+		fmt.Sprintf("interface gpon %d/%d", frame, slot),
+	}
+
+	// Update line profile if specified
+	if profile.LineProfile != "" {
+		// Try to use profile name directly (ont modify supports both name and ID)
+		commands = append(commands,
+			fmt.Sprintf("ont modify %d %d ont-lineprofile-name %s", port, onuID, profile.LineProfile))
+	}
+
+	// Update service profile if specified
+	if profile.ServiceProfile != "" {
+		commands = append(commands,
+			fmt.Sprintf("ont modify %d %d ont-srvprofile-name %s", port, onuID, profile.ServiceProfile))
+	}
+
+	// Update VLAN if specified
+	if profile.VLAN > 0 {
+		priority := profile.Priority
+		if priority < 0 || priority > 7 {
+			priority = 0
+		}
+		commands = append(commands,
+			fmt.Sprintf("ont port native-vlan %d %d eth 1 vlan %d priority %d", port, onuID, profile.VLAN, priority))
+	}
+
+	commands = append(commands, "quit")
+
+	// Apply bandwidth/traffic profile if specified
+	if profile.BandwidthDown > 0 || profile.BandwidthUp > 0 {
+		// Look up traffic table ID from profile metadata or use bandwidth-based ID
+		trafficTableID := 1
+		if profile.Metadata != nil {
+			if id, ok := profile.Metadata["traffic_table_id"].(int); ok {
+				trafficTableID = id
+			}
+		}
+		// Fallback: use bandwidth in Mbps as table ID (common Huawei convention)
+		if trafficTableID == 1 && profile.BandwidthDown > 0 {
+			trafficTableID = profile.BandwidthDown / 1000 // Convert kbps to Mbps
+			if trafficTableID == 0 {
+				trafficTableID = 1
+			}
+		}
+
+		commands = append(commands,
+			fmt.Sprintf("interface gpon %d/%d", frame, slot),
+			fmt.Sprintf("ont traffic-policy %d %d profile-id %d", port, onuID, trafficTableID),
+			"quit")
+	}
+
+	commands = append(commands, "quit")
+
+	outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
+	if err != nil {
+		output := strings.Join(outputs, "\n")
+		// Check for common errors
+		if strings.Contains(output, "does not exist") || strings.Contains(err.Error(), "does not exist") {
+			return &types.HumanError{
+				Code:    types.ErrCodeONUNotFound,
+				Message: fmt.Sprintf("ONT %d on port %s not found", onuID, ponPort),
+				Vendor:  "huawei",
+				Raw:     output,
+			}
+		}
+		if strings.Contains(output, "profile") && strings.Contains(output, "not exist") {
+			return &types.HumanError{
+				Code:    types.ErrCodeProfileNotFound,
+				Message: fmt.Sprintf("Profile not found: %s / %s", profile.LineProfile, profile.ServiceProfile),
+				Vendor:  "huawei",
+				Raw:     output,
+			}
+		}
+		return fmt.Errorf("failed to apply profile: %w", err)
+	}
+
+	return nil
 }
 
 // BulkProvision provisions multiple ONUs in a single session.
 func (a *Adapter) BulkProvision(ctx context.Context, operations []types.BulkProvisionOp) (*types.BulkResult, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available - Huawei requires CLI for provisioning")
+	}
+
 	result := &types.BulkResult{
 		Results: make([]types.BulkOpResult, len(operations)),
 	}
 
 	for i, op := range operations {
-		// This would require calling CreateSubscriber for each operation
-		// For now, return not implemented
-		result.Results[i] = types.BulkOpResult{
-			Serial:    op.Serial,
-			Success:   false,
-			Error:     "BulkProvision not yet implemented",
-			ErrorCode: "NOT_IMPLEMENTED",
+		opResult := types.BulkOpResult{
+			Serial:   op.Serial,
+			PONPort:  op.PONPort,
+			ONUID:    op.ONUID,
+			Metadata: make(map[string]interface{}),
 		}
-		result.Failed++
+
+		// Build subscriber from operation
+		subscriber := &model.Subscriber{
+			Name:        fmt.Sprintf("bulk-%s", op.Serial),
+			Annotations: make(map[string]string),
+			Spec: model.SubscriberSpec{
+				ONUSerial: op.Serial,
+			},
+		}
+
+		// Set PON port annotation
+		if op.PONPort != "" {
+			subscriber.Annotations["nanoncore.com/gpon-fsp"] = op.PONPort
+		}
+
+		// Set ONU ID annotation
+		if op.ONUID > 0 {
+			subscriber.Annotations["nanoncore.com/ont-id"] = strconv.Itoa(op.ONUID)
+		}
+
+		// Build tier from profile
+		var tier *model.ServiceTier
+		if op.Profile != nil {
+			subscriber.Spec.VLAN = op.Profile.VLAN
+
+			tier = &model.ServiceTier{
+				Name:        fmt.Sprintf("bulk-tier-%s", op.Serial),
+				Annotations: make(map[string]string),
+				Spec: model.ServiceTierSpec{
+					BandwidthDown: op.Profile.BandwidthDown / 1000, // Convert kbps to Mbps
+					BandwidthUp:   op.Profile.BandwidthUp / 1000,
+				},
+			}
+
+			// Set profile annotations if specified
+			if op.Profile.LineProfile != "" {
+				tier.Annotations["nanoncore.com/line-profile-name"] = op.Profile.LineProfile
+			}
+			if op.Profile.ServiceProfile != "" {
+				tier.Annotations["nanoncore.com/srv-profile-name"] = op.Profile.ServiceProfile
+			}
+		} else {
+			// Default tier with no bandwidth limits
+			tier = &model.ServiceTier{
+				Name: fmt.Sprintf("bulk-tier-%s", op.Serial),
+				Spec: model.ServiceTierSpec{
+					BandwidthDown: 100, // Default 100 Mbps
+					BandwidthUp:   50,  // Default 50 Mbps
+				},
+			}
+		}
+
+		// Call CreateSubscriber
+		subResult, err := a.CreateSubscriber(ctx, subscriber, tier)
+		if err != nil {
+			opResult.Success = false
+			opResult.Error = err.Error()
+
+			// Map error to code
+			switch {
+			case strings.Contains(err.Error(), "exists") || strings.Contains(err.Error(), "already"):
+				opResult.ErrorCode = types.ErrCodeONUExists
+			case strings.Contains(err.Error(), "not found") || strings.Contains(err.Error(), "does not exist"):
+				opResult.ErrorCode = types.ErrCodeONUNotFound
+			case strings.Contains(err.Error(), "timeout"):
+				opResult.ErrorCode = types.ErrCodeTimeout
+			case strings.Contains(err.Error(), "serial"):
+				opResult.ErrorCode = types.ErrCodeInvalidSerial
+			default:
+				opResult.ErrorCode = types.ErrCodeUnknown
+			}
+
+			result.Failed++
+		} else {
+			opResult.Success = true
+			result.Succeeded++
+
+			// Extract ONU ID from result metadata
+			if subResult != nil && subResult.Metadata != nil {
+				if ontID, ok := subResult.Metadata["ont_id"].(int); ok {
+					opResult.ONUID = ontID
+				}
+				opResult.Metadata["session_id"] = subResult.SessionID
+				opResult.Metadata["interface"] = subResult.InterfaceName
+			}
+		}
+
+		result.Results[i] = opResult
 	}
 
 	return result, nil
@@ -1270,6 +1750,758 @@ func (a *Adapter) BulkProvision(ctx context.Context, operations []types.BulkProv
 
 // GetAlarms returns active alarms from the OLT.
 func (a *Adapter) GetAlarms(ctx context.Context) ([]types.OLTAlarm, error) {
-	// TODO: Parse "display alarm all" CLI output
-	return []types.OLTAlarm{}, nil // Return empty for now
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available - Huawei requires CLI for alarm query")
+	}
+
+	output, err := a.cliExecutor.ExecCommand(ctx, "display alarm active all")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get alarms: %w", err)
+	}
+
+	return a.parseAlarms(output), nil
+}
+
+// parseAlarms parses Huawei CLI output for active alarms.
+// Huawei alarm format varies by model, but typically:
+// Alarm ID   Severity   Type         Source            Time                    Description
+// 12345      Critical   LOS          0/0/1:5           2024-01-15 10:30:00    Loss of signal
+func (a *Adapter) parseAlarms(output string) []types.OLTAlarm {
+	alarms := []types.OLTAlarm{}
+
+	lines := strings.Split(output, "\n")
+	inTable := false
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+
+		// Skip empty lines and detect table start
+		if line == "" {
+			continue
+		}
+		if strings.HasPrefix(line, "-") {
+			inTable = true
+			continue
+		}
+		// Skip header lines
+		if strings.HasPrefix(line, "Alarm") || strings.HasPrefix(line, "alarm") ||
+			strings.Contains(line, "Severity") || strings.Contains(line, "Total") ||
+			strings.Contains(line, "No alarm") {
+			continue
+		}
+
+		if !inTable {
+			continue
+		}
+
+		// Parse alarm line
+		// Try to extract fields - format varies by Huawei model
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+
+		alarm := types.OLTAlarm{
+			ID:       fields[0],
+			Metadata: make(map[string]interface{}),
+		}
+
+		// Map severity
+		if len(fields) >= 2 {
+			severity := strings.ToLower(fields[1])
+			switch {
+			case strings.Contains(severity, "critical"):
+				alarm.Severity = "critical"
+			case strings.Contains(severity, "major"):
+				alarm.Severity = "major"
+			case strings.Contains(severity, "minor"):
+				alarm.Severity = "minor"
+			case strings.Contains(severity, "warning"):
+				alarm.Severity = "warning"
+			default:
+				alarm.Severity = "unknown"
+			}
+		}
+
+		// Map alarm type
+		if len(fields) >= 3 {
+			alarmType := strings.ToLower(fields[2])
+			switch {
+			case strings.Contains(alarmType, "los"):
+				alarm.Type = "los"
+				alarm.Source = "onu"
+			case strings.Contains(alarmType, "power"):
+				alarm.Type = "power"
+				alarm.Source = "onu"
+			case strings.Contains(alarmType, "dying"):
+				alarm.Type = "dying_gasp"
+				alarm.Source = "onu"
+			case strings.Contains(alarmType, "config"):
+				alarm.Type = "config"
+				alarm.Source = "system"
+			case strings.Contains(alarmType, "link"):
+				alarm.Type = "link"
+				alarm.Source = "port"
+			default:
+				alarm.Type = alarmType
+				alarm.Source = "unknown"
+			}
+		}
+
+		// Extract source ID (e.g., PON port or ONU identifier)
+		if len(fields) >= 4 {
+			alarm.SourceID = fields[3]
+			// Try to determine source type from ID format
+			if strings.Contains(alarm.SourceID, ":") {
+				// Format: 0/0/1:5 suggests ONU
+				alarm.Source = "onu"
+			} else if strings.Contains(alarm.SourceID, "/") {
+				// Format: 0/0/1 suggests port
+				alarm.Source = "port"
+			}
+		}
+
+		// Try to parse timestamp (format: YYYY-MM-DD HH:MM:SS)
+		for i := 4; i < len(fields)-1; i++ {
+			if len(fields[i]) == 10 && strings.Contains(fields[i], "-") {
+				// Found date part
+				if i+1 < len(fields) && strings.Contains(fields[i+1], ":") {
+					timeStr := fields[i] + " " + fields[i+1]
+					if t, err := time.Parse("2006-01-02 15:04:05", timeStr); err == nil {
+						alarm.RaisedAt = t
+					}
+					// Collect remaining fields as message
+					if i+2 < len(fields) {
+						alarm.Message = strings.Join(fields[i+2:], " ")
+					}
+					break
+				}
+			}
+		}
+
+		// If no timestamp found, use current time and build message from remaining fields
+		if alarm.RaisedAt.IsZero() {
+			alarm.RaisedAt = time.Now()
+			if len(fields) >= 5 {
+				alarm.Message = strings.Join(fields[4:], " ")
+			}
+		}
+
+		alarm.Metadata["raw_line"] = line
+
+		alarms = append(alarms, alarm)
+	}
+
+	return alarms
+}
+
+// ListPorts returns status for all PON ports on the OLT.
+// Uses SNMP to query interface status and counts ONUs per port.
+func (a *Adapter) ListPorts(ctx context.Context) ([]*types.PONPortStatus, error) {
+	if a.snmpExecutor == nil {
+		return nil, fmt.Errorf("SNMP executor not available - Huawei requires SNMP for port listing")
+	}
+
+	// Walk interface descriptions to identify PON/GPON ports
+	descrResults, err := a.snmpExecutor.WalkSNMP(ctx, OIDIfDescr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk interface descriptions: %w", err)
+	}
+
+	// Walk admin status
+	adminResults, err := a.snmpExecutor.WalkSNMP(ctx, OIDIfAdminStatus)
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk admin status: %w", err)
+	}
+
+	// Walk oper status
+	operResults, err := a.snmpExecutor.WalkSNMP(ctx, OIDIfOperStatus)
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk oper status: %w", err)
+	}
+
+	// Walk interface aliases (port descriptions)
+	aliasResults, err := a.snmpExecutor.WalkSNMP(ctx, OIDIfAlias)
+	if err != nil {
+		// Non-fatal, continue without aliases
+		aliasResults = make(map[string]interface{})
+	}
+
+	// Get ONU list to count ONUs per port
+	onus, err := a.GetONUList(ctx, nil)
+	if err != nil {
+		// Non-fatal, continue without ONU counts
+		onus = []types.ONUInfo{}
+	}
+
+	// Count ONUs per port
+	onuCountByPort := make(map[string]int)
+	for _, onu := range onus {
+		onuCountByPort[onu.PONPort]++
+	}
+
+	// Build port list
+	ports := make([]*types.PONPortStatus, 0)
+
+	for index, descrVal := range descrResults {
+		descr, ok := descrVal.(string)
+		if !ok {
+			continue
+		}
+
+		// Filter to PON/GPON ports only
+		descrLower := strings.ToLower(descr)
+		if !strings.Contains(descrLower, "gpon") && !strings.Contains(descrLower, "pon") {
+			continue
+		}
+
+		// Parse port identifier from description (e.g., "GPON 0/0/1")
+		portID := a.parsePortFromDescr(descr)
+		if portID == "" {
+			portID = descr // Use description as-is if parsing fails
+		}
+
+		port := &types.PONPortStatus{
+			Port:       portID,
+			AdminState: "unknown",
+			OperState:  "unknown",
+			ONUCount:   onuCountByPort[portID],
+			MaxONUs:    128, // Typical GPON limit
+		}
+
+		// Get admin status (1=up, 2=down, 3=testing)
+		if adminVal, ok := adminResults[index]; ok {
+			if adminInt := toInt(adminVal); adminInt >= 0 {
+				switch adminInt {
+				case 1:
+					port.AdminState = "enabled"
+				case 2:
+					port.AdminState = "disabled"
+				default:
+					port.AdminState = "testing"
+				}
+			}
+		}
+
+		// Get oper status (1=up, 2=down, etc.)
+		if operVal, ok := operResults[index]; ok {
+			if operInt := toInt(operVal); operInt >= 0 {
+				switch operInt {
+				case 1:
+					port.OperState = "up"
+				case 2:
+					port.OperState = "down"
+				default:
+					port.OperState = "unknown"
+				}
+			}
+		}
+
+		// Get port description/alias
+		if aliasVal, ok := aliasResults[index]; ok {
+			if aliasStr, ok := aliasVal.(string); ok {
+				port.Description = aliasStr
+			}
+		}
+
+		ports = append(ports, port)
+	}
+
+	return ports, nil
+}
+
+// parsePortFromDescr extracts port identifier from interface description.
+// Example: "GPON 0/0/1" -> "0/0/1"
+func (a *Adapter) parsePortFromDescr(descr string) string {
+	// Try to extract frame/slot/port pattern
+	re := regexp.MustCompile(`(\d+)/(\d+)/(\d+)`)
+	if match := re.FindStringSubmatch(descr); len(match) == 4 {
+		return fmt.Sprintf("%s/%s/%s", match[1], match[2], match[3])
+	}
+	return ""
+}
+
+// SetPortState enables or disables a PON port administratively.
+// Uses CLI to execute shutdown/undo shutdown commands.
+func (a *Adapter) SetPortState(ctx context.Context, port string, enabled bool) error {
+	if a.cliExecutor == nil {
+		return fmt.Errorf("CLI executor not available - Huawei requires CLI for port management")
+	}
+
+	// Parse PON port (format: frame/slot/port, e.g., "0/0/1")
+	parts := strings.Split(port, "/")
+	if len(parts) != 3 {
+		return fmt.Errorf("invalid PON port format: %s (expected frame/slot/port)", port)
+	}
+
+	frame, err := strconv.Atoi(parts[0])
+	if err != nil {
+		return fmt.Errorf("invalid frame number: %s", parts[0])
+	}
+	slot, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return fmt.Errorf("invalid slot number: %s", parts[1])
+	}
+	portNum, err := strconv.Atoi(parts[2])
+	if err != nil {
+		return fmt.Errorf("invalid port number: %s", parts[2])
+	}
+
+	// Build CLI commands
+	var portCmd string
+	if enabled {
+		portCmd = fmt.Sprintf("undo port %d shutdown", portNum)
+	} else {
+		portCmd = fmt.Sprintf("port %d shutdown", portNum)
+	}
+
+	commands := []string{
+		"enable",
+		"config",
+		fmt.Sprintf("interface gpon %d/%d", frame, slot),
+		portCmd,
+		"quit",
+		"quit",
+		"quit",
+	}
+
+	_, err = a.cliExecutor.ExecCommands(ctx, commands)
+	if err != nil {
+		action := "enable"
+		if !enabled {
+			action = "disable"
+		}
+		return fmt.Errorf("failed to %s port %s: %w", action, port, err)
+	}
+
+	return nil
+}
+
+// toInt converts various integer types to int. Returns -1 if conversion fails.
+// Handles int, int64, uint, uint64 from SNMP responses.
+func toInt(val interface{}) int {
+	switch v := val.(type) {
+	case int:
+		return v
+	case int64:
+		return int(v)
+	case uint:
+		return int(v)
+	case uint64:
+		return int(v)
+	default:
+		return -1
+	}
+}
+
+// ==================== VLAN Management Methods ====================
+
+// ListVLANs returns all configured VLANs on the OLT.
+func (a *Adapter) ListVLANs(ctx context.Context) ([]types.VLANInfo, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available - Huawei requires CLI for VLAN listing")
+	}
+
+	cmd := "display vlan all"
+	output, err := a.cliExecutor.ExecCommand(ctx, cmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list VLANs: %w", err)
+	}
+
+	return a.parseVLANList(output), nil
+}
+
+// parseVLANList parses Huawei CLI output for VLAN list.
+func (a *Adapter) parseVLANList(output string) []types.VLANInfo {
+	vlans := []types.VLANInfo{}
+
+	lines := strings.Split(output, "\n")
+	inTable := false
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+
+		// Skip empty lines and headers
+		if line == "" || strings.HasPrefix(line, "-") {
+			if strings.HasPrefix(line, "-") {
+				inTable = true
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "VLAN ID") || strings.HasPrefix(line, "Total") {
+			continue
+		}
+
+		if !inTable {
+			continue
+		}
+
+		// Parse VLAN line: "100       Customer_VLAN_100          smart     5               Customer traffic"
+		fields := strings.Fields(line)
+		if len(fields) < 2 {
+			continue
+		}
+
+		vlanID, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+
+		vlan := types.VLANInfo{
+			ID:   vlanID,
+			Name: fields[1],
+			Type: "smart",
+		}
+
+		if len(fields) >= 3 {
+			vlan.Type = fields[2]
+		}
+		if len(fields) >= 4 {
+			vlan.ServicePortCount, _ = strconv.Atoi(fields[3])
+		}
+		if len(fields) >= 5 {
+			vlan.Description = strings.Join(fields[4:], " ")
+		}
+
+		vlans = append(vlans, vlan)
+	}
+
+	return vlans
+}
+
+// GetVLAN retrieves a specific VLAN by ID.
+func (a *Adapter) GetVLAN(ctx context.Context, vlanID int) (*types.VLANInfo, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+
+	cmd := fmt.Sprintf("display vlan %d", vlanID)
+	output, err := a.cliExecutor.ExecCommand(ctx, cmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get VLAN %d: %w", vlanID, err)
+	}
+
+	// Check if VLAN doesn't exist
+	if strings.Contains(output, "does not exist") || strings.Contains(output, "Error") {
+		return nil, nil
+	}
+
+	// Parse single VLAN output
+	vlan := &types.VLANInfo{
+		ID:   vlanID,
+		Type: "smart",
+	}
+
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "Name") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				vlan.Name = strings.TrimSpace(parts[1])
+			}
+		} else if strings.HasPrefix(line, "Description") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				vlan.Description = strings.TrimSpace(parts[1])
+			}
+		} else if strings.HasPrefix(line, "Service Port Count") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				vlan.ServicePortCount, _ = strconv.Atoi(strings.TrimSpace(parts[1]))
+			}
+		} else if strings.HasPrefix(line, "Type") {
+			parts := strings.SplitN(line, ":", 2)
+			if len(parts) == 2 {
+				vlan.Type = strings.TrimSpace(parts[1])
+			}
+		}
+	}
+
+	return vlan, nil
+}
+
+// CreateVLAN creates a new VLAN on the OLT.
+func (a *Adapter) CreateVLAN(ctx context.Context, req *types.CreateVLANRequest) error {
+	if a.cliExecutor == nil {
+		return fmt.Errorf("CLI executor not available")
+	}
+
+	// Validate VLAN ID range
+	if req.ID < 1 || req.ID > 4094 {
+		return &types.HumanError{
+			Code:    types.ErrCodeInvalidVLANID,
+			Message: fmt.Sprintf("VLAN ID %d is out of range (1-4094)", req.ID),
+			Vendor:  "huawei",
+		}
+	}
+
+	// Build commands
+	commands := []string{
+		"enable",
+		"config",
+		fmt.Sprintf("vlan %d smart", req.ID),
+	}
+
+	if req.Name != "" {
+		commands = append(commands, fmt.Sprintf("name %s", req.Name))
+	}
+	if req.Description != "" {
+		commands = append(commands, fmt.Sprintf("description %s", req.Description))
+	}
+
+	commands = append(commands, "quit", "quit")
+
+	outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
+	output := strings.Join(outputs, "\n")
+	if err != nil {
+		if strings.Contains(err.Error(), "already exists") || strings.Contains(output, "already exists") {
+			return &types.HumanError{
+				Code:    types.ErrCodeVLANExists,
+				Message: fmt.Sprintf("VLAN %d already exists", req.ID),
+				Vendor:  "huawei",
+			}
+		}
+		return fmt.Errorf("failed to create VLAN: %w", err)
+	}
+
+	// Check output for errors
+	if strings.Contains(output, "Error") || strings.Contains(output, "already exists") {
+		return &types.HumanError{
+			Code:    types.ErrCodeVLANExists,
+			Message: fmt.Sprintf("VLAN %d already exists", req.ID),
+			Vendor:  "huawei",
+			Raw:     output,
+		}
+	}
+
+	return nil
+}
+
+// DeleteVLAN removes a VLAN from the OLT.
+func (a *Adapter) DeleteVLAN(ctx context.Context, vlanID int, force bool) error {
+	if a.cliExecutor == nil {
+		return fmt.Errorf("CLI executor not available")
+	}
+
+	// Check if VLAN exists and has service ports
+	vlan, err := a.GetVLAN(ctx, vlanID)
+	if err != nil {
+		return err
+	}
+	if vlan == nil {
+		return &types.HumanError{
+			Code:    types.ErrCodeVLANNotFound,
+			Message: fmt.Sprintf("VLAN %d not found", vlanID),
+			Vendor:  "huawei",
+		}
+	}
+
+	if vlan.ServicePortCount > 0 && !force {
+		return &types.HumanError{
+			Code:    types.ErrCodeVLANHasServicePorts,
+			Message: fmt.Sprintf("VLAN %d has %d service port(s) configured", vlanID, vlan.ServicePortCount),
+			Action:  "Use --force to delete anyway, or remove service ports first",
+			Vendor:  "huawei",
+		}
+	}
+
+	commands := []string{
+		"enable",
+		"config",
+		fmt.Sprintf("undo vlan %d", vlanID),
+		"quit",
+	}
+
+	outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
+	output := strings.Join(outputs, "\n")
+	if err != nil {
+		return fmt.Errorf("failed to delete VLAN: %w", err)
+	}
+
+	// Check for warning about service ports
+	if strings.Contains(output, "service port") && !force {
+		return &types.HumanError{
+			Code:    types.ErrCodeVLANHasServicePorts,
+			Message: fmt.Sprintf("VLAN %d has service ports configured", vlanID),
+			Action:  "Use --force to delete anyway",
+			Vendor:  "huawei",
+			Raw:     output,
+		}
+	}
+
+	return nil
+}
+
+// ==================== Service Port Management Methods ====================
+
+// ListServicePorts returns all service port configurations.
+func (a *Adapter) ListServicePorts(ctx context.Context) ([]types.ServicePort, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+
+	cmd := "display service-port all"
+	output, err := a.cliExecutor.ExecCommand(ctx, cmd)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list service ports: %w", err)
+	}
+
+	return a.parseServicePortList(output), nil
+}
+
+// parseServicePortList parses Huawei CLI output for service port list.
+func (a *Adapter) parseServicePortList(output string) []types.ServicePort {
+	servicePorts := []types.ServicePort{}
+
+	lines := strings.Split(output, "\n")
+	inTable := false
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+
+		// Skip empty lines and headers
+		if line == "" || strings.HasPrefix(line, "-") {
+			if strings.HasPrefix(line, "-") {
+				inTable = true
+			}
+			continue
+		}
+		if strings.HasPrefix(line, "Index") || strings.HasPrefix(line, "Total") || strings.Contains(line, "No service") {
+			continue
+		}
+
+		if !inTable {
+			continue
+		}
+
+		// Parse line: "1       100     0/0/1           101     1         100          translate"
+		fields := strings.Fields(line)
+		if len(fields) < 5 {
+			continue
+		}
+
+		index, err := strconv.Atoi(fields[0])
+		if err != nil {
+			continue
+		}
+
+		vlan, _ := strconv.Atoi(fields[1])
+		ontID, _ := strconv.Atoi(fields[3])
+		gemport, _ := strconv.Atoi(fields[4])
+
+		sp := types.ServicePort{
+			Index:     index,
+			VLAN:      vlan,
+			Interface: fields[2],
+			ONTID:     ontID,
+			GemPort:   gemport,
+		}
+
+		if len(fields) >= 6 {
+			sp.UserVLAN, _ = strconv.Atoi(fields[5])
+		}
+		if len(fields) >= 7 {
+			sp.TagTransform = fields[6]
+		}
+
+		servicePorts = append(servicePorts, sp)
+	}
+
+	return servicePorts
+}
+
+// AddServicePort creates a service port mapping.
+func (a *Adapter) AddServicePort(ctx context.Context, req *types.AddServicePortRequest) error {
+	if a.cliExecutor == nil {
+		return fmt.Errorf("CLI executor not available")
+	}
+
+	// Default values
+	gemPort := req.GemPort
+	if gemPort == 0 {
+		gemPort = 1
+	}
+	userVLAN := req.UserVLAN
+	if userVLAN == 0 {
+		userVLAN = req.VLAN
+	}
+
+	// Build command
+	cmd := fmt.Sprintf(
+		"service-port vlan %d gpon %s ont %d gemport %d multi-service user-vlan %d",
+		req.VLAN, req.PONPort, req.ONTID, gemPort, userVLAN,
+	)
+
+	commands := []string{
+		"enable",
+		"config",
+		cmd,
+		"quit",
+	}
+
+	outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
+	output := strings.Join(outputs, "\n")
+	if err != nil {
+		if strings.Contains(err.Error(), "does not exist") {
+			return &types.HumanError{
+				Code:    types.ErrCodeONUNotFound,
+				Message: fmt.Sprintf("ONT %d on port %s not found", req.ONTID, req.PONPort),
+				Vendor:  "huawei",
+			}
+		}
+		if strings.Contains(err.Error(), "VLAN") && strings.Contains(err.Error(), "not exist") {
+			return &types.HumanError{
+				Code:    types.ErrCodeVLANNotFound,
+				Message: fmt.Sprintf("VLAN %d does not exist", req.VLAN),
+				Vendor:  "huawei",
+			}
+		}
+		return fmt.Errorf("failed to add service port: %w", err)
+	}
+
+	// Check output for errors
+	if strings.Contains(output, "Error") || strings.Contains(output, "does not exist") {
+		if strings.Contains(output, "ONT") || strings.Contains(output, "ont") {
+			return &types.HumanError{
+				Code:    types.ErrCodeONUNotFound,
+				Message: fmt.Sprintf("ONT %d on port %s not found", req.ONTID, req.PONPort),
+				Vendor:  "huawei",
+				Raw:     output,
+			}
+		}
+		if strings.Contains(output, "VLAN") || strings.Contains(output, "vlan") {
+			return &types.HumanError{
+				Code:    types.ErrCodeVLANNotFound,
+				Message: fmt.Sprintf("VLAN %d does not exist", req.VLAN),
+				Vendor:  "huawei",
+				Raw:     output,
+			}
+		}
+	}
+
+	return nil
+}
+
+// DeleteServicePort removes a service port mapping.
+func (a *Adapter) DeleteServicePort(ctx context.Context, ponPort string, ontID int) error {
+	if a.cliExecutor == nil {
+		return fmt.Errorf("CLI executor not available")
+	}
+
+	cmd := fmt.Sprintf("undo service-port port %s ont %d", ponPort, ontID)
+
+	commands := []string{
+		"enable",
+		"config",
+		cmd,
+		"quit",
+	}
+
+	_, err := a.cliExecutor.ExecCommands(ctx, commands)
+	if err != nil {
+		return fmt.Errorf("failed to delete service port: %w", err)
+	}
+
+	return nil
 }

@@ -1,6 +1,9 @@
 package huawei
 
-import "fmt"
+import (
+	"fmt"
+	"strings"
+)
 
 // Huawei GPON MIB OIDs
 // Based on legacy production code and Huawei documentation
@@ -10,6 +13,17 @@ const (
 	// Enterprise OID prefix for Huawei
 	OIDHuaweiEnterprise = "1.3.6.1.4.1.2011"
 
+	// Standard MIB-II System OIDs (RFC 1213)
+	OIDSysDescr  = "1.3.6.1.2.1.1.1.0" // System description
+	OIDSysUpTime = "1.3.6.1.2.1.1.3.0" // System uptime in hundredths of seconds
+	OIDSysName   = "1.3.6.1.2.1.1.5.0" // System name
+
+	// Huawei SmartAX System Telemetry OIDs
+	// These are the OIDs used by SmartAX MA5600T/MA5800-X series for system metrics
+	OIDSmartAXCPU         = "1.3.6.1.4.1.2011.6.128.1.1.2.98.1.1.1.1" // CPU utilization %
+	OIDSmartAXMemory      = "1.3.6.1.4.1.2011.6.128.1.1.2.98.1.2.1.1" // Memory utilization %
+	OIDSmartAXTemperature = "1.3.6.1.4.1.2011.2.6.7.1.1.2.1.10"       // Board temperature in Celsius
+
 	// ONU Serial Number - returns hex-encoded serial (e.g., "485754430011D168" = HWTC0011D168)
 	// Index: <portIndex>.<onuIndex>
 	OIDOnuSerialNumber = "1.3.6.1.4.1.2011.6.128.1.1.2.43.1.3"
@@ -17,13 +31,16 @@ const (
 	// ONU Optical Parameters (1.3.6.1.4.1.2011.6.128.1.1.2.51.1.x)
 	// Index: <portIndex>.<onuIndex>
 	// Note: Value 2147483647 (0x7FFFFFFF) indicates offline/invalid
-	OIDOnuTemperature = "1.3.6.1.4.1.2011.6.128.1.1.2.51.1.1" // Temperature in Celsius
+	OIDOnuTemperature = "1.3.6.1.4.1.2011.6.128.1.1.2.51.1.1" // Temperature (value / 256 = °C)
 	OIDOnuCurrent     = "1.3.6.1.4.1.2011.6.128.1.1.2.51.1.2" // Bias current in uA
 	OIDOnuTxPower     = "1.3.6.1.4.1.2011.6.128.1.1.2.51.1.3" // Tx power (value * 0.01 dBm)
 	OIDOnuRxPower     = "1.3.6.1.4.1.2011.6.128.1.1.2.51.1.4" // Rx power (value * 0.01 dBm)
 	OIDOnuVoltage     = "1.3.6.1.4.1.2011.6.128.1.1.2.51.1.5" // Voltage (value * 0.001 V)
 	OIDOltRxPower     = "1.3.6.1.4.1.2011.6.128.1.1.2.51.1.6" // OLT Rx from ONU ((value-10000)*0.01 dBm)
 	OIDOnuCatvRx      = "1.3.6.1.4.1.2011.6.128.1.1.2.51.1.7" // CATV Rx power
+
+	// ONU Distance (from ONU info table 1.3.6.1.4.1.2011.6.128.1.1.2.43.1.x)
+	OIDOnuDistance = "1.3.6.1.4.1.2011.6.128.1.1.2.43.1.12" // Distance in meters
 
 	// OLT PON Port Optical Parameters (1.3.6.1.4.1.2011.6.128.1.1.2.23.1.x)
 	OIDOltPonTemperature = "1.3.6.1.4.1.2011.6.128.1.1.2.23.1.1"
@@ -42,6 +59,8 @@ const (
 
 	// Standard MIB-II Interface Counters
 	OIDIfDescr       = "1.3.6.1.2.1.2.2.1.2"     // Interface description
+	OIDIfAdminStatus = "1.3.6.1.2.1.2.2.1.7"     // Admin status (1=up, 2=down, 3=testing)
+	OIDIfOperStatus  = "1.3.6.1.2.1.2.2.1.8"     // Oper status (1=up, 2=down, 3=testing, etc.)
 	OIDIfInOctets    = "1.3.6.1.2.1.2.2.1.10"    // 32-bit input bytes
 	OIDIfOutOctets   = "1.3.6.1.2.1.2.2.1.16"    // 32-bit output bytes
 	OIDIfHCInOctets  = "1.3.6.1.2.1.31.1.1.1.6"  // 64-bit input bytes
@@ -79,6 +98,15 @@ func ConvertVoltage(rawValue int64) float64 {
 	return float64(rawValue) * 0.001
 }
 
+// ConvertTemperature converts raw SNMP value to Celsius
+// Formula: value / 256
+func ConvertTemperature(rawValue int64) float64 {
+	if rawValue == SNMPInvalidValue || rawValue == 0 {
+		return 0.0
+	}
+	return float64(rawValue) / 256.0
+}
+
 // IsOnuOnline checks if ONU is online based on Rx power value
 // Huawei returns 2147483647 when ONU is offline
 func IsOnuOnline(rxPowerRaw int64) bool {
@@ -86,9 +114,16 @@ func IsOnuOnline(rxPowerRaw int64) bool {
 }
 
 // DecodeHexSerial converts hex serial number to readable format
-// Input: "485754430011D168" -> Output: "HWTC0011D168"
+// Handles both hex-encoded serials (e.g., "485754430011D168" -> "HWTC0011D168")
+// and already-ASCII serials (e.g., "HWTC00000101" -> "HWTC00000101")
 func DecodeHexSerial(hexSerial string) string {
 	if len(hexSerial) < 8 {
+		return hexSerial
+	}
+
+	// Check if serial is already in ASCII format (starts with letters like "HWTC", "ZTEG", etc.)
+	// ASCII ONU serials typically have 4 letter prefix followed by numbers
+	if isASCIISerial(hexSerial) {
 		return hexSerial
 	}
 
@@ -110,6 +145,21 @@ func DecodeHexSerial(hexSerial string) string {
 	return vendorID + serialPart
 }
 
+// isASCIISerial checks if the serial is already in ASCII format (not hex-encoded)
+func isASCIISerial(serial string) bool {
+	if len(serial) < 4 {
+		return false
+	}
+	// Check if first 4 chars are uppercase letters (typical ONU vendor ID)
+	for i := 0; i < 4; i++ {
+		c := serial[i]
+		if c < 'A' || c > 'Z' {
+			return false
+		}
+	}
+	return true
+}
+
 func hexToByte(hex string) byte {
 	var b byte
 	for _, c := range hex {
@@ -126,22 +176,83 @@ func hexToByte(hex string) byte {
 	return b
 }
 
-// ParseONUIndex extracts slot, port, and ONU ID from SNMP index
+// ParseONUIndex extracts frame, slot, port, and ONU ID from SNMP index
 // Huawei uses portIndex.onuIndex format where portIndex encodes slot/port
-func ParseONUIndex(index string) (slot, port, onuID int) {
-	// Index format: <portIndex>.<onuIndex>
-	// portIndex is typically calculated from frame/slot/port
-	// This is vendor-specific and may vary by model
+// Supports both 2-component (portIndex.onuIndex) and 3-component (frame.portIndex.onuIndex) formats
+func ParseONUIndex(index string) (frame, slot, port, onuID int, err error) {
+	// Strip leading dot if present (gosnmp returns OIDs with leading dots)
+	if len(index) > 0 && index[0] == '.' {
+		index = index[1:]
+	}
 
-	// Simple parsing - assumes format like "portIndex.onuId"
-	var portIndex int
-	_, _ = fmt.Sscanf(index, "%d.%d", &portIndex, &onuID)
+	parts := strings.Split(index, ".")
 
-	// Decode portIndex to slot/port (this varies by OLT model)
-	// Common formula: portIndex = (slot * 256) + port
-	// Or for some models: portIndex = (frame * 65536) + (slot * 256) + port
-	slot = (portIndex >> 8) & 0xFF
-	port = portIndex & 0xFF
+	switch len(parts) {
+	case 3:
+		// "frame.portIndex.onuIndex" format from simulator
+		var portIndex int
+		if _, err := fmt.Sscanf(index, "%d.%d.%d", &frame, &portIndex, &onuID); err != nil {
+			return 0, 0, 0, 0, fmt.Errorf("invalid 3-component ONU index format: %s", index)
+		}
+		// Decode portIndex to get slot and port
+		slot = (portIndex >> 8) & 0xFF
+		port = portIndex & 0xFF
 
-	return
+	case 2:
+		// "portIndex.onuIndex" format (existing logic for real OLTs)
+		var portIndex int
+		if _, err := fmt.Sscanf(index, "%d.%d", &portIndex, &onuID); err != nil {
+			return 0, 0, 0, 0, fmt.Errorf("invalid 2-component ONU index format: %s", index)
+		}
+		// Decode portIndex to frame/slot/port
+		frame = (portIndex >> 16) & 0xFF
+		slot = (portIndex >> 8) & 0xFF
+		port = portIndex & 0xFF
+
+	default:
+		return 0, 0, 0, 0, fmt.Errorf("invalid ONU index format (expected 2 or 3 components): %s", index)
+	}
+
+	return frame, slot, port, onuID, nil
+}
+
+// GetSNMPResult looks up an OID in SNMP results, handling the leading dot issue.
+// gosnmp returns OIDs with a leading dot (e.g., ".1.3.6.1..."), but our constants
+// don't have the leading dot. This function tries both formats.
+func GetSNMPResult(results map[string]interface{}, oid string) (interface{}, bool) {
+	// Try without leading dot
+	if val, ok := results[oid]; ok {
+		return val, true
+	}
+	// Try with leading dot
+	if val, ok := results["."+oid]; ok {
+		return val, true
+	}
+	return nil, false
+}
+
+// ParseNumericSNMPValue extracts a float64 from various numeric types
+// that SNMP libraries may return (int, int64, uint, uint64, etc.)
+// Returns the value and true if successful, or 0 and false if the type is not numeric.
+func ParseNumericSNMPValue(value interface{}) (float64, bool) {
+	switch v := value.(type) {
+	case int:
+		return float64(v), true
+	case int32:
+		return float64(v), true
+	case int64:
+		return float64(v), true
+	case uint:
+		return float64(v), true
+	case uint32:
+		return float64(v), true
+	case uint64:
+		return float64(v), true
+	case float32:
+		return float64(v), true
+	case float64:
+		return v, true
+	default:
+		return 0, false
+	}
 }
