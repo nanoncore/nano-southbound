@@ -108,6 +108,7 @@ func (a *Adapter) Connect(ctx context.Context, config *types.EquipmentConfig) er
 		if err := a.secondaryDriver.Connect(ctx, &snmpConfig); err != nil {
 			// Log but don't fail - secondary is optional for some operations
 			// SNMP may not be required if only doing CLI operations
+			_ = err // Explicitly ignore error - secondary driver is optional
 		}
 	}
 
