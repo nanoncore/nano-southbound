@@ -1683,49 +1683,65 @@ func (a *Adapter) GetOLTStatus(ctx context.Context) (*types.OLTStatus, error) {
 	return status, nil
 }
 
+// extractPONPortFromIndex converts V-SOL OnuIndex to PON port
+// Example: "1/1/1:1" -> "0/1", "1/1/8:2" -> "0/8"
+func extractPONPortFromIndex(index string) string {
+	// Format: rack/shelf/port:slot (e.g., 1/1/1:1)
+	// Remove the slot portion if present
+	parts := strings.Split(index, ":")
+	pathPart := parts[0]
+
+	pathParts := strings.Split(pathPart, "/")
+	if len(pathParts) >= 3 {
+		return fmt.Sprintf("0/%s", pathParts[2])
+	}
+	return ""
+}
+
 // parseAutofindOutput parses V-SOL autofind CLI output
 func (a *Adapter) parseAutofindOutput(output string) []types.ONUDiscovery {
 	discoveries := []types.ONUDiscovery{}
 
-	// V-SOL autofind output format (example):
-	// Port  Serial          MAC              Model         Distance  Rx Power
-	// 0/1   VSOL12345678    AA:BB:CC:DD:EE   V2802GWT      1234m     -18.5dBm
-	// 0/2   VSOL87654321    11:22:33:44:55   V2802RGW      567m      -22.1dBm
+	// V-SOL autofind output format:
+	// OnuIndex                 Sn                       State
+	// ---------------------------------------------------------
+	// 1/1/1:1                  FHTT99990001             unknow
+	// 1/1/1:2                  FHTT99990002             unknow
 
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "Port") || strings.HasPrefix(line, "-") {
+
+		// Skip header, separator, empty lines, and error messages
+		if line == "" ||
+			strings.HasPrefix(line, "OnuIndex") ||
+			strings.HasPrefix(line, "-") ||
+			strings.HasPrefix(line, "Error:") ||
+			strings.HasPrefix(line, "Port") { // Legacy format header
 			continue
 		}
 
 		fields := strings.Fields(line)
-		if len(fields) >= 4 {
+		if len(fields) >= 2 {
+			// Parse OnuIndex to extract PON port: 1/1/1:1 -> 0/1
+			onuIndex := fields[0] // e.g., "1/1/1:1"
+			serial := fields[1]   // e.g., "FHTT99990001"
+
+			// Extract PON port from OnuIndex (1/1/PORT:SLOT -> 0/PORT)
+			ponPort := extractPONPortFromIndex(onuIndex)
+			if ponPort == "" {
+				// If can't parse as OnuIndex, assume it's already a PON port (legacy format)
+				ponPort = onuIndex
+			}
+
 			discovery := types.ONUDiscovery{
-				PONPort:      fields[0],
-				Serial:       fields[1],
+				PONPort:      ponPort,
+				Serial:       serial,
 				DiscoveredAt: time.Now(),
 			}
 
 			if len(fields) >= 3 {
-				discovery.MAC = fields[2]
-			}
-			if len(fields) >= 4 {
-				discovery.Model = fields[3]
-			}
-			if len(fields) >= 5 {
-				// Parse distance (e.g., "1234m")
-				distStr := strings.TrimSuffix(fields[4], "m")
-				if dist, err := strconv.Atoi(distStr); err == nil {
-					discovery.DistanceM = dist
-				}
-			}
-			if len(fields) >= 6 {
-				// Parse Rx power (e.g., "-18.5dBm")
-				rxStr := strings.TrimSuffix(fields[5], "dBm")
-				if rx, err := strconv.ParseFloat(rxStr, 64); err == nil {
-					discovery.RxPowerDBm = rx
-				}
+				discovery.State = fields[2] // "unknow"
 			}
 
 			discoveries = append(discoveries, discovery)

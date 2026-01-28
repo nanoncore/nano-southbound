@@ -251,36 +251,6 @@ type ONUInfo struct {
 	// ProvisionedAt is when the ONU was provisioned
 	ProvisionedAt time.Time `json:"provisioned_at,omitempty"`
 
-	// Vendor is the ONU vendor name
-	Vendor string `json:"vendor,omitempty"`
-
-	// Temperature is the ONU temperature in Celsius
-	Temperature float64 `json:"temperature_celsius,omitempty"`
-
-	// Voltage is the ONU supply voltage
-	Voltage float64 `json:"voltage_v,omitempty"`
-
-	// BiasCurrent is the laser bias current in mA
-	BiasCurrent float64 `json:"bias_current_ma,omitempty"`
-
-	// BytesUp is the total upstream bytes
-	BytesUp uint64 `json:"bytes_up,omitempty"`
-
-	// BytesDown is the total downstream bytes
-	BytesDown uint64 `json:"bytes_down,omitempty"`
-
-	// PacketsUp is the total upstream packets
-	PacketsUp uint64 `json:"packets_up,omitempty"`
-
-	// PacketsDown is the total downstream packets
-	PacketsDown uint64 `json:"packets_down,omitempty"`
-
-	// InputRateBps is the current input rate in bits per second
-	InputRateBps uint64 `json:"input_rate_bps,omitempty"`
-
-	// OutputRateBps is the current output rate in bits per second
-	OutputRateBps uint64 `json:"output_rate_bps,omitempty"`
-
 	// Metadata contains vendor-specific data
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }
