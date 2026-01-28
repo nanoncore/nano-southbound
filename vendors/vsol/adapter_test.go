@@ -35,10 +35,10 @@ func TestParseAutofindOutput(t *testing.T) {
 	adapter := &Adapter{}
 
 	tests := []struct {
-		name           string
-		input          string
-		expectedCount  int
-		expectedFirst  struct {
+		name          string
+		input         string
+		expectedCount int
+		expectedFirst struct {
 			ponPort string
 			serial  string
 			state   string

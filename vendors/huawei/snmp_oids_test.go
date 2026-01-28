@@ -4,13 +4,13 @@ import "testing"
 
 func TestParseONUIndex(t *testing.T) {
 	tests := []struct {
-		name        string
-		index       string
-		wantFrame   int
-		wantSlot    int
-		wantPort    int
-		wantOnuID   int
-		wantErr     bool
+		name      string
+		index     string
+		wantFrame int
+		wantSlot  int
+		wantPort  int
+		wantOnuID int
+		wantErr   bool
 	}{
 		{
 			name:      "3-component format: 0.1.0 (frame=0, portIndex=1, onuID=0)",
@@ -114,9 +114,9 @@ func TestParseONUIndex(t *testing.T) {
 
 func TestGetSNMPResult(t *testing.T) {
 	results := map[string]interface{}{
-		".1.3.6.1.2.1.1.3.0":                        uint64(12345),
-		"1.3.6.1.4.1.2011.6.128.1.1.2.98.1.1.1.1":   int64(5),
-		".1.3.6.1.4.1.2011.6.128.1.1.2.98.1.2.1.1":  int64(24),
+		".1.3.6.1.2.1.1.3.0":                       uint64(12345),
+		"1.3.6.1.4.1.2011.6.128.1.1.2.98.1.1.1.1":  int64(5),
+		".1.3.6.1.4.1.2011.6.128.1.1.2.98.1.2.1.1": int64(24),
 	}
 
 	tests := []struct {
@@ -147,10 +147,10 @@ func TestGetSNMPResult(t *testing.T) {
 
 func TestParseNumericSNMPValue(t *testing.T) {
 	tests := []struct {
-		name    string
-		input   interface{}
-		want    float64
-		wantOk  bool
+		name   string
+		input  interface{}
+		want   float64
+		wantOk bool
 	}{
 		{name: "int", input: int(42), want: 42.0, wantOk: true},
 		{name: "int negative", input: int(-10), want: -10.0, wantOk: true},
