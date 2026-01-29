@@ -9,32 +9,37 @@ import (
 )
 
 // V-SOL GPON OLT SNMP OIDs
-// Based on olt-simulator OID templates (olt-simulator/devices/tier3_vendors/vsol/v2.1.6r/oids_templates.yaml)
+// Verified against real V-SOL Eight GPON OLT Platform V2.1.6R (10.0.0.254)
 // Enterprise OID: 1.3.6.1.4.1.37950
+//
+// Note: CPU and Memory metrics are NOT available via SNMP on V-SOL OLTs.
+// Temperature is the only system health metric available via SNMP.
 
 const (
 	// Enterprise OID prefix for V-SOL
 	OIDVSOLEnterprise = "1.3.6.1.4.1.37950"
 
 	// Standard MIB-II System OIDs (RFC 1213)
-	OIDSysDescr   = "1.3.6.1.2.1.1.1.0" // System description
-	OIDSysUpTime  = "1.3.6.1.2.1.1.3.0" // System uptime in hundredths of seconds
+	OIDSysDescr   = "1.3.6.1.2.1.1.1.0" // System description (e.g., "V1600G1")
+	OIDSysUpTime  = "1.3.6.1.2.1.1.3.0" // System uptime in hundredths of seconds (Timeticks)
 	OIDSysName    = "1.3.6.1.2.1.1.5.0" // System name / hostname
 	OIDIfNumber   = "1.3.6.1.2.1.2.1.0" // Number of interfaces
 
 	// Standard MIB-II Interface Table OIDs (RFC 1213) - for fallback port listing
-	OIDIfDescr       = "1.3.6.1.2.1.2.2.1.2"  // Interface description
-	OIDIfAdminStatus = "1.3.6.1.2.1.2.2.1.7"  // Admin status (1=up, 2=down, 3=testing)
-	OIDIfOperStatus  = "1.3.6.1.2.1.2.2.1.8"  // Operational status (1=up, 2=down, etc.)
+	OIDIfDescr       = "1.3.6.1.2.1.2.2.1.2" // Interface description
+	OIDIfAdminStatus = "1.3.6.1.2.1.2.2.1.7" // Admin status (1=up, 2=down, 3=testing)
+	OIDIfOperStatus  = "1.3.6.1.2.1.2.2.1.8" // Operational status (1=up, 2=down, etc.)
 
 	// V-SOL System Info OIDs (1.3.6.1.4.1.37950.1.1.5.10.12.5)
-	OIDVSOLHostname         = "1.3.6.1.4.1.37950.1.1.5.10.12.5.1.0" // OLT hostname
-	OIDVSOLVersion          = "1.3.6.1.4.1.37950.1.1.5.10.12.5.2.0" // Software version
-	OIDVSOLSerialNumber     = "1.3.6.1.4.1.37950.1.1.5.10.12.5.3.0" // OLT serial number
-	OIDVSOLSoftwareCreated  = "1.3.6.1.4.1.37950.1.1.5.10.12.5.4.0" // Software build timestamp
-	OIDVSOLHardwareVersion  = "1.3.6.1.4.1.37950.1.1.5.10.12.5.5.0" // Hardware version
-	OIDVSOLTemperature      = "1.3.6.1.4.1.37950.1.1.5.10.12.7.1.0" // System temperature (Celsius)
-	OIDVSOLFanState         = "1.3.6.1.4.1.37950.1.1.5.10.12.7.2.0" // Fan state
+	// Verified against real V-SOL OLT
+	OIDVSOLHostname        = "1.3.6.1.4.1.37950.1.1.5.10.12.5.1.0"  // OLT hostname
+	OIDVSOLVersion         = "1.3.6.1.4.1.37950.1.1.5.10.12.5.4.0"  // Software version (e.g., "V2.1.6R")
+	OIDVSOLHardwareVersion = "1.3.6.1.4.1.37950.1.1.5.10.12.5.5.0"  // Hardware version (e.g., "eight gpon olt platform")
+	OIDVSOLMACAddress      = "1.3.6.1.4.1.37950.1.1.5.10.12.5.7.0"  // OLT MAC address
+	OIDVSOLUptimeString    = "1.3.6.1.4.1.37950.1.1.5.10.12.5.8.0"  // Uptime string (e.g., "1 Days 18 Hours 36 Minutes 15 Seconds")
+	OIDVSOLTemperature     = "1.3.6.1.4.1.37950.1.1.5.10.12.5.9.0"  // System temperature (INTEGER, Celsius)
+	OIDVSOLDateTime        = "1.3.6.1.4.1.37950.1.1.5.10.12.5.10.0" // Current date/time string
+	OIDVSOLSerialNumber    = "1.3.6.1.4.1.37950.1.1.5.10.12.5.11.0" // OLT serial number
 
 	// PON Port Table OIDs (1.3.6.1.4.1.37950.1.1.6.1.2.1)
 	// Format: .2.1.{attr}.{pon_idx} where pon_idx = 1-8

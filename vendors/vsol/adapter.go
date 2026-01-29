@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nanoncore/nano-southbound/drivers/cli"
 	"github.com/nanoncore/nano-southbound/drivers/snmp"
 	"github.com/nanoncore/nano-southbound/model"
 	"github.com/nanoncore/nano-southbound/types"
@@ -43,6 +44,12 @@ func NewAdapter(baseDriver types.Driver, config *types.EquipmentConfig) types.Dr
 	// Create secondary SNMP driver if base is CLI and SNMP not available
 	if adapter.cliExecutor != nil && adapter.snmpExecutor == nil {
 		adapter.createSNMPDriver()
+	}
+
+	// Create secondary CLI driver if base is SNMP and CLI credentials available
+	// This is needed for V-SOL because CPU/Memory are only available via CLI
+	if adapter.snmpExecutor != nil && adapter.cliExecutor == nil {
+		adapter.createCLIDriver()
 	}
 
 	return adapter
@@ -87,22 +94,97 @@ func (a *Adapter) createSNMPDriver() {
 	}
 }
 
+// createCLIDriver creates a CLI driver for operations not available via SNMP
+// V-SOL CPU/Memory metrics are only available via CLI commands
+func (a *Adapter) createCLIDriver() {
+	// Check if CLI credentials are provided in metadata
+	if a.config.Metadata == nil {
+		return
+	}
+
+	// CLI credentials can come from config or metadata
+	username := a.config.Username
+	password := a.config.Password
+	cliHost := a.config.Address
+	cliPort := 22 // Default SSH port
+
+	// Check metadata for CLI credentials (used when SNMP is primary)
+	if host, ok := a.config.Metadata["cli_host"]; ok && host != "" {
+		cliHost = host
+	}
+	if portStr, ok := a.config.Metadata["cli_port"]; ok && portStr != "" {
+		if port, err := strconv.Atoi(portStr); err == nil {
+			cliPort = port
+		}
+	}
+
+	// Need at least username/password to create CLI driver
+	if username == "" || password == "" {
+		return
+	}
+
+	cliConfig := &types.EquipmentConfig{
+		Name:     a.config.Name,
+		Vendor:   a.config.Vendor,
+		Address:  cliHost,
+		Port:     cliPort,
+		Protocol: types.ProtocolCLI,
+		Username: username,
+		Password: password,
+		Timeout:  a.config.Timeout,
+	}
+
+	cliDriver, err := cli.NewDriver(cliConfig)
+	if err != nil {
+		return // CLI creation failed, continue without it
+	}
+
+	// Store as secondary driver (for connecting later)
+	a.secondaryDriver = cliDriver
+	if executor, ok := cliDriver.(types.CLIExecutor); ok {
+		a.cliExecutor = executor
+	}
+}
+
 func (a *Adapter) Connect(ctx context.Context, config *types.EquipmentConfig) error {
 	// Connect primary driver
 	if err := a.baseDriver.Connect(ctx, config); err != nil {
 		return fmt.Errorf("primary driver connect failed: %w", err)
 	}
 
-	// Connect secondary driver if present
+	// Connect secondary driver if present (could be SNMP or CLI)
 	if a.secondaryDriver != nil {
-		snmpConfig := *a.config
-		snmpConfig.Protocol = types.ProtocolSNMP
-		if a.config.SecondaryPort > 0 {
-			snmpConfig.Port = a.config.SecondaryPort
-		} else {
-			snmpConfig.Port = 161
+		// Determine secondary driver type based on what executor we need
+		if a.cliExecutor != nil && a.snmpExecutor == nil {
+			// Secondary is SNMP (primary was CLI)
+			snmpConfig := *a.config
+			snmpConfig.Protocol = types.ProtocolSNMP
+			if a.config.SecondaryPort > 0 {
+				snmpConfig.Port = a.config.SecondaryPort
+			} else {
+				snmpConfig.Port = 161
+			}
+			_ = a.secondaryDriver.Connect(ctx, &snmpConfig) // Ignore error - secondary is optional
+		} else if a.snmpExecutor != nil && a.cliExecutor != nil {
+			// Secondary is CLI (primary was SNMP, created CLI for metrics)
+			cliPort := 22
+			if portStr, ok := a.config.Metadata["cli_port"]; ok && portStr != "" {
+				if port, err := strconv.Atoi(portStr); err == nil {
+					cliPort = port
+				}
+			}
+			cliConfig := &types.EquipmentConfig{
+				Name:     a.config.Name,
+				Vendor:   a.config.Vendor,
+				Address:  a.config.Address,
+				Port:     cliPort,
+				Protocol: types.ProtocolCLI,
+				Username: a.config.Username,
+				Password: a.config.Password,
+				Timeout:  a.config.Timeout,
+			}
+			_ = a.secondaryDriver.Connect(ctx, cliConfig) // Ignore error - secondary is optional
 		}
-		_ = a.secondaryDriver.Connect(ctx, &snmpConfig) // Ignore error - secondary is optional
 	}
 
 	return nil
@@ -1611,52 +1693,75 @@ func (a *Adapter) GetAlarms(ctx context.Context) ([]types.OLTAlarm, error) {
 }
 
 // GetOLTStatus returns comprehensive OLT status (DriverV2)
+// Uses hybrid approach: SNMP for basic metrics + CLI for CPU/Memory (not available via SNMP)
 func (a *Adapter) GetOLTStatus(ctx context.Context) (*types.OLTStatus, error) {
-	// Try SNMP first (faster, less intrusive)
+	var status *types.OLTStatus
+	var snmpErr error
+
+	// Try SNMP first for base metrics (uptime, temperature, firmware, ports)
 	if a.snmpExecutor != nil {
-		status, err := a.getOLTStatusSNMP(ctx)
-		if err == nil {
+		status, snmpErr = a.getOLTStatusSNMP(ctx)
+		// Don't return yet - we still need CLI for CPU/Memory
+	}
+
+	// If SNMP failed or wasn't available, initialize status for CLI fallback
+	if status == nil {
+		if a.cliExecutor == nil {
+			return nil, fmt.Errorf("no executor available (need CLI or SNMP)")
+		}
+		status = &types.OLTStatus{
+			Vendor:      "vsol",
+			Model:       a.detectModel(),
+			IsReachable: true,
+			IsHealthy:   true,
+			LastPoll:    time.Now(),
+			Metadata:    make(map[string]interface{}),
+		}
+	}
+
+	// Initialize metadata if nil (SNMP path might have created status without it)
+	if status.Metadata == nil {
+		status.Metadata = make(map[string]interface{})
+	}
+
+	// Always try CLI for CPU/Memory metrics (not available via SNMP on V-SOL)
+	if a.cliExecutor != nil {
+		a.enrichStatusWithCLIMetrics(ctx, status)
+	}
+
+	// If SNMP failed and we had to use CLI for everything, get version info via CLI
+	if snmpErr != nil && a.cliExecutor != nil {
+		// Ensure we're in config mode - required for "show sys" commands on V-Sol
+		_, _ = a.cliExecutor.ExecCommand(ctx, "configure terminal")
+
+		// Get version info (serial, firmware)
+		versionOutput, err := a.cliExecutor.ExecCommand(ctx, "show version")
+		if err != nil {
+			status.IsReachable = false
 			return status, nil
 		}
-		// Fall through to CLI on SNMP failure
+
+		// Parse serial number: "Olt Serial Number:           V2104230071"
+		snRe := regexp.MustCompile(`(?i)olt serial number[:\s]+(\S+)`)
+		if match := snRe.FindStringSubmatch(versionOutput); len(match) > 1 {
+			status.SerialNumber = match[1]
+		}
+
+		// Parse firmware version: "Software Version:            V2.1.6R"
+		fwRe := regexp.MustCompile(`(?i)software version[:\s]+(\S+)`)
+		if match := fwRe.FindStringSubmatch(versionOutput); len(match) > 1 {
+			status.Firmware = match[1]
+		}
 	}
 
-	// Fallback to CLI
-	if a.cliExecutor == nil {
-		return nil, fmt.Errorf("no executor available (need CLI or SNMP)")
-	}
+	return status, nil
+}
 
-	status := &types.OLTStatus{
-		Vendor:      "vsol",
-		Model:       a.detectModel(),
-		IsReachable: true,
-		IsHealthy:   true,
-		LastPoll:    time.Now(),
-		Metadata:    make(map[string]interface{}),
-	}
-
+// enrichStatusWithCLIMetrics adds CPU/Memory metrics via CLI commands
+// These metrics are NOT available via SNMP on V-SOL OLTs
+func (a *Adapter) enrichStatusWithCLIMetrics(ctx context.Context, status *types.OLTStatus) {
 	// Ensure we're in config mode - required for "show sys" commands on V-Sol
-	// (GetONUList may have left us in exec mode after its exit commands)
 	_, _ = a.cliExecutor.ExecCommand(ctx, "configure terminal")
-
-	// Get version info (serial, firmware)
-	versionOutput, err := a.cliExecutor.ExecCommand(ctx, "show version")
-	if err != nil {
-		status.IsReachable = false
-		return status, nil
-	}
-
-	// Parse serial number: "Olt Serial Number:           V2104230071"
-	snRe := regexp.MustCompile(`(?i)olt serial number[:\s]+(\S+)`)
-	if match := snRe.FindStringSubmatch(versionOutput); len(match) > 1 {
-		status.SerialNumber = match[1]
-	}
-
-	// Parse firmware version: "Software Version:            V2.1.6R"
-	fwRe := regexp.MustCompile(`(?i)software version[:\s]+(\S+)`)
-	if match := fwRe.FindStringSubmatch(versionOutput); len(match) > 1 {
-		status.Firmware = match[1]
-	}
 
 	// Get CPU usage: "show sys cpu-usage"
 	// Output has %idle column, CPU usage = 100 - idle
@@ -1700,52 +1805,8 @@ func (a *Adapter) GetOLTStatus(ctx context.Context) (*types.OLTStatus, error) {
 		}
 	}
 
-	// Get uptime: "show sys running-time"
-	// "Syetem Running Time:         6 Days 3 Hours 5 Minutes 31 Seconds"
-	uptimeOutput, err := a.cliExecutor.ExecCommand(ctx, "show sys running-time")
-	if err == nil {
-		var totalSeconds int64
-		daysRe := regexp.MustCompile(`(\d+)\s*days?`)
-		hoursRe := regexp.MustCompile(`(\d+)\s*hours?`)
-		minsRe := regexp.MustCompile(`(\d+)\s*minutes?`)
-		secsRe := regexp.MustCompile(`(\d+)\s*seconds?`)
-		uptimeLower := strings.ToLower(uptimeOutput)
-		if match := daysRe.FindStringSubmatch(uptimeLower); len(match) > 1 {
-			days, _ := strconv.ParseInt(match[1], 10, 64)
-			totalSeconds += days * 86400
-		}
-		if match := hoursRe.FindStringSubmatch(uptimeLower); len(match) > 1 {
-			hours, _ := strconv.ParseInt(match[1], 10, 64)
-			totalSeconds += hours * 3600
-		}
-		if match := minsRe.FindStringSubmatch(uptimeLower); len(match) > 1 {
-			mins, _ := strconv.ParseInt(match[1], 10, 64)
-			totalSeconds += mins * 60
-		}
-		if match := secsRe.FindStringSubmatch(uptimeLower); len(match) > 1 {
-			secs, _ := strconv.ParseInt(match[1], 10, 64)
-			totalSeconds += secs
-		}
-		status.UptimeSeconds = totalSeconds
-	}
-
-	// Get PON port status
-	portOutput, err := a.cliExecutor.ExecCommand(ctx, "show pon status all")
-	if err == nil {
-		status.PONPorts = a.parsePONPortStatus(portOutput)
-	}
-
-	// Count ONUs
-	for _, port := range status.PONPorts {
-		status.TotalONUs += port.ONUCount
-		if port.OperState == "up" {
-			status.ActiveONUs += port.ONUCount
-		}
-	}
-
-	status.Metadata["version_output"] = versionOutput
-
-	return status, nil
+	// Note: Uptime and PON port status are handled by SNMP when available
+	// This function only enriches with CPU/Memory which are CLI-only on V-SOL
 }
 
 // getOLTStatusSNMP retrieves OLT status using SNMP (faster than CLI)
@@ -1772,24 +1833,32 @@ func (a *Adapter) getOLTStatusSNMP(ctx context.Context) (*types.OLTStatus, error
 		return nil, fmt.Errorf("SNMP query failed: %w", err)
 	}
 
-	// Parse system description
-	if desc, ok := common.ParseStringSNMPValue(results[OIDSysDescr]); ok {
-		status.Metadata["sysDescr"] = desc
+	// Parse system description (use GetSNMPResult to handle leading dot from gosnmp)
+	if val, ok := common.GetSNMPResult(results, OIDSysDescr); ok {
+		if desc, ok := common.ParseStringSNMPValue(val); ok {
+			status.Metadata["sysDescr"] = desc
+		}
 	}
 
 	// Parse uptime (timeticks to seconds)
-	if uptime, ok := common.ParseIntSNMPValue(results[OIDSysUpTime]); ok {
-		status.UptimeSeconds = int64(uptime / 100) // timeticks to seconds
+	if val, ok := common.GetSNMPResult(results, OIDSysUpTime); ok {
+		if uptime, ok := common.ParseIntSNMPValue(val); ok {
+			status.UptimeSeconds = int64(uptime / 100) // timeticks to seconds
+		}
 	}
 
 	// Parse firmware version
-	if version, ok := common.ParseStringSNMPValue(results[OIDVSOLVersion]); ok {
-		status.Firmware = version
+	if val, ok := common.GetSNMPResult(results, OIDVSOLVersion); ok {
+		if version, ok := common.ParseStringSNMPValue(val); ok {
+			status.Firmware = version
+		}
 	}
 
 	// Parse temperature
-	if temp, ok := common.ParseIntSNMPValue(results[OIDVSOLTemperature]); ok {
-		status.Temperature = float64(temp)
+	if val, ok := common.GetSNMPResult(results, OIDVSOLTemperature); ok {
+		if temp, ok := common.ParseIntSNMPValue(val); ok {
+			status.Temperature = float64(temp)
+		}
 	}
 
 	// Get PON port info via SNMP
