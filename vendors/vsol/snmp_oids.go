@@ -69,6 +69,8 @@ const (
 	OIDONUPhaseState     = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.10" // Phase state (syncMib/working)
 	OIDONUChannel        = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.11" // Channel info
 	OIDONUUptime         = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.12" // Uptime (seconds)
+	// NOTE: ONU VLAN (.13) is NOT available via SNMP on real V-SOL OLTs.
+	// VLAN data is retrieved via CLI (show running-config onu X) in GetAllONUDetails().
 
 	// ONU Optical Info Table OIDs (1.3.6.1.4.1.37950.1.1.6.1.1.3.1)
 	// Format: .3.1.{attr}.{pon_idx}.{onu_idx}

@@ -873,6 +873,7 @@ func (a *Adapter) GetAllONUDetails(ctx context.Context, onus []types.ONUInfo) ([
 			onuCommands = append(onuCommands,
 				fmt.Sprintf("show onu %d optical", onu.ONUID),
 				fmt.Sprintf("show onu %d statistics", onu.ONUID),
+				fmt.Sprintf("show running-config onu %d", onu.ONUID),
 			)
 		}
 
@@ -917,6 +918,15 @@ func (a *Adapter) GetAllONUDetails(ctx context.Context, onus []types.ONUInfo) ([
 							result[i].PacketsDown = stats.InputPackets
 							result[i].InputRateBps = stats.InputRateBps
 							result[i].OutputRateBps = stats.OutputRateBps
+						}
+					}
+					outputIdx++
+
+					// Parse running-config for VLAN
+					if outputIdx < len(outputs) {
+						vlan := a.parseONURunningConfigVLAN(outputs[outputIdx])
+						if vlan > 0 {
+							result[i].VLAN = vlan
 						}
 					}
 					outputIdx++
@@ -1180,6 +1190,35 @@ func (a *Adapter) parseONUStatistics(output string) *ONUStatistics {
 	}
 
 	return stats
+}
+
+// parseONURunningConfigVLAN parses VLAN from "show running-config onu X" output.
+// Looks for lines like:
+//   onu 1 service-port 1 gemport 1 uservlan 702 vlan 702 new_cos 0
+//   onu 1 service INTERNET gemport 1 vlan 702 cos 0-7
+func (a *Adapter) parseONURunningConfigVLAN(output string) int {
+	// Strip ANSI escape codes
+	output = common.StripANSI(output)
+
+	// Look for service-port line with vlan (most specific)
+	// Format: onu X service-port Y gemport Z uservlan VVV vlan VVV
+	servicePortRe := regexp.MustCompile(`service-port\s+\d+\s+gemport\s+\d+\s+uservlan\s+(\d+)`)
+	if match := servicePortRe.FindStringSubmatch(output); len(match) > 1 {
+		if vlan, err := strconv.Atoi(match[1]); err == nil && vlan > 0 {
+			return vlan
+		}
+	}
+
+	// Fallback: look for service line with vlan
+	// Format: onu X service NAME gemport Y vlan VVV
+	serviceRe := regexp.MustCompile(`service\s+\S+\s+gemport\s+\d+\s+vlan\s+(\d+)`)
+	if match := serviceRe.FindStringSubmatch(output); len(match) > 1 {
+		if vlan, err := strconv.Atoi(match[1]); err == nil && vlan > 0 {
+			return vlan
+		}
+	}
+
+	return 0
 }
 
 // detectONUVendor detects ONU vendor from serial number prefix
@@ -2086,6 +2125,8 @@ func (a *Adapter) getONUListSNMP(ctx context.Context) ([]types.ONUInfo, error) {
 	txPowers, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUTxPower)
 	distances, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUDistance)
 	profiles, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUProfile)
+	// NOTE: VLAN is NOT available via SNMP on real V-SOL OLTs.
+	// VLAN data is retrieved via CLI in GetAllONUDetails() using parseONURunningConfigVLAN().
 
 	// Build results by correlating tables via index
 	results := make([]types.ONUInfo, 0, len(serials))
@@ -2156,6 +2197,7 @@ func (a *Adapter) getONUListSNMP(ctx context.Context) ([]types.ONUInfo, error) {
 				onu.LineProfile = profile
 			}
 		}
+		// NOTE: VLAN is populated via CLI in GetAllONUDetails(), not SNMP
 
 		results = append(results, onu)
 	}
