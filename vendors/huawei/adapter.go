@@ -12,6 +12,7 @@ import (
 	"github.com/nanoncore/nano-southbound/drivers/snmp"
 	"github.com/nanoncore/nano-southbound/model"
 	"github.com/nanoncore/nano-southbound/types"
+	"github.com/nanoncore/nano-southbound/vendors/common"
 )
 
 // Adapter wraps a base driver with Huawei-specific logic
@@ -456,21 +457,21 @@ func (a *Adapter) getSubscriberStatsSNMP(ctx context.Context, subscriberID strin
 	}
 	if val, ok := results[txPowerOID]; ok {
 		if v, ok := val.(int64); ok {
-			if v != SNMPInvalidValue {
+			if v != common.SNMPInvalidValue {
 				stats.Metadata["tx_power_dbm"] = ConvertOpticalPower(v)
 			}
 		}
 	}
 	if val, ok := results[temperatureOID]; ok {
 		if v, ok := val.(int64); ok {
-			if v != SNMPInvalidValue {
+			if v != common.SNMPInvalidValue {
 				stats.Metadata["temperature_c"] = v
 			}
 		}
 	}
 	if val, ok := results[voltageOID]; ok {
 		if v, ok := val.(int64); ok {
-			if v != SNMPInvalidValue {
+			if v != common.SNMPInvalidValue {
 				stats.Metadata["voltage_v"] = ConvertVoltage(v)
 			}
 		}
@@ -643,7 +644,7 @@ func (a *Adapter) BulkScanONUsSNMP(ctx context.Context) ([]ONTStats, error) {
 		// Tx power
 		if txVal, ok := txPowers[index]; ok {
 			if txRaw, ok := txVal.(int64); ok {
-				if txRaw != SNMPInvalidValue {
+				if txRaw != common.SNMPInvalidValue {
 					onu.TxPower = ConvertOpticalPower(txRaw)
 				}
 			}
@@ -652,7 +653,7 @@ func (a *Adapter) BulkScanONUsSNMP(ctx context.Context) ([]ONTStats, error) {
 		// Temperature (convert from raw to Celsius)
 		if tempVal, ok := temperatures[index]; ok {
 			if tempRaw, ok := tempVal.(int64); ok {
-				if tempRaw != SNMPInvalidValue {
+				if tempRaw != common.SNMPInvalidValue {
 					onu.Temperature = ConvertTemperature(tempRaw)
 				}
 			}
@@ -661,7 +662,7 @@ func (a *Adapter) BulkScanONUsSNMP(ctx context.Context) ([]ONTStats, error) {
 		// Voltage
 		if voltVal, ok := voltages[index]; ok {
 			if voltRaw, ok := voltVal.(int64); ok {
-				if voltRaw != SNMPInvalidValue {
+				if voltRaw != common.SNMPInvalidValue {
 					onu.Voltage = ConvertVoltage(voltRaw)
 				}
 			}
@@ -677,7 +678,7 @@ func (a *Adapter) BulkScanONUsSNMP(ctx context.Context) ([]ONTStats, error) {
 		// Bias current (convert from µA to mA)
 		if biasVal, ok := biasCurrents[index]; ok {
 			if biasRaw, ok := biasVal.(int64); ok {
-				if biasRaw != SNMPInvalidValue {
+				if biasRaw != common.SNMPInvalidValue {
 					onu.BiasCurrent = float64(biasRaw) / 1000.0
 				}
 			}
@@ -908,24 +909,9 @@ func (a *Adapter) detectModel() string {
 
 // parseFSP extracts Frame/Slot/Port from subscriber metadata
 func (a *Adapter) parseFSP(subscriber *model.Subscriber) (frame, slot, port int) {
-	// Default values
-	frame = 0
-	slot = 0
-	port = 0
-
-	// Check subscriber annotations
-	if subscriber.Annotations == nil {
-		return
-	}
-
 	// Check for FSP in annotations (support both annotation formats)
 	// Format: "0/0/1" or "0/1/0" (frame/slot/port)
-	fsp := ""
-	if v, ok := subscriber.Annotations["nanoncore.com/gpon-fsp"]; ok {
-		fsp = v
-	} else if v, ok := subscriber.Annotations["nano.io/pon-port"]; ok {
-		fsp = v
-	}
+	fsp, _ := common.GetAnnotationString(subscriber.Annotations, "nanoncore.com/gpon-fsp", "nano.io/pon-port")
 
 	if fsp != "" {
 		parts := strings.Split(fsp, "/")
@@ -942,19 +928,8 @@ func (a *Adapter) parseFSP(subscriber *model.Subscriber) (frame, slot, port int)
 // getONTID extracts or generates ONT ID
 func (a *Adapter) getONTID(subscriber *model.Subscriber) int {
 	// Check subscriber annotations (support both annotation formats)
-	if subscriber.Annotations != nil {
-		// Try nanoncore.com/ont-id first
-		if idStr, ok := subscriber.Annotations["nanoncore.com/ont-id"]; ok {
-			if id, err := strconv.Atoi(idStr); err == nil {
-				return id
-			}
-		}
-		// Try nano.io/onu-id
-		if idStr, ok := subscriber.Annotations["nano.io/onu-id"]; ok {
-			if id, err := strconv.Atoi(idStr); err == nil {
-				return id
-			}
-		}
+	if id, ok := common.GetAnnotationInt(subscriber.Annotations, "nanoncore.com/ont-id", "nano.io/onu-id"); ok {
+		return id
 	}
 	// Generate from VLAN as fallback (max 128 ONTs per port)
 	return subscriber.Spec.VLAN % 128
@@ -965,16 +940,7 @@ func (a *Adapter) getLineProfileID(tier *model.ServiceTier) int {
 	if tier == nil {
 		return 1 // default profile ID
 	}
-	// Check tier annotations for custom profile ID
-	if tier.Annotations != nil {
-		if idStr, ok := tier.Annotations["nanoncore.com/line-profile-id"]; ok {
-			if id, err := strconv.Atoi(idStr); err == nil {
-				return id
-			}
-		}
-	}
-	// Default profile ID (1 is typically the default/basic profile)
-	return 1
+	return common.GetAnnotationIntWithDefault(tier.Annotations, 1, "nanoncore.com/line-profile-id")
 }
 
 // getServiceProfileID returns the service profile ID for a service tier
@@ -982,16 +948,7 @@ func (a *Adapter) getServiceProfileID(tier *model.ServiceTier) int {
 	if tier == nil {
 		return 1 // default service profile ID
 	}
-	// Check tier annotations for custom profile ID
-	if tier.Annotations != nil {
-		if idStr, ok := tier.Annotations["nanoncore.com/srv-profile-id"]; ok {
-			if id, err := strconv.Atoi(idStr); err == nil {
-				return id
-			}
-		}
-	}
-	// Default service profile ID
-	return 1
+	return common.GetAnnotationIntWithDefault(tier.Annotations, 1, "nanoncore.com/srv-profile-id")
 }
 
 // getTrafficTableID returns the traffic table ID for a service tier
@@ -999,13 +956,8 @@ func (a *Adapter) getTrafficTableID(tier *model.ServiceTier) int {
 	if tier == nil {
 		return 1 // default traffic table ID
 	}
-	// Check tier annotations for custom traffic table ID
-	if tier.Annotations != nil {
-		if idStr, ok := tier.Annotations["nanoncore.com/traffic-table-id"]; ok {
-			if id, err := strconv.Atoi(idStr); err == nil {
-				return id
-			}
-		}
+	if id, ok := common.GetAnnotationInt(tier.Annotations, "nanoncore.com/traffic-table-id"); ok {
+		return id
 	}
 	// Generate based on bandwidth (use bandwidth as table ID)
 	// This assumes traffic tables are pre-configured with matching IDs
