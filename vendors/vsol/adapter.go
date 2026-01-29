@@ -2085,6 +2085,7 @@ func (a *Adapter) getONUListSNMP(ctx context.Context) ([]types.ONUInfo, error) {
 	rxPowers, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONURxPower)
 	txPowers, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUTxPower)
 	distances, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUDistance)
+	profiles, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUProfile)
 
 	// Build results by correlating tables via index
 	results := make([]types.ONUInfo, 0, len(serials))
@@ -2148,6 +2149,11 @@ func (a *Adapter) getONUListSNMP(ctx context.Context) ([]types.ONUInfo, error) {
 		if val, ok := distances[index]; ok {
 			if dist, ok := ParseDistance(val); ok {
 				onu.DistanceM = dist
+			}
+		}
+		if val, ok := profiles[index]; ok {
+			if profile, ok := common.ParseStringSNMPValue(val); ok {
+				onu.LineProfile = profile
 			}
 		}
 
