@@ -67,10 +67,16 @@ const (
 	OIDONUEquipmentID    = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.8"  // Equipment ID
 	OIDONUFirmware       = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.9"  // Firmware version
 	OIDONUPhaseState     = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.10" // Phase state (syncMib/working)
-	OIDONUChannel        = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.11" // Channel info
-	OIDONUUptime         = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.12" // Uptime (seconds)
-	// NOTE: ONU VLAN (.13) is NOT available via SNMP on real V-SOL OLTs.
-	// VLAN data is retrieved via CLI (show running-config onu X) in GetAllONUDetails().
+	OIDONUChannel = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.11" // Channel info
+	OIDONUUptime  = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.12" // Uptime (seconds)
+
+	// ONU Service VLAN OIDs (1.3.6.1.4.1.37950.1.1.6.1.1.8.7.1)
+	// Format: .7.1.{attr}.{pon_idx}.{onu_idx}.{gem_idx}
+	// Verified against real V-SOL OLT on 2026-01-29
+	// Returns INTEGER VLAN ID directly (e.g., 702)
+	OIDONUServiceVLAN      = "1.3.6.1.4.1.37950.1.1.6.1.1.8.7.1.7" // Service VLAN (INTEGER)
+	OIDONUUserVLAN         = "1.3.6.1.4.1.37950.1.1.6.1.1.8.7.1.8" // User VLAN (INTEGER)
+	OIDONUTranslationVLAN  = "1.3.6.1.4.1.37950.1.1.6.1.1.8.7.1.14" // Translation VLAN (INTEGER)
 
 	// ONU Optical Info Table OIDs (1.3.6.1.4.1.37950.1.1.6.1.1.3.1)
 	// Format: .3.1.{attr}.{pon_idx}.{onu_idx}
@@ -273,6 +279,40 @@ func ParseONUIndex(index string) (ponIdx, onuIdx int, err error) {
 	}
 
 	return ponIdx, onuIdx, nil
+}
+
+// ParseONUVLANIndex extracts PON port index, ONU ID, and GEM index from SNMP VLAN index
+// V-SOL format: {pon_idx}.{onu_idx}.{gem_idx}
+// pon_idx: 1-8 maps to ports "0/1" through "0/8"
+// onu_idx: 1-128 is the ONU ID
+// gem_idx: 1-N is the GEM port index (usually 1 for basic config)
+func ParseONUVLANIndex(index string) (ponIdx, onuIdx, gemIdx int, err error) {
+	// Strip leading dot if present (gosnmp returns OIDs with leading dots)
+	if len(index) > 0 && index[0] == '.' {
+		index = index[1:]
+	}
+
+	parts := strings.Split(index, ".")
+	if len(parts) != 3 {
+		return 0, 0, 0, fmt.Errorf("invalid V-SOL VLAN index format (expected 3 components): %s", index)
+	}
+
+	ponIdx, err = strconv.Atoi(parts[0])
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("invalid PON index in %s: %w", index, err)
+	}
+
+	onuIdx, err = strconv.Atoi(parts[1])
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("invalid ONU index in %s: %w", index, err)
+	}
+
+	gemIdx, err = strconv.Atoi(parts[2])
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("invalid GEM index in %s: %w", index, err)
+	}
+
+	return ponIdx, onuIdx, gemIdx, nil
 }
 
 // PONIndexToPort converts SNMP PON port index (1-8) to port string ("0/1" through "0/8")

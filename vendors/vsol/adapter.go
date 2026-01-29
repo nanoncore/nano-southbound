@@ -2125,8 +2125,9 @@ func (a *Adapter) getONUListSNMP(ctx context.Context) ([]types.ONUInfo, error) {
 	txPowers, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUTxPower)
 	distances, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUDistance)
 	profiles, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUProfile)
-	// NOTE: VLAN is NOT available via SNMP on real V-SOL OLTs.
-	// VLAN data is retrieved via CLI in GetAllONUDetails() using parseONURunningConfigVLAN().
+	// Service VLAN is available via SNMP at OIDONUServiceVLAN
+	// Format: {pon_idx}.{onu_idx}.{gem_idx} - we need to map this to {pon_idx}.{onu_idx}
+	serviceVLANs, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUServiceVLAN)
 
 	// Build results by correlating tables via index
 	results := make([]types.ONUInfo, 0, len(serials))
@@ -2197,7 +2198,25 @@ func (a *Adapter) getONUListSNMP(ctx context.Context) ([]types.ONUInfo, error) {
 				onu.LineProfile = profile
 			}
 		}
-		// NOTE: VLAN is populated via CLI in GetAllONUDetails(), not SNMP
+		// Service VLAN - OID index is {pon}.{onu}.{gem}, we match on {pon}.{onu}
+		// Try gem index 1 first (most common), then search for any gem
+		vlanIndex := fmt.Sprintf("%d.%d.1", ponIdx, onuIdx)
+		if val, ok := serviceVLANs[vlanIndex]; ok {
+			if vlan, ok := common.ParseIntSNMPValue(val); ok && vlan > 0 {
+				onu.VLAN = int(vlan)
+			}
+		} else {
+			// Search for any gem index for this ONU
+			prefix := fmt.Sprintf("%d.%d.", ponIdx, onuIdx)
+			for vlanIdx, val := range serviceVLANs {
+				if strings.HasPrefix(vlanIdx, prefix) {
+					if vlan, ok := common.ParseIntSNMPValue(val); ok && vlan > 0 {
+						onu.VLAN = int(vlan)
+						break
+					}
+				}
+			}
+		}
 
 		results = append(results, onu)
 	}
