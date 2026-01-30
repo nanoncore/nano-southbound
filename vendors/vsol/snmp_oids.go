@@ -20,10 +20,10 @@ const (
 	OIDVSOLEnterprise = "1.3.6.1.4.1.37950"
 
 	// Standard MIB-II System OIDs (RFC 1213)
-	OIDSysDescr   = "1.3.6.1.2.1.1.1.0" // System description (e.g., "V1600G1")
-	OIDSysUpTime  = "1.3.6.1.2.1.1.3.0" // System uptime in hundredths of seconds (Timeticks)
-	OIDSysName    = "1.3.6.1.2.1.1.5.0" // System name / hostname
-	OIDIfNumber   = "1.3.6.1.2.1.2.1.0" // Number of interfaces
+	OIDSysDescr  = "1.3.6.1.2.1.1.1.0" // System description (e.g., "V1600G1")
+	OIDSysUpTime = "1.3.6.1.2.1.1.3.0" // System uptime in hundredths of seconds (Timeticks)
+	OIDSysName   = "1.3.6.1.2.1.1.5.0" // System name / hostname
+	OIDIfNumber  = "1.3.6.1.2.1.2.1.0" // Number of interfaces
 
 	// Standard MIB-II Interface Table OIDs (RFC 1213) - for fallback port listing
 	OIDIfDescr       = "1.3.6.1.2.1.2.2.1.2" // Interface description
@@ -57,26 +57,26 @@ const (
 	// Format: .2.1.{attr}.{pon_idx}.{onu_idx}
 	// pon_idx = 1-8 (maps to ports 0/1 through 0/8)
 	// onu_idx = 1-128 (ONU ID)
-	OIDONUAdminState     = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.1"  // Admin state (1=enable, 2=disable)
-	OIDONUOMCCState      = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.2"  // OMCC state
-	OIDONUProfile        = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.3"  // Profile name
-	OIDONUAuthMode       = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.4"  // Auth mode (sn/password)
-	OIDONUSerialNumber   = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.5"  // Serial number
-	OIDONUModel          = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.6"  // Model name
-	OIDONUVendorID       = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.7"  // Vendor ID (4-char)
-	OIDONUEquipmentID    = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.8"  // Equipment ID
-	OIDONUFirmware       = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.9"  // Firmware version
-	OIDONUPhaseState     = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.10" // Phase state (syncMib/working)
-	OIDONUChannel = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.11" // Channel info
-	OIDONUUptime  = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.12" // Uptime (seconds)
+	OIDONUAdminState   = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.1"  // Admin state (1=enable, 2=disable)
+	OIDONUOMCCState    = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.2"  // OMCC state
+	OIDONUProfile      = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.3"  // Profile name
+	OIDONUAuthMode     = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.4"  // Auth mode (sn/password)
+	OIDONUSerialNumber = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.5"  // Serial number
+	OIDONUModel        = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.6"  // Model name
+	OIDONUVendorID     = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.7"  // Vendor ID (4-char)
+	OIDONUEquipmentID  = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.8"  // Equipment ID
+	OIDONUFirmware     = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.9"  // Firmware version
+	OIDONUPhaseState   = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.10" // Phase state (syncMib/working)
+	OIDONUChannel      = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.11" // Channel info
+	OIDONUUptime       = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.12" // Uptime (seconds)
 
 	// ONU Service VLAN OIDs (1.3.6.1.4.1.37950.1.1.6.1.1.8.7.1)
 	// Format: .7.1.{attr}.{pon_idx}.{onu_idx}.{gem_idx}
 	// Verified against real V-SOL OLT on 2026-01-29
 	// Returns INTEGER VLAN ID directly (e.g., 702)
-	OIDONUServiceVLAN      = "1.3.6.1.4.1.37950.1.1.6.1.1.8.7.1.7" // Service VLAN (INTEGER)
-	OIDONUUserVLAN         = "1.3.6.1.4.1.37950.1.1.6.1.1.8.7.1.8" // User VLAN (INTEGER)
-	OIDONUTranslationVLAN  = "1.3.6.1.4.1.37950.1.1.6.1.1.8.7.1.14" // Translation VLAN (INTEGER)
+	OIDONUServiceVLAN     = "1.3.6.1.4.1.37950.1.1.6.1.1.8.7.1.7"  // Service VLAN (INTEGER)
+	OIDONUUserVLAN        = "1.3.6.1.4.1.37950.1.1.6.1.1.8.7.1.8"  // User VLAN (INTEGER)
+	OIDONUTranslationVLAN = "1.3.6.1.4.1.37950.1.1.6.1.1.8.7.1.14" // Translation VLAN (INTEGER)
 
 	// ONU Optical Info Table OIDs (1.3.6.1.4.1.37950.1.1.6.1.1.3.1)
 	// Format: .3.1.{attr}.{pon_idx}.{onu_idx}
@@ -91,12 +91,12 @@ const (
 
 	// ONU Capabilities Table OIDs (1.3.6.1.4.1.37950.1.1.6.1.1.4.1)
 	// Format: .4.1.{attr}.{pon_idx}.{onu_idx}
-	OIDONUTContNumber    = "1.3.6.1.4.1.37950.1.1.6.1.1.4.1.1" // T-CONT number
-	OIDONUGEMPortNumber  = "1.3.6.1.4.1.37950.1.1.6.1.1.4.1.2" // GEM port number
-	OIDONUEthUNINumber   = "1.3.6.1.4.1.37950.1.1.6.1.1.4.1.3" // Ethernet UNI ports
-	OIDONUPOTSUNINumber  = "1.3.6.1.4.1.37950.1.1.6.1.1.4.1.4" // POTS UNI ports
-	OIDONUWiFiUNINumber  = "1.3.6.1.4.1.37950.1.1.6.1.1.4.1.5" // WiFi UNI interfaces
-	OIDONUVEIPNumber     = "1.3.6.1.4.1.37950.1.1.6.1.1.4.1.6" // VEIP number
+	OIDONUTContNumber   = "1.3.6.1.4.1.37950.1.1.6.1.1.4.1.1" // T-CONT number
+	OIDONUGEMPortNumber = "1.3.6.1.4.1.37950.1.1.6.1.1.4.1.2" // GEM port number
+	OIDONUEthUNINumber  = "1.3.6.1.4.1.37950.1.1.6.1.1.4.1.3" // Ethernet UNI ports
+	OIDONUPOTSUNINumber = "1.3.6.1.4.1.37950.1.1.6.1.1.4.1.4" // POTS UNI ports
+	OIDONUWiFiUNINumber = "1.3.6.1.4.1.37950.1.1.6.1.1.4.1.5" // WiFi UNI interfaces
+	OIDONUVEIPNumber    = "1.3.6.1.4.1.37950.1.1.6.1.1.4.1.6" // VEIP number
 
 	// ONU Statistics Table OIDs (1.3.6.1.4.1.37950.1.1.6.1.1.5.1)
 	// Format: .5.1.{attr}.{pon_idx}.{onu_idx}
@@ -337,7 +337,7 @@ func PortToPONIndex(port string) (int, error) {
 
 // Aliases for common SNMP helpers (for backward compatibility)
 var (
-	GetSNMPResult        = common.GetSNMPResult
+	GetSNMPResult         = common.GetSNMPResult
 	ParseNumericSNMPValue = common.ParseIntSNMPValue
 	ParseUint64SNMPValue  = common.ParseUint64SNMPValue
 	ParseStringSNMPValue  = common.ParseStringSNMPValue

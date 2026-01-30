@@ -19,7 +19,7 @@ import (
 // V-SOL OLTs (V1600G series) use CLI + SNMP, with optional EMS REST API
 type Adapter struct {
 	baseDriver      types.Driver
-	secondaryDriver types.Driver      // SNMP driver when primary is CLI
+	secondaryDriver types.Driver // SNMP driver when primary is CLI
 	cliExecutor     types.CLIExecutor
 	snmpExecutor    types.SNMPExecutor
 	config          *types.EquipmentConfig
@@ -1227,8 +1227,9 @@ func (a *Adapter) parseONUStatistics(output string) *ONUStatistics {
 
 // parseONURunningConfigVLAN parses VLAN from "show running-config onu X" output.
 // Looks for lines like:
-//   onu 1 service-port 1 gemport 1 uservlan 702 vlan 702 new_cos 0
-//   onu 1 service INTERNET gemport 1 vlan 702 cos 0-7
+//
+//	onu 1 service-port 1 gemport 1 uservlan 702 vlan 702 new_cos 0
+//	onu 1 service INTERNET gemport 1 vlan 702 cos 0-7
 func (a *Adapter) parseONURunningConfigVLAN(output string) int {
 	// Strip ANSI escape codes
 	output = common.StripANSI(output)
@@ -1517,7 +1518,7 @@ func (a *Adapter) RestartONU(ctx context.Context, ponPort string, onuID int) (*t
 		result.Error = err.Error()
 		result.Message = "Failed to send deactivate command"
 		// Try to exit gracefully
-		a.cliExecutor.ExecCommands(ctx, []string{"exit", "exit"})
+		_, _ = a.cliExecutor.ExecCommands(ctx, []string{"exit", "exit"})
 		return result, fmt.Errorf("failed to deactivate ONU: %w", err)
 	}
 	result.DeactivateSuccess = true
@@ -1541,7 +1542,7 @@ func (a *Adapter) RestartONU(ctx context.Context, ponPort string, onuID int) (*t
 	_, err = a.cliExecutor.ExecCommand(ctx, fmt.Sprintf("onu %d activate", onuID))
 	if err != nil {
 		// Try to exit gracefully
-		a.cliExecutor.ExecCommands(ctx, []string{"exit", "exit"})
+		_, _ = a.cliExecutor.ExecCommands(ctx, []string{"exit", "exit"})
 		result.Error = err.Error()
 		result.Message = "Deactivated but failed to send activate command"
 		return result, fmt.Errorf("failed to activate ONU: %w", err)
@@ -2495,9 +2496,9 @@ func (a *Adapter) getPONPowerSNMP(ctx context.Context, ponPort string) (*types.P
 	return reading, nil
 }
 
-// getBulkONUOpticalSNMP retrieves optical readings for all ONUs in a single walk
+// GetBulkONUOpticalSNMP retrieves optical readings for all ONUs in a single walk
 // Useful for telemetry collection - much more efficient than per-ONU queries
-func (a *Adapter) getBulkONUOpticalSNMP(ctx context.Context) (map[string]*types.ONUPowerReading, error) {
+func (a *Adapter) GetBulkONUOpticalSNMP(ctx context.Context) (map[string]*types.ONUPowerReading, error) {
 	if a.snmpExecutor == nil {
 		return nil, fmt.Errorf("SNMP executor not available")
 	}
