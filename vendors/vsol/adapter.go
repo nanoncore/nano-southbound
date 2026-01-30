@@ -262,7 +262,7 @@ func (a *Adapter) buildGPONCommands(ponPort string, onuID int, serial string, vl
 
 	commands := []string{
 		// Enter config mode
-		"config",
+		"configure terminal",
 
 		// Select GPON interface
 		fmt.Sprintf("interface gpon %s", ponPort),
@@ -309,7 +309,7 @@ func (a *Adapter) buildEPONCommands(ponPort string, onuID int, mac string, vlan 
 	// V-SOL EPON CLI reference
 
 	commands := []string{
-		"config",
+		"configure terminal",
 		fmt.Sprintf("interface epon %s", ponPort),
 
 		// Register LLID with MAC address
@@ -354,7 +354,7 @@ func (a *Adapter) UpdateSubscriber(ctx context.Context, subscriber *model.Subscr
 
 	if a.detectPONType() == "gpon" {
 		commands = []string{
-			"config",
+			"configure terminal",
 			fmt.Sprintf("interface gpon %s", ponPort),
 			// Update profiles
 			fmt.Sprintf("onu profile %d line-profile %s service-profile %s",
@@ -369,7 +369,7 @@ func (a *Adapter) UpdateSubscriber(ctx context.Context, subscriber *model.Subscr
 		}
 	} else {
 		commands = []string{
-			"config",
+			"configure terminal",
 			fmt.Sprintf("interface epon %s", ponPort),
 			fmt.Sprintf("llid profile %d line-profile %s service-profile %s",
 				onuID, a.getLineProfile(tier), a.getServiceProfile(tier)),
@@ -397,7 +397,7 @@ func (a *Adapter) DeleteSubscriber(ctx context.Context, subscriberID string) err
 
 	if a.detectPONType() == "gpon" {
 		commands = []string{
-			"config",
+			"configure terminal",
 			fmt.Sprintf("interface gpon %s", ponPort),
 			fmt.Sprintf("no onu %d", onuID),
 			"exit",
@@ -406,7 +406,7 @@ func (a *Adapter) DeleteSubscriber(ctx context.Context, subscriberID string) err
 		}
 	} else {
 		commands = []string{
-			"config",
+			"configure terminal",
 			fmt.Sprintf("interface epon %s", ponPort),
 			fmt.Sprintf("no llid %d", onuID),
 			"exit",
@@ -430,7 +430,7 @@ func (a *Adapter) SuspendSubscriber(ctx context.Context, subscriberID string) er
 
 	if a.detectPONType() == "gpon" {
 		commands = []string{
-			"config",
+			"configure terminal",
 			fmt.Sprintf("interface gpon %s", ponPort),
 			fmt.Sprintf("onu disable %d", onuID),
 			"exit",
@@ -439,7 +439,7 @@ func (a *Adapter) SuspendSubscriber(ctx context.Context, subscriberID string) er
 		}
 	} else {
 		commands = []string{
-			"config",
+			"configure terminal",
 			fmt.Sprintf("interface epon %s", ponPort),
 			fmt.Sprintf("llid disable %d", onuID),
 			"exit",
@@ -463,7 +463,7 @@ func (a *Adapter) ResumeSubscriber(ctx context.Context, subscriberID string) err
 
 	if a.detectPONType() == "gpon" {
 		commands = []string{
-			"config",
+			"configure terminal",
 			fmt.Sprintf("interface gpon %s", ponPort),
 			fmt.Sprintf("no onu disable %d", onuID),
 			"exit",
@@ -472,7 +472,7 @@ func (a *Adapter) ResumeSubscriber(ctx context.Context, subscriberID string) err
 		}
 	} else {
 		commands = []string{
-			"config",
+			"configure terminal",
 			fmt.Sprintf("interface epon %s", ponPort),
 			fmt.Sprintf("no llid disable %d", onuID),
 			"exit",
@@ -552,8 +552,8 @@ func (a *Adapter) HealthCheck(ctx context.Context) error {
 // ============================================================================
 
 // DiscoverONUs discovers unprovisioned ONUs on specified PON ports (DriverV2)
-// Note: V1600 series does not support autofind commands. Instead, we return all
-// currently registered ONUs - the caller can filter out already-provisioned ones.
+// DiscoverONUs returns pending/undiscovered ONUs from the autofind list.
+// For V-SOL OLTs, this uses the "show onu auto-find" command (with hyphen).
 func (a *Adapter) DiscoverONUs(ctx context.Context, ponPorts []string) ([]types.ONUDiscovery, error) {
 	if a.cliExecutor == nil {
 		return nil, fmt.Errorf("CLI executor not available")
@@ -561,49 +561,68 @@ func (a *Adapter) DiscoverONUs(ctx context.Context, ponPorts []string) ([]types.
 
 	var discoveries []types.ONUDiscovery
 
-	// V1600 series doesn't have autofind - get registered ONUs instead
-	// Use the same V1600-style command sequence as GetONUList
 	if a.detectPONType() == "gpon" {
 		// Determine which ports to scan
 		portsToScan := ponPorts
 		if len(portsToScan) == 0 {
 			portsToScan = a.getPONPortList()
 		}
+
+		// Try autofind command on each PON port to get pending/undiscovered ONUs
+		// Real V-SOL OLTs use "show onu auto-find" (with hyphen)
 		for _, ponPort := range portsToScan {
 			commands := []string{
 				"configure terminal",
 				fmt.Sprintf("interface gpon %s", ponPort),
-				"show onu info",
+				"show onu auto-find",
 				"exit",
 				"exit",
 			}
 
 			outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
-			if err != nil {
-				// Try legacy autofind command as fallback (for older V-SOL models)
-				cmd := "show onu autofind all"
-				output, legacyErr := a.cliExecutor.ExecCommand(ctx, cmd)
-				if legacyErr != nil {
-					// If both fail, return empty list (no discovery available on this model)
-					return []types.ONUDiscovery{}, nil
-				}
-				discoveries = append(discoveries, a.parseAutofindOutput(output)...)
-				break // Legacy command gets all ports at once
-			}
-
-			// Parse the "show onu info" output (index 2 in the commands)
-			if len(outputs) > 2 {
-				onus := a.parseV1600ONUList(outputs[2], ponPort)
-				for _, onu := range onus {
-					discovery := types.ONUDiscovery{
-						PONPort:      onu.PONPort,
-						Serial:       onu.Serial,
-						Model:        onu.Model,
-						RxPowerDBm:   onu.RxPowerDBm,
-						DistanceM:    onu.DistanceM,
-						DiscoveredAt: time.Now(),
+			if err == nil && len(outputs) > 2 {
+				// Parse autofind output (index 2 in the commands)
+				portDiscoveries := a.parseAutofindOutput(outputs[2])
+				// Set the PON port for each discovery
+				for i := range portDiscoveries {
+					if portDiscoveries[i].PONPort == "" {
+						portDiscoveries[i].PONPort = ponPort
 					}
-					discoveries = append(discoveries, discovery)
+				}
+				discoveries = append(discoveries, portDiscoveries...)
+			}
+		}
+
+		// If no autofind results, fall back to registered ONUs (V1600 behavior)
+		if len(discoveries) == 0 {
+			for _, ponPort := range portsToScan {
+				commands := []string{
+					"configure terminal",
+					fmt.Sprintf("interface gpon %s", ponPort),
+					"show onu info",
+					"exit",
+					"exit",
+				}
+
+				outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
+				if err != nil {
+					continue
+				}
+
+				// Parse the "show onu info" output (index 2 in the commands)
+				if len(outputs) > 2 {
+					onus := a.parseV1600ONUList(outputs[2], ponPort)
+					for _, onu := range onus {
+						discovery := types.ONUDiscovery{
+							PONPort:      onu.PONPort,
+							Serial:       onu.Serial,
+							Model:        onu.Model,
+							RxPowerDBm:   onu.RxPowerDBm,
+							DistanceM:    onu.DistanceM,
+							DiscoveredAt: time.Now(),
+						}
+						discoveries = append(discoveries, discovery)
+					}
 				}
 			}
 		}
@@ -954,7 +973,14 @@ func (a *Adapter) parseV1600ONUList(output string, ponPort string) []types.ONUIn
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
-		if line == "" || strings.HasPrefix(line, "Onuindex") || strings.HasPrefix(line, "-") {
+		// Skip headers, separators, empty lines, and error messages
+		if line == "" ||
+			strings.HasPrefix(line, "Onuindex") ||
+			strings.HasPrefix(line, "-") ||
+			strings.HasPrefix(line, "Error:") ||
+			strings.HasPrefix(line, "Error :") ||
+			strings.Contains(line, "command not") ||
+			strings.Contains(line, "not supported") {
 			continue
 		}
 
@@ -972,9 +998,16 @@ func (a *Adapter) parseV1600ONUList(output string, ponPort string) []types.ONUIn
 			if matches := re.FindStringSubmatch(onuIndex); len(matches) == 3 {
 				extractedPort = matches[1]
 				onuID, _ = strconv.Atoi(matches[2])
+			} else {
+				// Skip line if it doesn't match the expected ONU index format
+				continue
 			}
 
 			serial := common.StripANSI(fields[4]) // AuthInfo field contains serial (strip ANSI escape codes)
+			// Validate serial looks like a real serial number (not an error message word)
+			if len(serial) < 4 || strings.ToLower(serial) == "for" || strings.ToLower(serial) == "this" {
+				continue
+			}
 
 			onu := types.ONUInfo{
 				PONPort:     extractedPort,
@@ -1435,32 +1468,158 @@ func (a *Adapter) GetONUDistance(ctx context.Context, ponPort string, onuID int)
 }
 
 // RestartONU triggers a reboot of the specified ONU (DriverV2)
-func (a *Adapter) RestartONU(ctx context.Context, ponPort string, onuID int) error {
-	if a.cliExecutor == nil {
-		return fmt.Errorf("CLI executor not available")
+// V-SOL GPON OLTs don't have a direct "onu reboot" command.
+// Instead, we use "onu <id> deactivate" followed by "onu <id> activate" to restart.
+// This function verifies the ONU actually went offline and came back online.
+// Returns detailed results including verification status and retry count.
+func (a *Adapter) RestartONU(ctx context.Context, ponPort string, onuID int) (*types.RestartONUResult, error) {
+	result := &types.RestartONUResult{
+		Success: false,
 	}
 
-	var commands []string
-	if a.detectPONType() == "gpon" {
-		commands = []string{
-			"config",
-			fmt.Sprintf("interface gpon %s", ponPort),
-			fmt.Sprintf("onu reboot %d", onuID),
-			"exit",
-			"end",
-		}
-	} else {
-		commands = []string{
-			"config",
+	if a.cliExecutor == nil {
+		result.Error = "CLI executor not available"
+		result.Message = "Cannot connect to OLT"
+		return result, fmt.Errorf("CLI executor not available")
+	}
+
+	if a.detectPONType() != "gpon" {
+		// EPON: use simple reboot command
+		commands := []string{
+			"configure terminal",
 			fmt.Sprintf("interface epon %s", ponPort),
 			fmt.Sprintf("llid reboot %d", onuID),
 			"exit",
-			"end",
+			"exit",
+		}
+		_, err := a.cliExecutor.ExecCommands(ctx, commands)
+		if err != nil {
+			result.Error = err.Error()
+			result.Message = "Failed to send reboot command"
+			return result, err
+		}
+		result.Success = true
+		result.DeactivateSuccess = true
+		result.ActivateSuccess = true
+		result.Message = "EPON reboot command sent successfully"
+		return result, nil
+	}
+
+	// GPON: Real V-SOL OLT uses "onu <id> deactivate/activate" syntax
+	// Step 1: Deactivate the ONU
+	deactivateCommands := []string{
+		"configure terminal",
+		fmt.Sprintf("interface gpon %s", ponPort),
+		fmt.Sprintf("onu %d deactivate", onuID),
+	}
+	_, err := a.cliExecutor.ExecCommands(ctx, deactivateCommands)
+	if err != nil {
+		result.Error = err.Error()
+		result.Message = "Failed to send deactivate command"
+		// Try to exit gracefully
+		a.cliExecutor.ExecCommands(ctx, []string{"exit", "exit"})
+		return result, fmt.Errorf("failed to deactivate ONU: %w", err)
+	}
+	result.DeactivateSuccess = true
+
+	// Step 2: Verify ONU is offline with retries
+	// Wait times: initial 3s, then retry after 5s, then retry after 10s
+	deactivateWaits := []time.Duration{3 * time.Second, 5 * time.Second, 10 * time.Second}
+	for attempt, waitTime := range deactivateWaits {
+		time.Sleep(waitTime)
+		stateOutput, stateErr := a.cliExecutor.ExecCommand(ctx, "show onu state")
+		if stateErr == nil && a.verifyONUState(stateOutput, onuID, false) {
+			result.DeactivateVerified = true
+			break
+		}
+		if attempt > 0 {
+			result.RetryCount++
 		}
 	}
 
-	_, err := a.cliExecutor.ExecCommands(ctx, commands)
-	return err
+	// Step 3: Activate the ONU
+	_, err = a.cliExecutor.ExecCommand(ctx, fmt.Sprintf("onu %d activate", onuID))
+	if err != nil {
+		// Try to exit gracefully
+		a.cliExecutor.ExecCommands(ctx, []string{"exit", "exit"})
+		result.Error = err.Error()
+		result.Message = "Deactivated but failed to send activate command"
+		return result, fmt.Errorf("failed to activate ONU: %w", err)
+	}
+	result.ActivateSuccess = true
+
+	// Step 4: Verify ONU is back online with retries
+	// Wait times: initial 5s, then retry after 10s, then retry after 15s (ONU re-registration takes time)
+	activateWaits := []time.Duration{5 * time.Second, 10 * time.Second, 15 * time.Second}
+	for attempt, waitTime := range activateWaits {
+		time.Sleep(waitTime)
+		stateOutput, stateErr := a.cliExecutor.ExecCommand(ctx, "show onu state")
+		if stateErr == nil && a.verifyONUState(stateOutput, onuID, true) {
+			result.ActivateVerified = true
+			break
+		}
+		if attempt > 0 {
+			result.RetryCount++
+		}
+	}
+
+	// Exit interface and config modes
+	_, _ = a.cliExecutor.ExecCommands(ctx, []string{"exit", "exit"})
+
+	// Determine overall success and message
+	if result.DeactivateSuccess && result.ActivateSuccess {
+		result.Success = true
+		if result.DeactivateVerified && result.ActivateVerified {
+			result.Message = "ONU restart completed and verified"
+		} else if result.ActivateVerified {
+			result.Message = "ONU restart completed, deactivation not verified but ONU is now online"
+		} else if result.DeactivateVerified {
+			result.Message = "ONU restarted but still coming online (may take a few more seconds)"
+		} else {
+			result.Message = "ONU restart commands sent, verification pending"
+		}
+	}
+
+	return result, nil
+}
+
+// verifyONUState checks if an ONU is in the expected state (online or offline)
+// Returns true if the ONU is in the expected state
+func (a *Adapter) verifyONUState(stateOutput string, onuID int, expectOnline bool) bool {
+	// Parse "show onu state" output format:
+	// OnuIndex    Admin State    OMCC State    Phase State    Channel
+	// ---------------------------------------------------------------
+	// 1/1/1:1     disable        disable       OffLine        1(GPON)
+	// 1/1/1:2     enable         enable        working        1(GPON)
+
+	lines := strings.Split(stateOutput, "\n")
+	onuIndexSuffix := fmt.Sprintf(":%d", onuID)
+
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		// Skip headers and empty lines
+		if line == "" || strings.HasPrefix(line, "OnuIndex") || strings.HasPrefix(line, "-") {
+			continue
+		}
+
+		// Check if this line is for our ONU (ends with :onuID)
+		if !strings.Contains(line, onuIndexSuffix) {
+			continue
+		}
+
+		// Found the ONU line - check its state
+		lineLower := strings.ToLower(line)
+		if expectOnline {
+			// Expecting: enable, enable, working
+			return strings.Contains(lineLower, "enable") && strings.Contains(lineLower, "working")
+		} else {
+			// Expecting: disable or OffLine
+			return strings.Contains(lineLower, "disable") || strings.Contains(lineLower, "offline")
+		}
+	}
+
+	// ONU not found in output - could be an issue
+	return false
 }
 
 // ApplyProfile applies a bandwidth/service profile to an ONU (DriverV2)
@@ -1472,7 +1631,7 @@ func (a *Adapter) ApplyProfile(ctx context.Context, ponPort string, onuID int, p
 	var commands []string
 	if a.detectPONType() == "gpon" {
 		commands = []string{
-			"config",
+			"configure terminal",
 			fmt.Sprintf("interface gpon %s", ponPort),
 		}
 
@@ -1502,7 +1661,7 @@ func (a *Adapter) ApplyProfile(ctx context.Context, ponPort string, onuID int, p
 		commands = append(commands, "exit", "commit", "end")
 	} else {
 		commands = []string{
-			"config",
+			"configure terminal",
 			fmt.Sprintf("interface epon %s", ponPort),
 		}
 
@@ -1544,7 +1703,7 @@ func (a *Adapter) BulkProvision(ctx context.Context, operations []types.BulkProv
 	}
 
 	// Enter config mode once
-	if _, err := a.cliExecutor.ExecCommand(ctx, "config"); err != nil {
+	if _, err := a.cliExecutor.ExecCommand(ctx, "configure terminal"); err != nil {
 		return nil, fmt.Errorf("failed to enter config mode: %w", err)
 	}
 	defer func() { _, _ = a.cliExecutor.ExecCommand(ctx, "end") }()
@@ -2404,11 +2563,23 @@ func (a *Adapter) getBulkONUOpticalSNMP(ctx context.Context) (map[string]*types.
 // extractPONPortFromIndex converts V-SOL OnuIndex to PON port
 // Example: "1/1/1:1" -> "0/1", "1/1/8:2" -> "0/8"
 func extractPONPortFromIndex(index string) string {
-	// Format: rack/shelf/port:slot (e.g., 1/1/1:1)
-	// Remove the slot portion if present
+	// V-SOL OLTs use different formats:
+	// 1. "1/1/1:1" (rack/shelf/port:slot) - simulator format
+	// 2. "GPON0/2:1" (GPONslot/port:onu) - real V-SOL OLT format
+
+	// Remove the slot/onu portion if present
 	parts := strings.Split(index, ":")
 	pathPart := parts[0]
 
+	// Check for GPON format: "GPON0/2" -> "0/2"
+	if strings.HasPrefix(strings.ToUpper(pathPart), "GPON") {
+		// Extract the port number after "GPON"
+		pathPart = strings.TrimPrefix(strings.ToUpper(pathPart), "GPON")
+		// pathPart is now "0/2" or similar
+		return pathPart
+	}
+
+	// Standard format: rack/shelf/port (e.g., 1/1/1)
 	pathParts := strings.Split(pathPart, "/")
 	if len(pathParts) >= 3 {
 		return fmt.Sprintf("0/%s", pathParts[2])
@@ -2435,7 +2606,10 @@ func (a *Adapter) parseAutofindOutput(output string) []types.ONUDiscovery {
 			strings.HasPrefix(line, "OnuIndex") ||
 			strings.HasPrefix(line, "-") ||
 			strings.HasPrefix(line, "Error:") ||
-			strings.HasPrefix(line, "Port") { // Legacy format header
+			strings.HasPrefix(line, "Error :") ||
+			strings.HasPrefix(line, "Port") ||
+			strings.Contains(line, "command not") ||
+			strings.Contains(line, "not supported") { // Legacy format header
 			continue
 		}
 
@@ -2444,6 +2618,11 @@ func (a *Adapter) parseAutofindOutput(output string) []types.ONUDiscovery {
 			// Parse OnuIndex to extract PON port: 1/1/1:1 -> 0/1
 			onuIndex := fields[0] // e.g., "1/1/1:1"
 			serial := fields[1]   // e.g., "FHTT99990001"
+
+			// Validate serial looks like a real serial number (not an error message word)
+			if len(serial) < 4 || strings.ToLower(serial) == "for" || strings.ToLower(serial) == "this" || strings.ToLower(serial) == "command" {
+				continue
+			}
 
 			// Extract PON port from OnuIndex (1/1/PORT:SLOT -> 0/PORT)
 			ponPort := extractPONPortFromIndex(onuIndex)
@@ -3038,7 +3217,7 @@ func (a *Adapter) SetPortState(ctx context.Context, port string, enabled bool) e
 	}
 
 	commands := []string{
-		"config",
+		"configure terminal",
 		portCmd,
 		"end",
 	}
@@ -3201,7 +3380,7 @@ func (a *Adapter) CreateVLAN(ctx context.Context, req *types.CreateVLANRequest) 
 
 	// Build commands
 	commands := []string{
-		"config",
+		"configure terminal",
 		fmt.Sprintf("vlan %d", req.ID),
 	}
 
@@ -3269,7 +3448,7 @@ func (a *Adapter) DeleteVLAN(ctx context.Context, vlanID int, force bool) error 
 	}
 
 	commands := []string{
-		"config",
+		"configure terminal",
 		fmt.Sprintf("no vlan %d", vlanID),
 		"end",
 	}
@@ -3396,7 +3575,7 @@ func (a *Adapter) AddServicePort(ctx context.Context, req *types.AddServicePortR
 	)
 
 	commands := []string{
-		"config",
+		"configure terminal",
 		cmd,
 		"end",
 	}
@@ -3454,7 +3633,7 @@ func (a *Adapter) DeleteServicePort(ctx context.Context, ponPort string, ontID i
 	cmd := fmt.Sprintf("no service-port port %s onu %d", ponPort, ontID)
 
 	commands := []string{
-		"config",
+		"configure terminal",
 		cmd,
 		"end",
 	}
