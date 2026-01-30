@@ -45,8 +45,9 @@ type DriverV2 interface {
 	// === ONU Operations ===
 
 	// RestartONU triggers a reboot of the specified ONU.
-	// Useful for troubleshooting and clearing stuck states.
-	RestartONU(ctx context.Context, ponPort string, onuID int) error
+	// Uses deactivate/activate sequence and verifies state changes.
+	// Returns detailed result including verification status.
+	RestartONU(ctx context.Context, ponPort string, onuID int) (*RestartONUResult, error)
 
 	// ApplyProfile applies a bandwidth/service profile to an ONU.
 	// This is a faster path than full UpdateSubscriber for profile changes.
@@ -337,6 +338,33 @@ type ONUProfile struct {
 
 	// Metadata contains vendor-specific profile data
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
+}
+
+// RestartONUResult contains detailed results of an ONU restart operation.
+type RestartONUResult struct {
+	// Success indicates if the restart completed without errors
+	Success bool `json:"success"`
+
+	// DeactivateSuccess indicates if the deactivate command succeeded
+	DeactivateSuccess bool `json:"deactivate_success"`
+
+	// DeactivateVerified indicates if the ONU was verified to be offline
+	DeactivateVerified bool `json:"deactivate_verified"`
+
+	// ActivateSuccess indicates if the activate command succeeded
+	ActivateSuccess bool `json:"activate_success"`
+
+	// ActivateVerified indicates if the ONU was verified to be back online
+	ActivateVerified bool `json:"activate_verified"`
+
+	// Message contains a human-readable description of what happened
+	Message string `json:"message"`
+
+	// Error contains error details if the operation failed
+	Error string `json:"error,omitempty"`
+
+	// RetryCount indicates how many verification retries were performed
+	RetryCount int `json:"retry_count,omitempty"`
 }
 
 // BulkProvisionOp represents a single operation in bulk provisioning.

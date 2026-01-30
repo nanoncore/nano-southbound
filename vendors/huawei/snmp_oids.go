@@ -3,6 +3,8 @@ package huawei
 import (
 	"fmt"
 	"strings"
+
+	"github.com/nanoncore/nano-southbound/vendors/common"
 )
 
 // Huawei GPON MIB OIDs
@@ -67,14 +69,12 @@ const (
 	OIDIfHCOutOctets = "1.3.6.1.2.1.31.1.1.1.10" // 64-bit output bytes
 	OIDIfAlias       = "1.3.6.1.2.1.31.1.1.1.1"  // Interface alias (PON port description)
 
-	// Magic value indicating offline/invalid reading
-	SNMPInvalidValue = 2147483647
 )
 
 // ConvertOpticalPower converts raw SNMP value to dBm
 // Formula: value * 0.01
 func ConvertOpticalPower(rawValue int64) float64 {
-	if rawValue == SNMPInvalidValue {
+	if rawValue == common.SNMPInvalidValue {
 		return -100.0 // Return very low value for offline
 	}
 	return float64(rawValue) * 0.01
@@ -83,7 +83,7 @@ func ConvertOpticalPower(rawValue int64) float64 {
 // ConvertOltRxPower converts OLT Rx power value to dBm
 // Formula: (value - 10000) * 0.01
 func ConvertOltRxPower(rawValue int64) float64 {
-	if rawValue == SNMPInvalidValue {
+	if rawValue == common.SNMPInvalidValue {
 		return -100.0
 	}
 	return float64(rawValue-10000) * 0.01
@@ -92,7 +92,7 @@ func ConvertOltRxPower(rawValue int64) float64 {
 // ConvertVoltage converts raw SNMP value to Volts
 // Formula: value * 0.001
 func ConvertVoltage(rawValue int64) float64 {
-	if rawValue == SNMPInvalidValue {
+	if rawValue == common.SNMPInvalidValue {
 		return 0.0
 	}
 	return float64(rawValue) * 0.001
@@ -101,7 +101,7 @@ func ConvertVoltage(rawValue int64) float64 {
 // ConvertTemperature converts raw SNMP value to Celsius
 // Formula: value / 256
 func ConvertTemperature(rawValue int64) float64 {
-	if rawValue == SNMPInvalidValue || rawValue == 0 {
+	if rawValue == common.SNMPInvalidValue || rawValue == 0 {
 		return 0.0
 	}
 	return float64(rawValue) / 256.0
@@ -110,7 +110,7 @@ func ConvertTemperature(rawValue int64) float64 {
 // IsOnuOnline checks if ONU is online based on Rx power value
 // Huawei returns 2147483647 when ONU is offline
 func IsOnuOnline(rxPowerRaw int64) bool {
-	return rxPowerRaw != SNMPInvalidValue
+	return rxPowerRaw != common.SNMPInvalidValue
 }
 
 // DecodeHexSerial converts hex serial number to readable format
@@ -216,43 +216,8 @@ func ParseONUIndex(index string) (frame, slot, port, onuID int, err error) {
 	return frame, slot, port, onuID, nil
 }
 
-// GetSNMPResult looks up an OID in SNMP results, handling the leading dot issue.
-// gosnmp returns OIDs with a leading dot (e.g., ".1.3.6.1..."), but our constants
-// don't have the leading dot. This function tries both formats.
-func GetSNMPResult(results map[string]interface{}, oid string) (interface{}, bool) {
-	// Try without leading dot
-	if val, ok := results[oid]; ok {
-		return val, true
-	}
-	// Try with leading dot
-	if val, ok := results["."+oid]; ok {
-		return val, true
-	}
-	return nil, false
-}
-
-// ParseNumericSNMPValue extracts a float64 from various numeric types
-// that SNMP libraries may return (int, int64, uint, uint64, etc.)
-// Returns the value and true if successful, or 0 and false if the type is not numeric.
-func ParseNumericSNMPValue(value interface{}) (float64, bool) {
-	switch v := value.(type) {
-	case int:
-		return float64(v), true
-	case int32:
-		return float64(v), true
-	case int64:
-		return float64(v), true
-	case uint:
-		return float64(v), true
-	case uint32:
-		return float64(v), true
-	case uint64:
-		return float64(v), true
-	case float32:
-		return float64(v), true
-	case float64:
-		return v, true
-	default:
-		return 0, false
-	}
-}
+// Aliases for common SNMP helpers (for backward compatibility)
+var (
+	GetSNMPResult         = common.GetSNMPResult
+	ParseNumericSNMPValue = common.ParseNumericSNMPValue
+)
