@@ -2284,6 +2284,9 @@ func (a *Adapter) getONUListSNMP(ctx context.Context) ([]types.ONUInfo, error) {
 	rxPowers, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONURxPower)
 	txPowers, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUTxPower)
 	distances, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUDistance)
+	temperatures, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUTemperature)
+	voltages, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUVoltage)
+	biasCurrents, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUBiasCurrent)
 	profiles, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUProfile)
 	// Service VLAN is available via SNMP at OIDONUServiceVLAN
 	// Format: {pon_idx}.{onu_idx}.{gem_idx} - we need to map this to {pon_idx}.{onu_idx}
@@ -2353,6 +2356,21 @@ func (a *Adapter) getONUListSNMP(ctx context.Context) ([]types.ONUInfo, error) {
 				onu.DistanceM = dist
 			}
 		}
+		if val, ok := temperatures[index]; ok {
+			if temp, ok := ParseTemperature(val); ok {
+				onu.Temperature = temp
+			}
+		}
+		if val, ok := voltages[index]; ok {
+			if voltage, ok := ParseVoltage(val); ok {
+				onu.Voltage = voltage
+			}
+		}
+		if val, ok := biasCurrents[index]; ok {
+			if bias, ok := ParseBiasCurrent(val); ok {
+				onu.BiasCurrent = bias
+			}
+		}
 		if val, ok := profiles[index]; ok {
 			if profile, ok := common.ParseStringSNMPValue(val); ok {
 				onu.LineProfile = profile
@@ -2360,14 +2378,15 @@ func (a *Adapter) getONUListSNMP(ctx context.Context) ([]types.ONUInfo, error) {
 		}
 		// Service VLAN - OID index is {pon}.{onu}.{gem}, we match on {pon}.{onu}
 		// Try gem index 1 first (most common), then search for any gem
-		vlanIndex := fmt.Sprintf("%d.%d.1", ponIdx, onuIdx)
+		// Note: WalkSNMP returns keys with leading dots (e.g., ".1.1.1")
+		vlanIndex := fmt.Sprintf(".%d.%d.1", ponIdx, onuIdx)
 		if val, ok := serviceVLANs[vlanIndex]; ok {
 			if vlan, ok := common.ParseIntSNMPValue(val); ok && vlan > 0 {
 				onu.VLAN = int(vlan)
 			}
 		} else {
 			// Search for any gem index for this ONU
-			prefix := fmt.Sprintf("%d.%d.", ponIdx, onuIdx)
+			prefix := fmt.Sprintf(".%d.%d.", ponIdx, onuIdx)
 			for vlanIdx, val := range serviceVLANs {
 				if strings.HasPrefix(vlanIdx, prefix) {
 					if vlan, ok := common.ParseIntSNMPValue(val); ok && vlan > 0 {
@@ -2591,6 +2610,9 @@ func extractPONPortFromIndex(index string) string {
 // parseAutofindOutput parses V-SOL autofind CLI output
 func (a *Adapter) parseAutofindOutput(output string) []types.ONUDiscovery {
 	discoveries := []types.ONUDiscovery{}
+
+	// Strip ANSI escape codes from output before parsing
+	output = common.StripANSI(output)
 
 	// V-SOL autofind output format:
 	// OnuIndex                 Sn                       State
