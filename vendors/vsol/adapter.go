@@ -210,9 +210,15 @@ func (a *Adapter) CreateSubscriber(ctx context.Context, subscriber *model.Subscr
 
 	// Parse subscriber info
 	ponPort := a.getPONPort(subscriber)
-	onuID := a.getONUID(subscriber)
 	serial := subscriber.Spec.ONUSerial
 	vlan := subscriber.Spec.VLAN
+
+	// NAN-241: Check if ONU ID was explicitly provided
+	// If not, use 0 to trigger auto-provision with "onu confirm"
+	onuID := 0
+	if id, ok := common.GetAnnotationInt(subscriber.Annotations, "nanoncore.com/onu-id"); ok {
+		onuID = id
+	}
 
 	// Get bandwidth rates in kbps
 	bandwidthDown := tier.Spec.BandwidthDown // Mbps
@@ -257,49 +263,46 @@ func (a *Adapter) CreateSubscriber(ctx context.Context, subscriber *model.Subscr
 
 // buildGPONCommands builds V-SOL GPON CLI commands
 func (a *Adapter) buildGPONCommands(ponPort string, onuID int, serial string, vlan int, bwDown, bwUp int, subscriber *model.Subscriber, tier *model.ServiceTier) []string {
-	// V-SOL V1600G GPON CLI reference
-	// Based on V-SOL CLI User Manual
+	// NAN-241: V-SOL V1600G GPON CLI reference
+	// V-SOL uses different commands than Huawei/ZTE
+	// NOTE: Assumes CLI executor already handled enable/configure terminal via Connect()
 
 	commands := []string{
-		// Enter config mode
-		"configure terminal",
-
-		// Select GPON interface
+		// Enter interface - assumes already in privileged/config mode
 		fmt.Sprintf("interface gpon %s", ponPort),
-
-		// Register ONU with serial number
-		// onu <onu-id> type <type> sn <serial>
-		// Types: router, bridge, hgu, sfu
-		fmt.Sprintf("onu %d type router sn %s", onuID, serial),
-
-		// Assign line profile (T-CONT + GEM port mapping)
-		// onu profile <onu-id> line-profile <name> service-profile <name>
-		fmt.Sprintf("onu profile %d line-profile %s service-profile %s",
-			onuID,
-			a.getLineProfile(tier),
-			a.getServiceProfile(tier)),
-
-		// Configure VLAN for the ONU
-		// onu vlan <onu-id> user-vlan <vlan> priority <0-7>
-		fmt.Sprintf("onu vlan %d user-vlan %d priority 0", onuID, vlan),
-
-		// Configure bandwidth (ingress = upstream, egress = downstream)
-		// onu flowctrl <onu-id> ingress <kbps> egress <kbps>
-		fmt.Sprintf("onu flowctrl %d ingress %d egress %d",
-			onuID,
-			bwUp*1000,    // Convert Mbps to kbps
-			bwDown*1000), // Convert Mbps to kbps
-
-		// Enable the ONU
-		fmt.Sprintf("no onu disable %d", onuID),
-
-		// Exit interface config
-		"exit",
-
-		// Apply changes
-		"commit",
-		"end",
 	}
+
+	// NAN-241: V-SOL provisioning command
+	// If ONU ID is 0 or not specified, use "onu confirm" to auto-provision
+	// Otherwise use "onu add <id> profile <profile> sn <serial>"
+	if onuID <= 0 {
+		// Auto-provision from auto-find list
+		commands = append(commands, "onu confirm")
+	} else {
+		// Explicit provisioning with ONU ID
+		lineProfile := a.getLineProfile(tier)
+		if lineProfile == "" || lineProfile == "default" {
+			lineProfile = "Default" // V-SOL default profile
+		}
+		commands = append(commands, fmt.Sprintf("onu add %d profile %s sn %s", onuID, lineProfile, serial))
+	}
+
+	// Configure T-CONT and GEM port
+	if onuID > 0 {
+		commands = append(commands,
+			fmt.Sprintf("onu %d tcont 1", onuID),
+			fmt.Sprintf("onu %d gemport 1 tcont 1", onuID),
+		)
+
+		// Configure VLAN service-port (V-SOL syntax)
+		commands = append(commands,
+			fmt.Sprintf("onu %d service-port 1 gemport 1 uservlan %d vlan %d new_cos 0", onuID, vlan, vlan),
+			fmt.Sprintf("onu %d portvlan eth 1 mode tag vlan %d", onuID, vlan),
+		)
+	}
+
+	// Exit interface mode
+	commands = append(commands, "exit")
 
 	return commands
 }
@@ -2799,6 +2802,10 @@ func (a *Adapter) detectPONType() string {
 
 // getPONPort extracts PON port from subscriber metadata
 func (a *Adapter) getPONPort(subscriber *model.Subscriber) string {
+	// NAN-241: Check both old and new annotation namespaces for compatibility
+	if port, ok := common.GetAnnotationString(subscriber.Annotations, "nano.io/pon-port"); ok {
+		return port
+	}
 	return common.GetAnnotationStringWithDefault(subscriber.Annotations, "0/1", "nanoncore.com/pon-port")
 }
 
