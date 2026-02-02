@@ -351,39 +351,17 @@ func (a *Adapter) UpdateSubscriber(ctx context.Context, subscriber *model.Subscr
 	onuID := a.getONUID(subscriber)
 	vlan := subscriber.Spec.VLAN
 
-	// Extract profile parameters and unbind flag (NAN-253)
-	unbindProfile := subscriber.Annotations["nano.io/unbind-profile"] == "true"
-	lineProfile := subscriber.Annotations["nano.io/line-profile"]
-	serviceProfile := subscriber.Annotations["nano.io/service-profile"]
-
 	var commands []string
 
 	if a.detectPONType() == "gpon" {
 		commands = []string{fmt.Sprintf("interface gpon %s", ponPort)}
 
-		// Three-way command generation logic
-		if lineProfile != "" || serviceProfile != "" {
-			// Scenario 1: Profile update
-			// Use default service profile if not specified
-			if serviceProfile == "" {
-				serviceProfile = "service-internet"
-			}
-			commands = append(commands,
-				fmt.Sprintf("onu profile %d line-profile %s service-profile %s",
-					onuID, lineProfile, serviceProfile))
-		} else if unbindProfile {
-			// Scenario 2: Unbind profile + direct VLAN
-			commands = append(commands,
-				fmt.Sprintf("no onu %d line-profile", onuID),
-				// Delete existing service and service-port
-				fmt.Sprintf("no onu %d service INTERNET", onuID),
-				fmt.Sprintf("no onu %d service-port 1", onuID),
-				// Recreate with new VLAN
-				fmt.Sprintf("onu %d service INTERNET gemport 1 vlan %d cos 0-7", onuID, vlan),
-				fmt.Sprintf("onu %d service-port 1 gemport 1 uservlan %d vlan %d", onuID, vlan, vlan))
-		} else if vlan > 0 {
-			// Scenario 3: Direct VLAN update (current behavior - NAN-242)
-			// When ONU has profile bound, service definition controls VLAN persistence
+		// Direct VLAN update - validated working approach
+		// OLT validation findings (see .claude/VSOL_PROFILE_VALIDATION.md):
+		// - Profile unbinding NOT supported: "no onu X line-profile" returns "% Unknown command"
+		// - Profile switching NOT supported after TCONT: Returns "tcont has been configurated!"
+		// - Direct VLAN commands work regardless of profile binding (Test 1 confirmed)
+		if vlan > 0 {
 			commands = append(commands,
 				// Delete existing service and service-port
 				fmt.Sprintf("no onu %d service INTERNET", onuID),
@@ -1341,6 +1319,74 @@ func (a *Adapter) GetONUBySerial(ctx context.Context, serial string) (*types.ONU
 	// Parse ONU info
 	onu := a.parseONUInfo(output, serial)
 	return onu, nil
+}
+
+// GetONURunningConfig retrieves the full running configuration for an ONU (NAN-257)
+// Returns the raw CLI output from "show running-config onu X" command
+func (a *Adapter) GetONURunningConfig(ctx context.Context, ponPort string, onuID int) (string, error) {
+	if a.cliExecutor == nil {
+		return "", fmt.Errorf("CLI executor not available")
+	}
+
+	// V-SOL CLI command to get ONU running config
+	commands := []string{
+		"configure terminal",
+		fmt.Sprintf("interface gpon %s", ponPort),
+		fmt.Sprintf("show running-config onu %d", onuID),
+		"exit",
+		"exit",
+	}
+
+	outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
+	if err != nil {
+		return "", fmt.Errorf("failed to get ONU running config: %w", err)
+	}
+
+	// Join all outputs into a single string for parsing
+	// The show command output is in outputs[2] (third command)
+	return strings.Join(outputs, "\n"), nil
+}
+
+// GetONUVLANViaSNMP retrieves the service VLAN for an ONU via SNMP (NAN-257)
+// Returns the VLAN ID or 0 if not found
+// SNMP OID: 1.3.6.1.4.1.37950.1.1.6.1.1.8.7.1.7.{pon_idx}.{onu_idx}.{gem_idx}
+func (a *Adapter) GetONUVLANViaSNMP(ctx context.Context, ponPort string, onuID int) (int, error) {
+	if a.snmpExecutor == nil {
+		return 0, fmt.Errorf("SNMP executor not available")
+	}
+
+	// Convert port to PON index for SNMP query
+	ponIdx, err := PortToPONIndex(ponPort)
+	if err != nil {
+		return 0, fmt.Errorf("invalid PON port format: %w", err)
+	}
+
+	// Walk service VLAN table to find VLAN for this ONU
+	// Format: {pon_idx}.{onu_idx}.{gem_idx} -> VLAN value
+	serviceVLANs, err := a.snmpExecutor.WalkSNMP(ctx, OIDONUServiceVLAN)
+	if err != nil {
+		return 0, fmt.Errorf("failed to walk service VLANs: %w", err)
+	}
+
+	// Look for VLAN entry matching our PON port and ONU ID
+	// Index format: {pon_idx}.{onu_idx}.{gem_idx}
+	for index, vlanVal := range serviceVLANs {
+		idx, onu, gem, err := ParseONUVLANIndex(index)
+		if err != nil {
+			continue
+		}
+
+		// Match PON index and ONU ID (typically gem=1 for basic config)
+		if idx == ponIdx && onu == onuID && gem == 1 {
+			// Parse VLAN value (INTEGER)
+			if vlan, ok := common.ParseIntSNMPValue(vlanVal); ok && vlan > 0 {
+				return int(vlan), nil
+			}
+		}
+	}
+
+	// VLAN not found via SNMP
+	return 0, fmt.Errorf("VLAN not found for ONU %s/%d", ponPort, onuID)
 }
 
 // GetPONPower returns optical power readings for a PON port (DriverV2)
