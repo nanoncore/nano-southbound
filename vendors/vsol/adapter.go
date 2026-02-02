@@ -350,36 +350,28 @@ func (a *Adapter) UpdateSubscriber(ctx context.Context, subscriber *model.Subscr
 	ponPort := a.getPONPort(subscriber)
 	onuID := a.getONUID(subscriber)
 	vlan := subscriber.Spec.VLAN
-	bwDown := tier.Spec.BandwidthDown
-	bwUp := tier.Spec.BandwidthUp
 
 	var commands []string
 
 	if a.detectPONType() == "gpon" {
+		// V-SOL requires full TCONT/GEMPORT/service-port sequence for VLAN (NAN-242)
+		// See: VSOL_OLT_COMMANDS.md lines 107-117
 		commands = []string{
 			"configure terminal",
 			fmt.Sprintf("interface gpon %s", ponPort),
-			// Update profiles
-			fmt.Sprintf("onu profile %d line-profile %s service-profile %s",
-				onuID, a.getLineProfile(tier), a.getServiceProfile(tier)),
-			// Update VLAN
-			fmt.Sprintf("onu vlan %d user-vlan %d priority 0", onuID, vlan),
-			// Update bandwidth
-			fmt.Sprintf("onu flowctrl %d ingress %d egress %d", onuID, bwUp*1000, bwDown*1000),
+			fmt.Sprintf("onu %d tcont 1", onuID),
+			fmt.Sprintf("onu %d gemport 1 tcont 1", onuID),
+			fmt.Sprintf("onu %d service-port 1 gemport 1 uservlan %d vlan %d new_cos 0", onuID, vlan, vlan),
+			fmt.Sprintf("onu %d portvlan eth 1 mode tag vlan %d", onuID, vlan),
 			"exit",
-			"commit",
 			"end",
 		}
 	} else {
 		commands = []string{
 			"configure terminal",
 			fmt.Sprintf("interface epon %s", ponPort),
-			fmt.Sprintf("llid profile %d line-profile %s service-profile %s",
-				onuID, a.getLineProfile(tier), a.getServiceProfile(tier)),
-			fmt.Sprintf("llid vlan %d user-vlan %d", onuID, vlan),
-			fmt.Sprintf("llid flowctrl %d ingress %d egress %d", onuID, bwUp*1000, bwDown*1000),
+			fmt.Sprintf("llid %d vlan pvid %d", onuID, vlan),
 			"exit",
-			"commit",
 			"end",
 		}
 	}
@@ -825,6 +817,7 @@ func (a *Adapter) GetONUDetails(ctx context.Context, ponPort string, onuID int) 
 			fmt.Sprintf("interface gpon %s", ponPort),
 			fmt.Sprintf("show onu %d optical", onuID),
 			fmt.Sprintf("show onu %d statistics", onuID),
+			fmt.Sprintf("show running-config onu %d", onuID),
 			"exit",
 			"exit",
 		}
@@ -856,6 +849,14 @@ func (a *Adapter) GetONUDetails(ctx context.Context, ponPort string, onuID int) 
 				onu.PacketsDown = stats.InputPackets
 				onu.InputRateBps = stats.InputRateBps
 				onu.OutputRateBps = stats.OutputRateBps
+			}
+		}
+
+		// Parse running-config for VLAN (index 4)
+		if len(outputs) > 4 {
+			vlan := a.parseONURunningConfigVLAN(outputs[4])
+			if vlan > 0 {
+				onu.VLAN = vlan
 			}
 		}
 	}
