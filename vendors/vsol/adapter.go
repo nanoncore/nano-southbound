@@ -263,12 +263,13 @@ func (a *Adapter) CreateSubscriber(ctx context.Context, subscriber *model.Subscr
 
 // buildGPONCommands builds V-SOL GPON CLI commands
 func (a *Adapter) buildGPONCommands(ponPort string, onuID int, serial string, vlan int, bwDown, bwUp int, subscriber *model.Subscriber, tier *model.ServiceTier) []string {
-	// NAN-241: V-SOL V1600G GPON CLI reference
-	// V-SOL uses different commands than Huawei/ZTE
-	// NOTE: Assumes CLI executor already handled enable/configure terminal via Connect()
+	// NAN-260: V-SOL V1600G GPON CLI reference with line profile support
+	// V-SOL uses two-tier profile system:
+	// 1. ONU Profile: Hardware capabilities (e.g., AN5506-04-F1)
+	// 2. Line Profile: Service configuration with VLAN (e.g., line_vlan_100)
 
 	commands := []string{
-		// Enter interface - assumes already in privileged/config mode
+		"configure terminal",
 		fmt.Sprintf("interface gpon %s", ponPort),
 	}
 
@@ -279,30 +280,55 @@ func (a *Adapter) buildGPONCommands(ponPort string, onuID int, serial string, vl
 		// Auto-provision from auto-find list
 		commands = append(commands, "onu confirm")
 	} else {
-		// Explicit provisioning with ONU ID
-		lineProfile := a.getLineProfile(tier)
-		if lineProfile == "" || lineProfile == "default" {
-			lineProfile = "Default" // V-SOL default profile
+		// Get ONU profile (hardware capabilities) - required for all provisioning
+		onuProfile, _ := common.GetAnnotationString(subscriber.Annotations, "nano.io/onu-profile")
+		if onuProfile == "" {
+			onuProfile = "AN5506-04-F1" // V-SOL default ONU profile (4-port GPON ONU)
 		}
-		commands = append(commands, fmt.Sprintf("onu add %d profile %s sn %s", onuID, lineProfile, serial))
-	}
 
-	// Configure T-CONT and GEM port
-	if onuID > 0 {
-		commands = append(commands,
-			fmt.Sprintf("onu %d tcont 1", onuID),
-			fmt.Sprintf("onu %d gemport 1 tcont 1", onuID),
-		)
+		// Get line profile (service configuration) - optional
+		lineProfile, hasLineProfile := common.GetAnnotationString(subscriber.Annotations, "nano.io/line-profile")
 
-		// Configure VLAN service-port (V-SOL syntax)
-		commands = append(commands,
-			fmt.Sprintf("onu %d service-port 1 gemport 1 uservlan %d vlan %d new_cos 0", onuID, vlan, vlan),
-			fmt.Sprintf("onu %d portvlan eth 1 mode tag vlan %d", onuID, vlan),
-		)
+		// Check if this is a "line profile" (contains "line" in name)
+		usesLineProfile := hasLineProfile && strings.Contains(lineProfile, "line")
+
+		// Step 1: Add ONU with ONU profile (hardware capabilities)
+		commands = append(commands, fmt.Sprintf("onu add %d profile %s sn %s", onuID, onuProfile, serial))
+
+		if usesLineProfile {
+			// NAN-260: Two-step provisioning with line profile (validated Test 6)
+			// Step 2: Apply line profile (service configuration with VLAN)
+			commands = append(commands, fmt.Sprintf("onu %d profile line name %s", onuID, lineProfile))
+			// No manual service-port needed - line profile manages VLAN
+		} else {
+			// Standard provisioning with explicit service-port configuration
+			// Configure T-CONT and GEM port
+			commands = append(commands,
+				fmt.Sprintf("onu %d tcont 1", onuID),
+				fmt.Sprintf("onu %d gemport 1 tcont 1", onuID),
+			)
+
+			// Configure VLAN service (OLT-side)
+			commands = append(commands,
+				fmt.Sprintf("onu %d service INTERNET gemport 1 vlan %d cos 0-7", onuID, vlan),
+			)
+
+			// Configure VLAN service-port (OLT-side mapping)
+			commands = append(commands,
+				fmt.Sprintf("onu %d service-port 1 gemport 1 uservlan %d vlan %d", onuID, vlan, vlan),
+			)
+
+			// Configure VLAN tagging on ONU ports (ONU-side)
+			commands = append(commands,
+				fmt.Sprintf("onu %d portvlan eth 1 mode tag vlan %d", onuID, vlan),
+			)
+		}
 	}
 
 	// Exit interface mode
-	commands = append(commands, "exit")
+	commands = append(commands, "exit", "end")
+
+	// No commit needed - changes apply immediately (validated Test 6)
 
 	return commands
 }
