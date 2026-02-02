@@ -389,12 +389,14 @@ func (a *Adapter) UpdateSubscriber(ctx context.Context, subscriber *model.Subscr
 		// - Direct VLAN commands work regardless of profile binding (Test 1 confirmed)
 		if vlan > 0 {
 			commands = append(commands,
-				// Delete existing service and service-port
-				fmt.Sprintf("no onu %d service INTERNET", onuID),
+				// Delete in proper order: service-port FIRST, then service (validated Test 7)
 				fmt.Sprintf("no onu %d service-port 1", onuID),
+				fmt.Sprintf("no onu %d service INTERNET", onuID),
 				// Recreate with new VLAN
 				fmt.Sprintf("onu %d service INTERNET gemport 1 vlan %d cos 0-7", onuID, vlan),
-				fmt.Sprintf("onu %d service-port 1 gemport 1 uservlan %d vlan %d", onuID, vlan, vlan))
+				fmt.Sprintf("onu %d service-port 1 gemport 1 uservlan %d vlan %d", onuID, vlan, vlan),
+				// ONU-side tagging
+				fmt.Sprintf("onu %d portvlan eth 1 mode tag vlan %d", onuID, vlan))
 		}
 
 		commands = append(commands, "exit")
