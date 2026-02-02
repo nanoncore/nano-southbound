@@ -364,7 +364,6 @@ func (a *Adapter) UpdateSubscriber(ctx context.Context, subscriber *model.Subscr
 			fmt.Sprintf("onu %d service-port 1 gemport 1 uservlan %d vlan %d new_cos 0", onuID, vlan, vlan),
 			fmt.Sprintf("onu %d portvlan eth 1 mode tag vlan %d", onuID, vlan),
 			"exit",
-			"end",
 		}
 	} else {
 		commands = []string{
@@ -372,7 +371,6 @@ func (a *Adapter) UpdateSubscriber(ctx context.Context, subscriber *model.Subscr
 			fmt.Sprintf("interface epon %s", ponPort),
 			fmt.Sprintf("llid %d vlan pvid %d", onuID, vlan),
 			"exit",
-			"end",
 		}
 	}
 
