@@ -351,29 +351,60 @@ func (a *Adapter) UpdateSubscriber(ctx context.Context, subscriber *model.Subscr
 	onuID := a.getONUID(subscriber)
 	vlan := subscriber.Spec.VLAN
 
+	// Extract profile parameters and unbind flag (NAN-253)
+	unbindProfile := subscriber.Annotations["nano.io/unbind-profile"] == "true"
+	lineProfile := subscriber.Annotations["nano.io/line-profile"]
+	serviceProfile := subscriber.Annotations["nano.io/service-profile"]
+
 	var commands []string
 
 	if a.detectPONType() == "gpon" {
-		// V-SOL requires full TCONT/GEMPORT/service-port sequence for VLAN (NAN-242)
-		// See: VSOL_OLT_COMMANDS.md lines 107-117
-		commands = []string{
-			"configure terminal",
-			fmt.Sprintf("interface gpon %s", ponPort),
-			fmt.Sprintf("onu %d tcont 1", onuID),
-			fmt.Sprintf("onu %d gemport 1 tcont 1", onuID),
-			fmt.Sprintf("onu %d service-port 1 gemport 1 uservlan %d vlan %d new_cos 0", onuID, vlan, vlan),
-			fmt.Sprintf("onu %d portvlan eth 1 mode tag vlan %d", onuID, vlan),
-			"exit",
+		commands = []string{fmt.Sprintf("interface gpon %s", ponPort)}
+
+		// Three-way command generation logic
+		if lineProfile != "" || serviceProfile != "" {
+			// Scenario 1: Profile update
+			// Use default service profile if not specified
+			if serviceProfile == "" {
+				serviceProfile = "service-internet"
+			}
+			commands = append(commands,
+				fmt.Sprintf("onu profile %d line-profile %s service-profile %s",
+					onuID, lineProfile, serviceProfile))
+		} else if unbindProfile {
+			// Scenario 2: Unbind profile + direct VLAN
+			commands = append(commands,
+				fmt.Sprintf("no onu %d line-profile", onuID),
+				// Delete existing service and service-port
+				fmt.Sprintf("no onu %d service INTERNET", onuID),
+				fmt.Sprintf("no onu %d service-port 1", onuID),
+				// Recreate with new VLAN
+				fmt.Sprintf("onu %d service INTERNET gemport 1 vlan %d cos 0-7", onuID, vlan),
+				fmt.Sprintf("onu %d service-port 1 gemport 1 uservlan %d vlan %d", onuID, vlan, vlan))
+		} else if vlan > 0 {
+			// Scenario 3: Direct VLAN update (current behavior - NAN-242)
+			// When ONU has profile bound, service definition controls VLAN persistence
+			commands = append(commands,
+				// Delete existing service and service-port
+				fmt.Sprintf("no onu %d service INTERNET", onuID),
+				fmt.Sprintf("no onu %d service-port 1", onuID),
+				// Recreate with new VLAN
+				fmt.Sprintf("onu %d service INTERNET gemport 1 vlan %d cos 0-7", onuID, vlan),
+				fmt.Sprintf("onu %d service-port 1 gemport 1 uservlan %d vlan %d", onuID, vlan, vlan))
 		}
+
+		commands = append(commands, "exit")
 	} else {
+		// EPON update
 		commands = []string{
-			"configure terminal",
 			fmt.Sprintf("interface epon %s", ponPort),
 			fmt.Sprintf("llid %d vlan pvid %d", onuID, vlan),
 			"exit",
 		}
 	}
 
+	// NOTE: CLI executor already in config mode via Connect()
+	// Changes apply immediately - no commit needed
 	_, err := a.cliExecutor.ExecCommands(ctx, commands)
 	return err
 }
