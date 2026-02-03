@@ -481,10 +481,9 @@ func (a *Adapter) SuspendSubscriber(ctx context.Context, subscriberID string) er
 		commands = []string{
 			"configure terminal",
 			fmt.Sprintf("interface gpon %s", ponPort),
-			fmt.Sprintf("onu disable %d", onuID),
+			fmt.Sprintf("onu %d deactivate", onuID),
 			"exit",
-			"commit",
-			"end",
+			"exit",
 		}
 	} else {
 		commands = []string{
@@ -514,10 +513,9 @@ func (a *Adapter) ResumeSubscriber(ctx context.Context, subscriberID string) err
 		commands = []string{
 			"configure terminal",
 			fmt.Sprintf("interface gpon %s", ponPort),
-			fmt.Sprintf("no onu disable %d", onuID),
+			fmt.Sprintf("onu %d activate", onuID),
 			"exit",
-			"commit",
-			"end",
+			"exit",
 		}
 	} else {
 		commands = []string{
