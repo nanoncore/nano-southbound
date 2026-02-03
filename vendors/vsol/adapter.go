@@ -3490,7 +3490,10 @@ func (a *Adapter) GetVLAN(ctx context.Context, vlanID int) (*types.VLANInfo, err
 	}
 
 	// Check if VLAN doesn't exist
-	if strings.Contains(output, "not exist") || strings.Contains(output, "Error") || strings.Contains(output, "not found") {
+	if strings.Contains(output, "not exist") ||
+		strings.Contains(output, "Error") ||
+		strings.Contains(output, "not found") ||
+		strings.Contains(output, "Unknown command") {
 		return nil, nil
 	}
 
@@ -3599,14 +3602,14 @@ func (a *Adapter) DeleteVLAN(ctx context.Context, vlanID int, force bool) error 
 		return err
 	}
 	if vlan == nil {
-		return &types.HumanError{
-			Code:    types.ErrCodeVLANNotFound,
-			Message: fmt.Sprintf("VLAN %d not found", vlanID),
-			Vendor:  "vsol",
+		if !force {
+			return &types.HumanError{
+				Code:    types.ErrCodeVLANNotFound,
+				Message: fmt.Sprintf("VLAN %d not found", vlanID),
+				Vendor:  "vsol",
+			}
 		}
-	}
-
-	if vlan.ServicePortCount > 0 && !force {
+	} else if vlan.ServicePortCount > 0 && !force {
 		return &types.HumanError{
 			Code:    types.ErrCodeVLANHasServicePorts,
 			Message: fmt.Sprintf("VLAN %d has %d service port(s) configured", vlanID, vlan.ServicePortCount),
@@ -3624,6 +3627,9 @@ func (a *Adapter) DeleteVLAN(ctx context.Context, vlanID int, force bool) error 
 	outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
 	output := strings.Join(outputs, "\n")
 	if err != nil {
+		if force && (strings.Contains(output, "not exist") || strings.Contains(output, "No related information")) {
+			return nil
+		}
 		return fmt.Errorf("failed to delete VLAN: %w", err)
 	}
 
