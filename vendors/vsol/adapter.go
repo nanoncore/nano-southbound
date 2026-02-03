@@ -25,6 +25,25 @@ type Adapter struct {
 	config          *types.EquipmentConfig
 }
 
+func (a *Adapter) preferCLI() bool {
+	if a.config == nil {
+		return false
+	}
+	if a.config.Protocol == types.ProtocolCLI {
+		return true
+	}
+	if a.config.Metadata == nil {
+		return false
+	}
+	if v, ok := a.config.Metadata["prefer_cli"]; ok && strings.ToLower(v) == "true" {
+		return true
+	}
+	if v, ok := a.config.Metadata["disable_snmp"]; ok && strings.ToLower(v) == "true" {
+		return true
+	}
+	return false
+}
+
 // NewAdapter creates a new V-SOL adapter
 // If the base driver is CLI, it automatically creates an SNMP driver for monitoring
 func NewAdapter(baseDriver types.Driver, config *types.EquipmentConfig) types.Driver {
@@ -708,7 +727,7 @@ func (a *Adapter) DiscoverONUs(ctx context.Context, ponPorts []string) ([]types.
 // GetONUList returns all provisioned ONUs matching the filter (DriverV2)
 func (a *Adapter) GetONUList(ctx context.Context, filter *types.ONUFilter) ([]types.ONUInfo, error) {
 	// Try SNMP first if available (much faster than CLI - 1 walk vs 8 port iterations)
-	if a.snmpExecutor != nil {
+	if a.snmpExecutor != nil && !a.preferCLI() {
 		onus, err := a.getONUListSNMP(ctx)
 		if err == nil {
 			if filter != nil {
@@ -2938,9 +2957,9 @@ func (a *Adapter) getServiceProfile(tier *model.ServiceTier) string {
 
 // parseSubscriberID parses a subscriber ID to extract PON port and ONU ID
 func (a *Adapter) parseSubscriberID(subscriberID string) (string, int) {
-	// Expected format: "onu-0/1-5" or just subscriber name
+	// Expected format: "onu-0/1-5" or "ont-0/1-5" (legacy)
 	// Try to parse from ID first
-	re := regexp.MustCompile(`onu-(\d+/\d+)-(\d+)`)
+	re := regexp.MustCompile(`on[tu]-(\d+/\d+)-(\d+)`)
 	if match := re.FindStringSubmatch(subscriberID); len(match) == 3 {
 		if onuID, err := strconv.Atoi(match[2]); err == nil {
 			return match[1], onuID

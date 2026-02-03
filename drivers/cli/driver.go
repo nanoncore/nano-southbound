@@ -100,7 +100,7 @@ func (d *Driver) Connect(ctx context.Context, config *types.EquipmentConfig) err
 		SSHClient:    client,
 		Vendor:       string(d.config.Vendor),
 		Timeout:      d.config.Timeout,
-		DisablePager: true,
+		DisablePager: d.shouldDisablePager(),
 		Username:     d.config.Username,
 		Password:     d.config.Password,
 	})
@@ -113,6 +113,20 @@ func (d *Driver) Connect(ctx context.Context, config *types.EquipmentConfig) err
 	d.expectSession = expectSession
 
 	return nil
+}
+
+func (d *Driver) shouldDisablePager() bool {
+	if d.config == nil || d.config.Metadata == nil {
+		return true
+	}
+	// Simulator-friendly: avoid terminal length on localhost to prevent hangs.
+	if d.config.Address == "127.0.0.1" || strings.EqualFold(d.config.Address, "localhost") {
+		return false
+	}
+	if v, ok := d.config.Metadata["disable_pager"]; ok && strings.ToLower(v) == "false" {
+		return false
+	}
+	return true
 }
 
 // Disconnect closes the SSH connection
