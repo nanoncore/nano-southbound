@@ -3389,7 +3389,7 @@ func (a *Adapter) ListVLANs(ctx context.Context) ([]types.VLANInfo, error) {
 		return nil, fmt.Errorf("CLI executor not available")
 	}
 
-	cmd := "show vlan"
+	cmd := "show vlan all"
 	output, err := a.cliExecutor.ExecCommand(ctx, cmd)
 	if err != nil {
 		return nil, fmt.Errorf("failed to list VLANs: %w", err)
@@ -3404,9 +3404,15 @@ func (a *Adapter) parseVLANList(output string) []types.VLANInfo {
 
 	lines := strings.Split(output, "\n")
 	inTable := false
+	inCreatedList := false
 
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
+
+		if strings.HasPrefix(line, "Created VLANs") {
+			inCreatedList = true
+			continue
+		}
 
 		// Skip empty lines and headers
 		if line == "" || strings.HasPrefix(line, "-") {
@@ -3416,6 +3422,21 @@ func (a *Adapter) parseVLANList(output string) []types.VLANInfo {
 			continue
 		}
 		if strings.HasPrefix(line, "VLAN") || strings.HasPrefix(line, "Total") {
+			continue
+		}
+
+		if inCreatedList {
+			fields := strings.Fields(line)
+			for _, field := range fields {
+				vlanID, err := strconv.Atoi(field)
+				if err != nil {
+					continue
+				}
+				vlans = append(vlans, types.VLANInfo{
+					ID:   vlanID,
+					Type: "static",
+				})
+			}
 			continue
 		}
 
