@@ -1843,32 +1843,28 @@ func (a *Adapter) BulkProvision(ctx context.Context, operations []types.BulkProv
 		// Build commands for this ONU
 		var commands []string
 		if a.detectPONType() == "gpon" {
+			onuProfile := "AN5506-04-F1"
+			if op.Profile != nil && op.Profile.LineProfile != "" {
+				onuProfile = op.Profile.LineProfile
+			}
+
 			commands = []string{
 				fmt.Sprintf("interface gpon %s", op.PONPort),
-				fmt.Sprintf("onu %d type router sn %s", op.ONUID, op.Serial),
+				fmt.Sprintf("onu add %d profile %s sn %s", op.ONUID, onuProfile, op.Serial),
 			}
 
-			if op.Profile != nil {
-				lineProfile := op.Profile.LineProfile
-				serviceProfile := op.Profile.ServiceProfile
-				if lineProfile == "" {
-					lineProfile = fmt.Sprintf("line-%d-%d", op.Profile.BandwidthDown/1000, op.Profile.BandwidthUp/1000)
-				}
-				if serviceProfile == "" {
-					serviceProfile = "service-internet"
-				}
-				commands = append(commands, fmt.Sprintf("onu profile %d line-profile %s service-profile %s", op.ONUID, lineProfile, serviceProfile))
-
-				if op.Profile.VLAN > 0 {
-					commands = append(commands, fmt.Sprintf("onu vlan %d user-vlan %d priority %d", op.ONUID, op.Profile.VLAN, op.Profile.Priority))
-				}
-
-				if op.Profile.BandwidthUp > 0 || op.Profile.BandwidthDown > 0 {
-					commands = append(commands, fmt.Sprintf("onu flowctrl %d ingress %d egress %d", op.ONUID, op.Profile.BandwidthUp, op.Profile.BandwidthDown))
-				}
+			if op.Profile != nil && op.Profile.VLAN > 0 {
+				vlan := op.Profile.VLAN
+				commands = append(commands,
+					fmt.Sprintf("onu %d tcont 1", op.ONUID),
+					fmt.Sprintf("onu %d gemport 1 tcont 1", op.ONUID),
+					fmt.Sprintf("onu %d service INTERNET gemport 1 vlan %d cos 0-7", op.ONUID, vlan),
+					fmt.Sprintf("onu %d service-port 1 gemport 1 uservlan %d vlan %d new_cos 0", op.ONUID, vlan, vlan),
+					fmt.Sprintf("onu %d portvlan eth 1 mode tag vlan %d", op.ONUID, vlan),
+				)
 			}
 
-			commands = append(commands, fmt.Sprintf("no onu disable %d", op.ONUID), "exit")
+			commands = append(commands, "exit")
 		}
 
 		// Execute commands for this ONU
