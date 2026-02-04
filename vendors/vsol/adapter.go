@@ -1499,8 +1499,8 @@ func (a *Adapter) GetPONPower(ctx context.Context, ponPort string) (*types.PONPo
 
 // GetONUPower returns optical power readings for a specific ONU (DriverV2)
 func (a *Adapter) GetONUPower(ctx context.Context, ponPort string, onuID int) (*types.ONUPowerReading, error) {
-	// Try SNMP first if available (faster than CLI)
-	if a.snmpExecutor != nil {
+	// Try SNMP first if available (faster than CLI), unless CLI is preferred.
+	if a.snmpExecutor != nil && !a.preferCLI() {
 		reading, err := a.getONUPowerSNMP(ctx, ponPort, onuID)
 		if err == nil {
 			return reading, nil
