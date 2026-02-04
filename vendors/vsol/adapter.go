@@ -3579,6 +3579,7 @@ func (a *Adapter) GetVLAN(ctx context.Context, vlanID int) (*types.VLANInfo, err
 		Type: "static",
 	}
 
+	foundField := false
 	lines := strings.Split(output, "\n")
 	for _, line := range lines {
 		line = strings.TrimSpace(line)
@@ -3588,23 +3589,31 @@ func (a *Adapter) GetVLAN(ctx context.Context, vlanID int) (*types.VLANInfo, err
 			parts := strings.SplitN(line, ":", 2)
 			if len(parts) == 2 {
 				vlan.Name = strings.TrimSpace(parts[1])
+				foundField = true
 			}
 		} else if strings.HasPrefix(lineLower, "description") {
 			parts := strings.SplitN(line, ":", 2)
 			if len(parts) == 2 {
 				vlan.Description = strings.TrimSpace(parts[1])
+				foundField = true
 			}
 		} else if strings.Contains(lineLower, "service port") {
 			parts := strings.SplitN(line, ":", 2)
 			if len(parts) == 2 {
 				vlan.ServicePortCount, _ = strconv.Atoi(strings.TrimSpace(parts[1]))
+				foundField = true
 			}
 		} else if strings.HasPrefix(lineLower, "type") {
 			parts := strings.SplitN(line, ":", 2)
 			if len(parts) == 2 {
 				vlan.Type = strings.TrimSpace(parts[1])
+				foundField = true
 			}
 		}
+	}
+
+	if !foundField {
+		return nil, nil
 	}
 
 	return vlan, nil
