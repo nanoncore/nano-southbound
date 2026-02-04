@@ -2003,9 +2003,15 @@ func (a *Adapter) GetAlarms(ctx context.Context) ([]types.OLTAlarm, error) {
 		return nil, fmt.Errorf("CLI executor not available")
 	}
 
-	output, err := a.cliExecutor.ExecCommand(ctx, "show alarm active")
+	if _, err := a.cliExecutor.ExecCommand(ctx, "configure terminal"); err != nil {
+		return nil, fmt.Errorf("failed to enter config mode: %w", err)
+	}
+	defer func() { _, _ = a.cliExecutor.ExecCommand(ctx, "end") }()
+
+	_, _ = a.cliExecutor.ExecCommand(ctx, "show alarm summary")
+	output, err := a.cliExecutor.ExecCommand(ctx, "show alarm oamlog")
 	if err != nil {
-		return nil, fmt.Errorf("failed to get alarms: %w", err)
+		return nil, fmt.Errorf("failed to get alarm log: %w", err)
 	}
 
 	return a.parseAlarms(output), nil
@@ -3164,6 +3170,10 @@ func (a *Adapter) parseONUInfo(output string, serial string) *types.ONUInfo {
 func (a *Adapter) parseAlarms(output string) []types.OLTAlarm {
 	alarms := []types.OLTAlarm{}
 
+	if strings.Contains(output, "/") && strings.Contains(output, ":") {
+		return a.parseVSolOamlog(output)
+	}
+
 	// V-SOL alarm output format (example):
 	// ID      Severity  Type    Source     Message              Time
 	// 1       Critical  LOS     PON 0/1    Loss of signal       2024-01-15 10:30:00
@@ -3214,6 +3224,72 @@ func (a *Adapter) parseAlarms(output string) []types.OLTAlarm {
 
 			alarms = append(alarms, alarm)
 		}
+	}
+
+	return alarms
+}
+
+func (a *Adapter) parseVSolOamlog(output string) []types.OLTAlarm {
+	alarms := []types.OLTAlarm{}
+
+	lines := strings.Split(output, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+
+		fields := strings.Fields(line)
+		if len(fields) < 3 {
+			continue
+		}
+
+		dateStr := fields[0]
+		timeStr := fields[1]
+		timestamp, err := time.Parse("2006/01/02 15:04:05", fmt.Sprintf("%s %s", dateStr, timeStr))
+		if err != nil {
+			continue
+		}
+
+		rest := strings.TrimSpace(line[len(fields[0])+len(fields[1])+2:])
+		columns := regexp.MustCompile(`\s{2,}`).Split(rest, -1)
+
+		severity := "unknown"
+		eventName := ""
+		message := ""
+
+		if len(columns) == 1 {
+			eventName = columns[0]
+		} else if len(columns) == 2 {
+			eventName = columns[0]
+			message = columns[1]
+		} else if len(columns) >= 3 {
+			severity = strings.ToLower(columns[0])
+			eventName = columns[1]
+			message = strings.Join(columns[2:], " ")
+		}
+
+		if eventName == "" {
+			continue
+		}
+
+		alarm := types.OLTAlarm{
+			ID:       fmt.Sprintf("%d", len(alarms)+1),
+			Severity: strings.ToLower(severity),
+			Type:     strings.ToLower(strings.ReplaceAll(eventName, " ", "_")),
+			Source:   "system",
+			Message:  strings.TrimSpace(message),
+			RaisedAt: timestamp,
+			Metadata: map[string]interface{}{
+				"raw_line": line,
+			},
+		}
+
+		if alarm.Message == "" {
+			alarm.Message = strings.TrimSpace(eventName)
+		}
+
+		alarms = append(alarms, alarm)
 	}
 
 	return alarms
