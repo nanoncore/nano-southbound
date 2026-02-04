@@ -3864,11 +3864,13 @@ func (a *Adapter) DeleteServicePort(ctx context.Context, ponPort string, ontID i
 		return fmt.Errorf("CLI executor not available")
 	}
 
-	cmd := fmt.Sprintf("no service-port port %s onu %d", ponPort, ontID)
+	cmd := fmt.Sprintf("no onu %d service-port 1", ontID)
 
 	commands := []string{
 		"configure terminal",
+		fmt.Sprintf("interface gpon %s", ponPort),
 		cmd,
+		"exit",
 		"end",
 	}
 
