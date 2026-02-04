@@ -3651,6 +3651,15 @@ func (a *Adapter) DeleteVLAN(ctx context.Context, vlanID int, force bool) error 
 
 // ListServicePorts returns all service port configurations.
 func (a *Adapter) ListServicePorts(ctx context.Context) ([]types.ServicePort, error) {
+	// Prefer SNMP for faster reads when available
+	if a.snmpExecutor != nil && !a.preferCLI() {
+		servicePorts, err := a.listServicePortsSNMP(ctx)
+		if err == nil {
+			return servicePorts, nil
+		}
+		// Fall back to CLI if SNMP fails
+	}
+
 	if a.cliExecutor == nil {
 		return nil, fmt.Errorf("CLI executor not available")
 	}
@@ -3662,6 +3671,55 @@ func (a *Adapter) ListServicePorts(ctx context.Context) ([]types.ServicePort, er
 	}
 
 	return a.parseServicePortList(output), nil
+}
+
+// listServicePortsSNMP retrieves service ports via SNMP service VLAN tables.
+func (a *Adapter) listServicePortsSNMP(ctx context.Context) ([]types.ServicePort, error) {
+	serviceVLANs, err := a.snmpExecutor.WalkSNMP(ctx, OIDONUServiceVLAN)
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk service VLANs: %w", err)
+	}
+
+	userVLANs, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUUserVLAN)
+	translationVLANs, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUTranslationVLAN)
+
+	servicePorts := make([]types.ServicePort, 0, len(serviceVLANs))
+	for index, vlanVal := range serviceVLANs {
+		ponIdx, onuIdx, gemIdx, err := ParseONUVLANIndex(index)
+		if err != nil {
+			continue
+		}
+		vlan, ok := common.ParseIntSNMPValue(vlanVal)
+		if !ok || vlan <= 0 {
+			continue
+		}
+
+		sp := types.ServicePort{
+			VLAN:      int(vlan),
+			Interface: PONIndexToPort(ponIdx),
+			ONTID:     onuIdx,
+			GemPort:   gemIdx,
+			Metadata: map[string]interface{}{
+				"snmp_index": index,
+			},
+		}
+
+		if userVal, ok := userVLANs[index]; ok {
+			if userVLAN, ok := common.ParseIntSNMPValue(userVal); ok && userVLAN > 0 {
+				sp.UserVLAN = int(userVLAN)
+			}
+		}
+
+		if translationVal, ok := translationVLANs[index]; ok {
+			if translationVLAN, ok := common.ParseIntSNMPValue(translationVal); ok && translationVLAN > 0 {
+				sp.Metadata["translation_vlan"] = int(translationVLAN)
+			}
+		}
+
+		servicePorts = append(servicePorts, sp)
+	}
+
+	return servicePorts, nil
 }
 
 // parseServicePortList parses V-SOL CLI output for service port list.
