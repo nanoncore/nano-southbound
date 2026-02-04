@@ -3800,15 +3800,17 @@ func (a *Adapter) AddServicePort(ctx context.Context, req *types.AddServicePortR
 		userVLAN = req.VLAN
 	}
 
-	// Build command (V-SOL syntax)
-	cmd := fmt.Sprintf(
-		"service-port vlan %d pon %s onu %d gemport %d user-vlan %d",
-		req.VLAN, req.PONPort, req.ONTID, gemPort, userVLAN,
-	)
-
+	// Build commands (V-SOL syntax)
+	// Full sequence required to populate SNMP service VLAN table.
 	commands := []string{
 		"configure terminal",
-		cmd,
+		fmt.Sprintf("interface gpon %s", req.PONPort),
+		fmt.Sprintf("onu %d tcont 1", req.ONTID),
+		fmt.Sprintf("onu %d gemport %d tcont 1", req.ONTID, gemPort),
+		fmt.Sprintf("onu %d service INTERNET gemport %d vlan %d cos 0-7", req.ONTID, gemPort, req.VLAN),
+		fmt.Sprintf("onu %d service-port 1 gemport %d uservlan %d vlan %d new_cos 0", req.ONTID, gemPort, userVLAN, req.VLAN),
+		fmt.Sprintf("onu %d portvlan eth %d mode tag vlan %d", req.ONTID, req.ETHPort, req.VLAN),
+		"exit",
 		"end",
 	}
 
