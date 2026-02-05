@@ -76,14 +76,47 @@ func TestParseONUProfiles(t *testing.T) {
 	if p.ID == nil || *p.ID != 0 {
 		t.Fatalf("expected id 0, got %v", p.ID)
 	}
-	if p.Ports == nil || p.Ports.Eth == nil || *p.Ports.Eth != 4 {
-		t.Fatalf("expected eth 4, got %+v", p.Ports)
+	if p.Description == nil || *p.Description != "4ETH,1POTS,4WiFi" {
+		t.Fatalf("expected description, got %v", p.Description)
 	}
 	if p.TcontNum == nil || *p.TcontNum != 255 {
 		t.Fatalf("expected tcont 255, got %v", p.TcontNum)
 	}
 	if p.GemportNum == nil || *p.GemportNum != 255 {
 		t.Fatalf("expected gemport 255, got %v", p.GemportNum)
+	}
+	if p.SwitchNum == nil || *p.SwitchNum != 255 {
+		t.Fatalf("expected switch 255, got %v", p.SwitchNum)
+	}
+	if p.Ports == nil {
+		t.Fatalf("expected ports, got nil")
+	}
+	if p.Ports.Eth == nil || *p.Ports.Eth != 4 {
+		t.Fatalf("expected eth 4, got %v", p.Ports.Eth)
+	}
+	if p.Ports.Pots == nil || *p.Ports.Pots != 1 {
+		t.Fatalf("expected pots 1, got %v", p.Ports.Pots)
+	}
+	if p.Ports.IPHost == nil || *p.Ports.IPHost != 2 {
+		t.Fatalf("expected iphost 2, got %v", p.Ports.IPHost)
+	}
+	if p.Ports.IPv6Host == nil || *p.Ports.IPv6Host != 0 {
+		t.Fatalf("expected ipv6host 0, got %v", p.Ports.IPv6Host)
+	}
+	if p.Ports.Veip == nil || *p.Ports.Veip != 1 {
+		t.Fatalf("expected veip 1, got %v", p.Ports.Veip)
+	}
+	if p.ServiceAbility == nil || *p.ServiceAbility != "n:1" {
+		t.Fatalf("expected service ability n:1, got %v", p.ServiceAbility)
+	}
+	if p.WifiMngViaNonOMCI == nil || *p.WifiMngViaNonOMCI {
+		t.Fatalf("expected wifi mgmt disabled, got %v", p.WifiMngViaNonOMCI)
+	}
+	if p.OmciSendMode == nil || *p.OmciSendMode != "async" {
+		t.Fatalf("expected omci send mode async, got %v", p.OmciSendMode)
+	}
+	if p.DefaultMulticastRange == nil || *p.DefaultMulticastRange != "none" {
+		t.Fatalf("expected default multicast range none, got %v", p.DefaultMulticastRange)
 	}
 	if p.Committed == nil || !*p.Committed {
 		t.Fatalf("expected committed true, got %v", p.Committed)
