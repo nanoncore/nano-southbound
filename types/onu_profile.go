@@ -1,6 +1,18 @@
 package types
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
+
+// ONUProfileManager defines CRUD operations for ONU hardware profiles.
+// Implemented by vendors that support profile management via CLI.
+type ONUProfileManager interface {
+	ListONUProfiles(ctx context.Context) ([]*ONUHardwareProfile, error)
+	GetONUProfile(ctx context.Context, name string) (*ONUHardwareProfile, error)
+	CreateONUProfile(ctx context.Context, profile *ONUHardwareProfile) error
+	DeleteONUProfile(ctx context.Context, name string) error
+}
 
 // ONUProfilePorts captures port count settings for an ONU hardware profile.
 type ONUProfilePorts struct {
