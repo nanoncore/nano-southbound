@@ -123,6 +123,69 @@ func TestParseONUProfiles(t *testing.T) {
 	}
 }
 
+func TestParseONUProfilesMultiple(t *testing.T) {
+	raw := "\x1b[31m###############ONU PROFILE###########\x1b[0m\n" +
+		"Id: 1\n" +
+		"Name: prof1\n" +
+		"Max tcont: 8\n" +
+		"Max gemport: 32\n" +
+		"Max switch per slot: 8\n" +
+		"Max eth: 1\n" +
+		"Max pots: 0\n" +
+		"Max iphost: 2\n" +
+		"Max ipv6host: 0\n" +
+		"Max veip: 0\n" +
+		"Service ability N:1: 1\n" +
+		"Wifi mgmt via non OMCI: disable\n" +
+		"Omci send mode: async\n" +
+		"Default multicast range: none\n" +
+		"commit: Yes\n" +
+		"--More--\n" +
+		"Id: 2\n" +
+		"Name: prof2\n" +
+		"Max tcont: 1\n" +
+		"Max gemport: 1\n" +
+		"Max switch per slot: 1\n" +
+		"Max eth: 4\n" +
+		"Max pots: 2\n" +
+		"Max iphost: 2\n" +
+		"Max ipv6host: 0\n" +
+		"Max veip: 1\n" +
+		"Service ability N:1: 1\n" +
+		"Wifi mgmt via non OMCI: enable\n" +
+		"Omci send mode: sync\n" +
+		"Default multicast range: none\n" +
+		"commit: No\n"
+
+	profiles, err := parseONUProfiles(raw)
+	if err != nil {
+		t.Fatalf("parseONUProfiles error: %v", err)
+	}
+	if len(profiles) != 2 {
+		t.Fatalf("expected 2 profiles, got %d", len(profiles))
+	}
+
+	if profiles[0].Name != "prof1" || profiles[1].Name != "prof2" {
+		t.Fatalf("unexpected names: %+v", []string{profiles[0].Name, profiles[1].Name})
+	}
+	if profiles[1].WifiMngViaNonOMCI == nil || !*profiles[1].WifiMngViaNonOMCI {
+		t.Fatalf("expected wifi mgmt enabled for prof2")
+	}
+	if profiles[1].Committed == nil || *profiles[1].Committed {
+		t.Fatalf("expected committed false for prof2")
+	}
+}
+
+func TestParseONUProfilesNotFound(t *testing.T) {
+	profiles, err := parseONUProfiles("profile name profX not found!")
+	if err != nil {
+		t.Fatalf("parseONUProfiles error: %v", err)
+	}
+	if len(profiles) != 0 {
+		t.Fatalf("expected no profiles, got %d", len(profiles))
+	}
+}
+
 func assertContains(t *testing.T, haystack, needle string) {
 	t.Helper()
 	if !strings.Contains(haystack, needle) {

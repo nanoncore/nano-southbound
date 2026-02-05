@@ -13,6 +13,8 @@ import (
 // DefaultPromptPattern matches common CLI prompts like "hostname#" or "hostname>"
 var DefaultPromptPattern = regexp.MustCompile(`(?m)[\w\-\[\]()]+[#>]\s*$`)
 
+var pagerMoreRE = regexp.MustCompile(`(?m)(--More--|More:|Press any key to continue)`)
+
 // VendorPrompts contains vendor-specific prompt patterns
 var VendorPrompts = map[string]*regexp.Regexp{
 	"huawei": regexp.MustCompile(`(?m)(<[\w\-]+>|\[[\w\-~]+\])\s*$`),
@@ -38,6 +40,7 @@ type ExpectSession struct {
 	expecter    *expect.GExpect
 	sshClient   *ssh.Client
 	promptRE    *regexp.Regexp
+	pagerRE     *regexp.Regexp
 	timeout     time.Duration
 	vendor      string
 	initialized bool
@@ -91,6 +94,7 @@ func NewExpectSession(cfg ExpectSessionConfig) (*ExpectSession, error) {
 		timeout:   cfg.Timeout,
 		vendor:    cfg.Vendor,
 	}
+	session.pagerRE = regexp.MustCompile(`(?m)(` + promptRE.String() + `|` + pagerMoreRE.String() + `)`)
 
 	// Handle double-login scenarios (e.g., V-Sol OLTs that require CLI-level auth after SSH)
 	// Try to detect either: CLI prompt, "Login:", or "Username:"
@@ -212,18 +216,16 @@ func (s *ExpectSession) Execute(command string) (string, error) {
 
 	// Wait for prompt and capture output, handling paged output if present.
 	// Some devices (e.g., V-SOL) emit "--More--" or require a keypress to continue.
-	moreRE := regexp.MustCompile(`(?m)(--More--|More:|Press any key to continue)`)
-	combinedRE := regexp.MustCompile(`(?m)(` + s.promptRE.String() + `|` + moreRE.String() + `)`)
-
 	var outputBuilder strings.Builder
 	for {
-		chunk, _, err := s.expecter.Expect(combinedRE, s.timeout)
+		chunk, _, err := s.expecter.Expect(s.pagerRE, s.timeout)
 		if err != nil {
 			return outputBuilder.String(), fmt.Errorf("timeout waiting for prompt after command %q: %w", command, err)
 		}
 		outputBuilder.WriteString(chunk)
 
-		if moreRE.MatchString(chunk) {
+		if pagerMoreRE.MatchString(chunk) {
+			// V-SOL expects a space to advance pager output.
 			if err := s.expecter.Send(" "); err != nil {
 				return outputBuilder.String(), fmt.Errorf("failed to advance pager: %w", err)
 			}

@@ -41,6 +41,14 @@ func TestONUHardwareProfileValidate(t *testing.T) {
 		}
 	})
 
+	t.Run("invalid switch num", func(t *testing.T) {
+		switchNum := 0
+		p := &ONUHardwareProfile{Name: "test", SwitchNum: &switchNum}
+		if err := p.Validate(); err == nil {
+			t.Fatal("expected error for invalid switch num")
+		}
+	})
+
 	t.Run("valid profile", func(t *testing.T) {
 		desc := "ok"
 		eth := 4

@@ -103,6 +103,9 @@ func (p *ONUHardwareProfile) Validate() error {
 	if err := validateRangePtr("gemport-num", p.GemportNum, 1, 255); err != nil {
 		return err
 	}
+	if err := validateRangePtr("switch-num", p.SwitchNum, 1, 255); err != nil {
+		return err
+	}
 
 	if p.TcontNum != nil && p.GemportNum == nil {
 		return fmt.Errorf("tcont-num requires gemport-num")

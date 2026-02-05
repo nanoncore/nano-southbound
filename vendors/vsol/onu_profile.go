@@ -46,10 +46,7 @@ func (a *Adapter) ListONUProfiles(ctx context.Context) ([]*types.ONUHardwareProf
 		return nil, fmt.Errorf("failed to list ONU profiles: %w", err)
 	}
 
-	showOutput := ""
-	if len(outputs) >= 2 {
-		showOutput = outputs[1]
-	}
+	showOutput := cliOutputAt(outputs, 1)
 	profiles, err := parseONUProfiles(showOutput)
 	if err != nil {
 		return nil, err
@@ -75,10 +72,7 @@ func (a *Adapter) GetONUProfile(ctx context.Context, name string) (*types.ONUHar
 	if err != nil {
 		return nil, fmt.Errorf("failed to get ONU profile: %w", err)
 	}
-	showOutput := ""
-	if len(outputs) >= 2 {
-		showOutput = outputs[1]
-	}
+	showOutput := cliOutputAt(outputs, 1)
 	profiles, err := parseONUProfiles(showOutput)
 	if err != nil {
 		return nil, err
@@ -222,32 +216,56 @@ func parseONUProfiles(output string) ([]*types.ONUHardwareProfile, error) {
 			desc := strings.TrimSpace(reProfileDescription.FindStringSubmatch(line)[1])
 			current.Description = &desc
 		case reMaxTcont.MatchString(line):
-			val := parseInt(reMaxTcont.FindStringSubmatch(line)[1])
+			val, err := parseProfileInt("max tcont", reMaxTcont.FindStringSubmatch(line)[1])
+			if err != nil {
+				return nil, err
+			}
 			current.TcontNum = &val
 		case reMaxGemport.MatchString(line):
-			val := parseInt(reMaxGemport.FindStringSubmatch(line)[1])
+			val, err := parseProfileInt("max gemport", reMaxGemport.FindStringSubmatch(line)[1])
+			if err != nil {
+				return nil, err
+			}
 			current.GemportNum = &val
 		case reMaxSwitchPerSlot.MatchString(line):
-			val := parseInt(reMaxSwitchPerSlot.FindStringSubmatch(line)[1])
+			val, err := parseProfileInt("max switch", reMaxSwitchPerSlot.FindStringSubmatch(line)[1])
+			if err != nil {
+				return nil, err
+			}
 			current.SwitchNum = &val
 		case reMaxEth.MatchString(line):
-			val := parseInt(reMaxEth.FindStringSubmatch(line)[1])
+			val, err := parseProfileInt("max eth", reMaxEth.FindStringSubmatch(line)[1])
+			if err != nil {
+				return nil, err
+			}
 			ensurePorts(current)
 			current.Ports.Eth = &val
 		case reMaxPots.MatchString(line):
-			val := parseInt(reMaxPots.FindStringSubmatch(line)[1])
+			val, err := parseProfileInt("max pots", reMaxPots.FindStringSubmatch(line)[1])
+			if err != nil {
+				return nil, err
+			}
 			ensurePorts(current)
 			current.Ports.Pots = &val
 		case reMaxIPHost.MatchString(line):
-			val := parseInt(reMaxIPHost.FindStringSubmatch(line)[1])
+			val, err := parseProfileInt("max iphost", reMaxIPHost.FindStringSubmatch(line)[1])
+			if err != nil {
+				return nil, err
+			}
 			ensurePorts(current)
 			current.Ports.IPHost = &val
 		case reMaxIPv6Host.MatchString(line):
-			val := parseInt(reMaxIPv6Host.FindStringSubmatch(line)[1])
+			val, err := parseProfileInt("max ipv6host", reMaxIPv6Host.FindStringSubmatch(line)[1])
+			if err != nil {
+				return nil, err
+			}
 			ensurePorts(current)
 			current.Ports.IPv6Host = &val
 		case reMaxVeip.MatchString(line):
-			val := parseInt(reMaxVeip.FindStringSubmatch(line)[1])
+			val, err := parseProfileInt("max veip", reMaxVeip.FindStringSubmatch(line)[1])
+			if err != nil {
+				return nil, err
+			}
 			ensurePorts(current)
 			current.Ports.Veip = &val
 		case reServiceAbilityN1.MatchString(line):
@@ -298,7 +316,17 @@ func sanitizeProfileOutput(output string) string {
 	return strings.Join(filtered, "\n")
 }
 
-func parseInt(value string) int {
-	val, _ := strconv.Atoi(strings.TrimSpace(value))
-	return val
+func parseProfileInt(field, value string) (int, error) {
+	val, err := strconv.Atoi(strings.TrimSpace(value))
+	if err != nil {
+		return 0, fmt.Errorf("invalid %s value %q: %w", field, value, err)
+	}
+	return val, nil
+}
+
+func cliOutputAt(outputs []string, index int) string {
+	if len(outputs) > index {
+		return outputs[index]
+	}
+	return ""
 }
