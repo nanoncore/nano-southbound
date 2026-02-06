@@ -16,7 +16,6 @@ func (a *Adapter) ListLineProfiles(ctx context.Context) ([]*types.LineProfile, e
 	}
 
 	commands := []string{
-		"configure terminal",
 		"show profile line",
 		"exit",
 	}
@@ -25,7 +24,7 @@ func (a *Adapter) ListLineProfiles(ctx context.Context) ([]*types.LineProfile, e
 		return nil, fmt.Errorf("failed to list line profiles: %w", err)
 	}
 
-	showOutput := cliOutputAt(outputs, 1)
+	showOutput := cliOutputAt(outputs, 0)
 	profiles, err := parseLineProfiles(showOutput)
 	if err != nil {
 		return nil, err
@@ -43,7 +42,6 @@ func (a *Adapter) GetLineProfile(ctx context.Context, name string) (*types.LineP
 	}
 
 	commands := []string{
-		"configure terminal",
 		fmt.Sprintf("show profile line name %s", name),
 		"exit",
 	}
@@ -51,7 +49,7 @@ func (a *Adapter) GetLineProfile(ctx context.Context, name string) (*types.LineP
 	if err != nil {
 		return nil, fmt.Errorf("failed to get line profile: %w", err)
 	}
-	showOutput := cliOutputAt(outputs, 1)
+	showOutput := cliOutputAt(outputs, 0)
 	profiles, err := parseLineProfiles(showOutput)
 	if err != nil {
 		return nil, err
@@ -72,8 +70,12 @@ func (a *Adapter) CreateLineProfile(ctx context.Context, profile *types.LineProf
 	}
 
 	commands := buildLineProfileCreateCommands(profile)
-	if _, err := a.cliExecutor.ExecCommands(ctx, commands); err != nil {
+	outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
+	if err != nil {
 		return fmt.Errorf("failed to create line profile: %w", err)
+	}
+	if err := detectLineProfileCLIErrors(commands, outputs); err != nil {
+		return err
 	}
 	return nil
 }
@@ -88,7 +90,6 @@ func (a *Adapter) DeleteLineProfile(ctx context.Context, name string) error {
 	}
 
 	commands := []string{
-		"configure terminal",
 		fmt.Sprintf("no profile line name %s", name),
 		"exit",
 	}
@@ -100,7 +101,6 @@ func (a *Adapter) DeleteLineProfile(ctx context.Context, name string) error {
 
 func buildLineProfileCreateCommands(profile *types.LineProfile) []string {
 	commands := []string{
-		"configure terminal",
 		fmt.Sprintf("profile line name %s", profile.Name),
 	}
 
@@ -126,25 +126,6 @@ func buildLineProfileCreateCommands(profile *types.LineProfile) []string {
 				gemCmd += fmt.Sprintf(" tcont %d", gem.TcontID)
 			} else {
 				gemCmd += fmt.Sprintf(" tcont %d", tcont.ID)
-			}
-			if gem.Name != "" {
-				gemCmd += fmt.Sprintf(" name %s", gem.Name)
-			}
-			if gem.TrafficLimitUp != "" && gem.TrafficLimitDn != "" {
-				gemCmd += fmt.Sprintf(" traffic-limit up-stream %s down-stream %s", gem.TrafficLimitUp, gem.TrafficLimitDn)
-			}
-			if gem.Encrypt != nil {
-				if *gem.Encrypt {
-					gemCmd += " encrypt enable"
-				} else {
-					gemCmd += " encrypt disable"
-				}
-			}
-			if gem.State != "" {
-				gemCmd += fmt.Sprintf(" state %s", gem.State)
-			}
-			if gem.DownQueueMapID != nil {
-				gemCmd += fmt.Sprintf(" down-queue-map-id %d", *gem.DownQueueMapID)
 			}
 			commands = append(commands, gemCmd)
 
@@ -183,12 +164,6 @@ func buildLineProfileCreateCommands(profile *types.LineProfile) []string {
 				if sp.VLAN != 0 {
 					spCmd += fmt.Sprintf(" vlan %d", sp.VLAN)
 				}
-				if sp.AdminStatus != "" {
-					spCmd += fmt.Sprintf(" admin-status %s", sp.AdminStatus)
-				}
-				if sp.Description != "" {
-					spCmd += fmt.Sprintf(" description %q", sp.Description)
-				}
 				commands = append(commands, spCmd)
 			}
 		}
@@ -203,6 +178,27 @@ func buildLineProfileCreateCommands(profile *types.LineProfile) []string {
 
 	commands = append(commands, "commit", "exit", "exit")
 	return commands
+}
+
+func detectLineProfileCLIErrors(commands, outputs []string) error {
+	for i, output := range outputs {
+		lower := strings.ToLower(output)
+		if strings.Contains(lower, "unknown command") {
+			cmd := ""
+			if i < len(commands) {
+				cmd = commands[i]
+			}
+			return fmt.Errorf("OLT rejected command %q: %s", cmd, strings.TrimSpace(output))
+		}
+		if strings.Contains(lower, "unknown gemport") {
+			cmd := ""
+			if i < len(commands) {
+				cmd = commands[i]
+			}
+			return fmt.Errorf("OLT rejected gemport reference for %q: %s", cmd, strings.TrimSpace(output))
+		}
+	}
+	return nil
 }
 
 func buildMvlanCommand(mvlan *types.LineProfileMvlan) string {

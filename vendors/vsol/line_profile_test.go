@@ -48,10 +48,9 @@ func TestBuildLineProfileCreateCommands(t *testing.T) {
 	commands := buildLineProfileCreateCommands(profile)
 	joined := strings.Join(commands, "\n")
 
-	assertContains(t, joined, "configure terminal")
 	assertContains(t, joined, "profile line name line_vlan_100")
 	assertContains(t, joined, "tcont 1 name tcont_1 dba default")
-	assertContains(t, joined, "gemport 1 tcont 1 name gemport_1 traffic-limit up-stream default down-stream default")
+	assertContains(t, joined, "gemport 1 tcont 1")
 	assertContains(t, joined, "service INTERNET gemport 1 vlan 100 cos 0-7")
 	assertContains(t, joined, "service-port 1 gemport 1 uservlan 100 vlan 100")
 	assertContains(t, joined, "mvlan 200,201")
@@ -116,5 +115,28 @@ func TestParseLineProfilesNotFound(t *testing.T) {
 	}
 	if len(profiles) != 0 {
 		t.Fatalf("expected no profiles, got %d", len(profiles))
+	}
+}
+
+func TestDetectLineProfileCLIErrors(t *testing.T) {
+	outputs := []string{
+		"gpon-olt-lab(profile-line:9)# gemport 1 tcont 1 name gemport_1\n% Unknown command.",
+	}
+	if err := detectLineProfileCLIErrors([]string{"gemport 1 tcont 1 name gemport_1"}, outputs); err == nil {
+		t.Fatalf("expected error for unknown command output")
+	}
+
+	outputs = []string{
+		"service INTERNET gemport 1 vlan 999 cos 0-7\nunknown gemport:1.",
+	}
+	if err := detectLineProfileCLIErrors([]string{"service INTERNET gemport 1 vlan 999 cos 0-7"}, outputs); err == nil {
+		t.Fatalf("expected error for unknown gemport output")
+	}
+
+	outputs = []string{
+		"profile_id:11 create success",
+	}
+	if err := detectLineProfileCLIErrors([]string{"profile line name foo"}, outputs); err != nil {
+		t.Fatalf("expected no error, got %v", err)
 	}
 }
