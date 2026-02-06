@@ -1,8 +1,11 @@
 package vsol
 
 import (
+	"context"
 	"testing"
 	"time"
+
+	"github.com/nanoncore/nano-southbound/model"
 )
 
 func TestExtractPONPortFromIndex(t *testing.T) {
@@ -218,4 +221,134 @@ func TestParseAutofindOutput_MultipleONUsVerifyAll(t *testing.T) {
 			t.Errorf("discovery[%d] State = %q, want %q", i, got.State, exp.state)
 		}
 	}
+}
+
+func TestParseVSOLConfirmOnuID(t *testing.T) {
+	tests := []struct {
+		name     string
+		output   string
+		expected int
+		ok       bool
+	}{
+		{
+			name:     "simple_confirm",
+			output:   "Note: Register pon 1 onu 5 OK.",
+			expected: 5,
+			ok:       true,
+		},
+		{
+			name:     "register_format",
+			output:   "Register pon 1 onu 12 OK",
+			expected: 12,
+			ok:       true,
+		},
+		{
+			name:     "no_match",
+			output:   "Error: No related information to show. 62310",
+			expected: 0,
+			ok:       false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			id, ok := parseVSOLConfirmOnuID(tt.output)
+			if ok != tt.ok {
+				t.Fatalf("expected ok=%v, got %v", tt.ok, ok)
+			}
+			if id != tt.expected {
+				t.Fatalf("expected id=%d, got %d", tt.expected, id)
+			}
+		})
+	}
+}
+
+func TestProvisionGPONWithConfirm(t *testing.T) {
+	exec := &mockCLIExecutor{
+		outputs: map[string]string{
+			"configure terminal":              "",
+			"interface gpon 0/1":              "",
+			"onu confirm":                     "Register pon 1 onu 7 OK",
+			"onu 7 profile line name line999": "Note: pon 1 onu 7 set profile line name line999 OK.",
+			"exit":                            "",
+			"end":                             "",
+		},
+	}
+
+	adapter := &Adapter{cliExecutor: exec}
+	subscriber := &model.Subscriber{
+		Annotations: map[string]string{
+			"nano.io/line-profile": "line999",
+		},
+		Spec: model.SubscriberSpec{
+			ONUSerial: "FHTT99990001",
+			VLAN:      999,
+		},
+	}
+
+	assignedID, outputs, err := adapter.provisionGPONWithConfirm(
+		context.Background(),
+		"0/1",
+		subscriber.Spec.ONUSerial,
+		subscriber.Spec.VLAN,
+		subscriber,
+	)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if assignedID != 7 {
+		t.Fatalf("expected assigned ID 7, got %d", assignedID)
+	}
+	if len(outputs) == 0 {
+		t.Fatalf("expected outputs to be recorded")
+	}
+
+	expected := []string{
+		"configure terminal",
+		"interface gpon 0/1",
+		"onu confirm",
+		"onu 7 profile line name line999",
+		"exit",
+		"end",
+	}
+	if !equalStringSlices(exec.commands, expected) {
+		t.Fatalf("unexpected command sequence: %v", exec.commands)
+	}
+}
+
+type mockCLIExecutor struct {
+	outputs  map[string]string
+	commands []string
+}
+
+func (m *mockCLIExecutor) ExecCommand(_ context.Context, command string) (string, error) {
+	m.commands = append(m.commands, command)
+	if out, ok := m.outputs[command]; ok {
+		return out, nil
+	}
+	return "", nil
+}
+
+func (m *mockCLIExecutor) ExecCommands(ctx context.Context, commands []string) ([]string, error) {
+	results := make([]string, 0, len(commands))
+	for _, cmd := range commands {
+		out, err := m.ExecCommand(ctx, cmd)
+		if err != nil {
+			return results, err
+		}
+		results = append(results, out)
+	}
+	return results, nil
+}
+
+func equalStringSlices(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

@@ -25,6 +25,11 @@ type Adapter struct {
 	config          *types.EquipmentConfig
 }
 
+var (
+	reConfirmOnuID  = regexp.MustCompile(`onu\s+(\d+)\s+OK`)
+	reRegisterOnuID = regexp.MustCompile(`Register\s+pon\s+\d+\s+onu\s+(\d+)\s+OK`)
+)
+
 func (a *Adapter) preferCLI() bool {
 	if a.config == nil {
 		return false
@@ -235,6 +240,7 @@ func (a *Adapter) CreateSubscriber(ctx context.Context, subscriber *model.Subscr
 	// NAN-241: Check if ONU ID was explicitly provided
 	// If not, use 0 to trigger auto-provision with "onu confirm"
 	onuID := 0
+	// Annotation precedence: nanoncore.com/onu-id wins if both are set.
 	if id, ok := common.GetAnnotationInt(subscriber.Annotations, "nanoncore.com/onu-id"); ok {
 		onuID = id
 	} else if id, ok := common.GetAnnotationInt(subscriber.Annotations, "nano.io/onu-id"); ok {
@@ -367,19 +373,16 @@ func (a *Adapter) provisionGPONWithConfirm(ctx context.Context, ponPort, serial 
 		record(out)
 	}
 
-	_ = serial // reserved for future serial validation
 	return onuID, outputs, nil
 }
 
 func parseVSOLConfirmOnuID(output string) (int, bool) {
-	re := regexp.MustCompile(`onu\\s+(\\d+)\\s+OK`)
-	if matches := re.FindStringSubmatch(output); len(matches) > 1 {
+	if matches := reConfirmOnuID.FindStringSubmatch(output); len(matches) > 1 {
 		if id, err := strconv.Atoi(matches[1]); err == nil {
 			return id, true
 		}
 	}
-	re = regexp.MustCompile(`Register\\s+pon\\s+\\d+\\s+onu\\s+(\\d+)\\s+OK`)
-	if matches := re.FindStringSubmatch(output); len(matches) > 1 {
+	if matches := reRegisterOnuID.FindStringSubmatch(output); len(matches) > 1 {
 		if id, err := strconv.Atoi(matches[1]); err == nil {
 			return id, true
 		}
@@ -1501,7 +1504,8 @@ func (a *Adapter) GetONURunningConfig(ctx context.Context, ponPort string, onuID
 		return strings.Join(outputs, "\n"), nil
 	}
 
-	// Fallback: some V-SOL builds do not support "show running-config onu X"
+	// Fallback: some V-SOL builds do not support "show running-config onu X".
+	// This runs a full "show running-config" which can be slower on large configs.
 	fallbackCommands := []string{
 		"end",
 		"terminal length 0",
