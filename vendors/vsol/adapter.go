@@ -25,6 +25,11 @@ type Adapter struct {
 	config          *types.EquipmentConfig
 }
 
+var (
+	reConfirmOnuID  = regexp.MustCompile(`onu\s+(\d+)\s+OK`)
+	reRegisterOnuID = regexp.MustCompile(`Register\s+pon\s+\d+\s+onu\s+(\d+)\s+OK`)
+)
+
 func (a *Adapter) preferCLI() bool {
 	if a.config == nil {
 		return false
@@ -235,7 +240,10 @@ func (a *Adapter) CreateSubscriber(ctx context.Context, subscriber *model.Subscr
 	// NAN-241: Check if ONU ID was explicitly provided
 	// If not, use 0 to trigger auto-provision with "onu confirm"
 	onuID := 0
+	// Annotation precedence: nanoncore.com/onu-id wins if both are set.
 	if id, ok := common.GetAnnotationInt(subscriber.Annotations, "nanoncore.com/onu-id"); ok {
+		onuID = id
+	} else if id, ok := common.GetAnnotationInt(subscriber.Annotations, "nano.io/onu-id"); ok {
 		onuID = id
 	}
 
@@ -244,40 +252,142 @@ func (a *Adapter) CreateSubscriber(ctx context.Context, subscriber *model.Subscr
 	bandwidthUp := tier.Spec.BandwidthUp     // Mbps
 
 	// V-SOL CLI command sequence for GPON ONU provisioning
-	var commands []string
+	var (
+		commands   []string
+		outputs    []string
+		assignedID = onuID
+	)
 
 	if a.detectPONType() == "gpon" {
-		commands = a.buildGPONCommands(ponPort, onuID, serial, vlan, bandwidthDown, bandwidthUp, subscriber, tier)
+		// Auto-assign flow needs command output parsing to capture ONU ID.
+		if onuID <= 0 {
+			var err error
+			assignedID, outputs, err = a.provisionGPONWithConfirm(ctx, ponPort, serial, vlan, subscriber)
+			if err != nil {
+				return nil, fmt.Errorf("V-SOL provisioning failed: %w", err)
+			}
+		} else {
+			commands = a.buildGPONCommands(ponPort, onuID, serial, vlan, bandwidthDown, bandwidthUp, subscriber, tier)
+		}
 	} else {
 		commands = a.buildEPONCommands(ponPort, onuID, serial, vlan, bandwidthDown, bandwidthUp, subscriber, tier)
 	}
 
-	// Execute commands
-	outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
-	if err != nil {
-		return nil, fmt.Errorf("V-SOL provisioning failed: %w", err)
+	if len(commands) > 0 {
+		var err error
+		outputs, err = a.cliExecutor.ExecCommands(ctx, commands)
+		if err != nil {
+			return nil, fmt.Errorf("V-SOL provisioning failed: %w", err)
+		}
 	}
 
 	// Build result
 	result := &types.SubscriberResult{
 		SubscriberID:  subscriber.Name,
-		SessionID:     fmt.Sprintf("onu-%s-%d", ponPort, onuID),
+		SessionID:     fmt.Sprintf("onu-%s-%d", ponPort, assignedID),
 		AssignedIP:    subscriber.Spec.IPAddress,
 		AssignedIPv6:  subscriber.Spec.IPv6Address,
-		InterfaceName: fmt.Sprintf("gpon %s onu %d", ponPort, onuID),
+		InterfaceName: fmt.Sprintf("gpon %s onu %d", ponPort, assignedID),
 		VLAN:          vlan,
 		Metadata: map[string]interface{}{
 			"vendor":      "vsol",
 			"model":       a.detectModel(),
 			"pon_type":    a.detectPONType(),
 			"pon_port":    ponPort,
-			"onu_id":      onuID,
+			"onu_id":      assignedID,
 			"serial":      serial,
 			"cli_outputs": outputs,
 		},
 	}
 
 	return result, nil
+}
+
+func (a *Adapter) provisionGPONWithConfirm(ctx context.Context, ponPort, serial string, vlan int, subscriber *model.Subscriber) (int, []string, error) {
+	outputs := make([]string, 0, 8)
+	record := func(output string) {
+		if output != "" {
+			outputs = append(outputs, output)
+		}
+	}
+
+	// Enter config + interface
+	if out, err := a.cliExecutor.ExecCommand(ctx, "configure terminal"); err != nil {
+		return 0, outputs, err
+	} else {
+		record(out)
+	}
+	if out, err := a.cliExecutor.ExecCommand(ctx, fmt.Sprintf("interface gpon %s", ponPort)); err != nil {
+		return 0, outputs, err
+	} else {
+		record(out)
+	}
+
+	confirmOut, err := a.cliExecutor.ExecCommand(ctx, "onu confirm")
+	record(confirmOut)
+	if err != nil {
+		return 0, outputs, err
+	}
+
+	onuID, ok := parseVSOLConfirmOnuID(confirmOut)
+	if !ok {
+		return 0, outputs, fmt.Errorf("unable to parse ONU ID from confirm output")
+	}
+
+	if lineProfile, hasLineProfile := common.GetAnnotationString(subscriber.Annotations, "nano.io/line-profile"); hasLineProfile && lineProfile != "" {
+		if out, err := a.cliExecutor.ExecCommand(ctx, fmt.Sprintf("onu %d profile line name %s", onuID, lineProfile)); err != nil {
+			record(out)
+			return 0, outputs, err
+		} else {
+			record(out)
+		}
+	} else if vlan > 0 {
+		// Standard provisioning (no line profile) to populate VLAN
+		steps := []string{
+			fmt.Sprintf("onu %d tcont 1", onuID),
+			fmt.Sprintf("onu %d gemport 1 tcont 1", onuID),
+			fmt.Sprintf("onu %d service INTERNET gemport 1 vlan %d cos 0-7", onuID, vlan),
+			fmt.Sprintf("onu %d service-port 1 gemport 1 uservlan %d vlan %d", onuID, vlan, vlan),
+			fmt.Sprintf("onu %d portvlan eth 1 mode tag vlan %d", onuID, vlan),
+		}
+		for _, cmd := range steps {
+			out, err := a.cliExecutor.ExecCommand(ctx, cmd)
+			record(out)
+			if err != nil {
+				return 0, outputs, err
+			}
+		}
+	}
+
+	// Exit interface/config
+	if out, err := a.cliExecutor.ExecCommand(ctx, "exit"); err != nil {
+		record(out)
+		return 0, outputs, err
+	} else {
+		record(out)
+	}
+	if out, err := a.cliExecutor.ExecCommand(ctx, "end"); err != nil {
+		record(out)
+		return 0, outputs, err
+	} else {
+		record(out)
+	}
+
+	return onuID, outputs, nil
+}
+
+func parseVSOLConfirmOnuID(output string) (int, bool) {
+	if matches := reConfirmOnuID.FindStringSubmatch(output); len(matches) > 1 {
+		if id, err := strconv.Atoi(matches[1]); err == nil {
+			return id, true
+		}
+	}
+	if matches := reRegisterOnuID.FindStringSubmatch(output); len(matches) > 1 {
+		if id, err := strconv.Atoi(matches[1]); err == nil {
+			return id, true
+		}
+	}
+	return 0, false
 }
 
 // buildGPONCommands builds V-SOL GPON CLI commands
@@ -308,13 +418,10 @@ func (a *Adapter) buildGPONCommands(ponPort string, onuID int, serial string, vl
 		// Get line profile (service configuration) - optional
 		lineProfile, hasLineProfile := common.GetAnnotationString(subscriber.Annotations, "nano.io/line-profile")
 
-		// Check if this is a "line profile" (contains "line" in name)
-		usesLineProfile := hasLineProfile && strings.Contains(lineProfile, "line")
-
 		// Step 1: Add ONU with ONU profile (hardware capabilities)
 		commands = append(commands, fmt.Sprintf("onu add %d profile %s sn %s", onuID, onuProfile, serial))
 
-		if usesLineProfile {
+		if hasLineProfile && lineProfile != "" {
 			// NAN-260: Two-step provisioning with line profile (validated Test 6)
 			// Step 2: Apply line profile (service configuration with VLAN)
 			commands = append(commands, fmt.Sprintf("onu %d profile line name %s", onuID, lineProfile))
@@ -1383,13 +1490,35 @@ func (a *Adapter) GetONURunningConfig(ctx context.Context, ponPort string, onuID
 	}
 
 	outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
-	if err != nil {
-		return "", fmt.Errorf("failed to get ONU running config: %w", err)
+	unknownCommand := false
+	for _, out := range outputs {
+		outLower := strings.ToLower(out)
+		if strings.Contains(outLower, "unknown command") || strings.Contains(outLower, "error:") {
+			unknownCommand = true
+			break
+		}
+	}
+	if err == nil && !unknownCommand {
+		// Join all outputs into a single string for parsing
+		// The show command output is in outputs[2] (third command)
+		return strings.Join(outputs, "\n"), nil
 	}
 
-	// Join all outputs into a single string for parsing
-	// The show command output is in outputs[2] (third command)
-	return strings.Join(outputs, "\n"), nil
+	// Fallback: some V-SOL builds do not support "show running-config onu X".
+	// This runs a full "show running-config" which can be slower on large configs.
+	fallbackCommands := []string{
+		"end",
+		"terminal length 0",
+		"show running-config",
+	}
+	fallbackOutputs, fallbackErr := a.cliExecutor.ExecCommands(ctx, fallbackCommands)
+	if fallbackErr != nil {
+		if err != nil {
+			return "", fmt.Errorf("failed to get ONU running config: %w", err)
+		}
+		return "", fmt.Errorf("failed to get ONU running config: %w", fallbackErr)
+	}
+	return strings.Join(fallbackOutputs, "\n"), nil
 }
 
 // GetONUVLANViaSNMP retrieves the service VLAN for an ONU via SNMP (NAN-257)
@@ -2935,6 +3064,9 @@ func (a *Adapter) getPONPort(subscriber *model.Subscriber) string {
 // getONUID extracts or generates ONU ID
 func (a *Adapter) getONUID(subscriber *model.Subscriber) int {
 	if id, ok := common.GetAnnotationInt(subscriber.Annotations, "nanoncore.com/onu-id"); ok {
+		return id
+	}
+	if id, ok := common.GetAnnotationInt(subscriber.Annotations, "nano.io/onu-id"); ok {
 		return id
 	}
 	// Generate from VLAN as fallback
