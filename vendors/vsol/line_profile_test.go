@@ -139,4 +139,11 @@ func TestDetectLineProfileCLIErrors(t *testing.T) {
 	if err := detectLineProfileCLIErrors([]string{"profile line name foo"}, outputs); err != nil {
 		t.Fatalf("expected no error, got %v", err)
 	}
+
+	outputs = []string{
+		"profile is already existed.",
+	}
+	if err := detectLineProfileCLIErrors([]string{"profile line name foo"}, outputs); err == nil {
+		t.Fatalf("expected error for already existed output")
+	}
 }

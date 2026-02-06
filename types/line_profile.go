@@ -93,9 +93,9 @@ func (p *LineProfile) Validate() error {
 	}
 
 	tcontIDs := map[int]struct{}{}
-	for _, t := range p.Tconts {
+	for idx, t := range p.Tconts {
 		if t == nil {
-			continue
+			return fmt.Errorf("tcont entry at index %d is nil", idx)
 		}
 		if err := validateRange("tcont id", t.ID, 1, 255); err != nil {
 			return err
@@ -173,6 +173,9 @@ func (s *LineProfileService) Validate() error {
 		if err := validateRange("service vlan", s.VLAN, 1, 4094); err != nil {
 			return err
 		}
+	}
+	if err := ValidateCOS(s.COS); err != nil {
+		return err
 	}
 	return nil
 }

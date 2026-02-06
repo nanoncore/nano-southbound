@@ -181,21 +181,31 @@ func buildLineProfileCreateCommands(profile *types.LineProfile) []string {
 }
 
 func detectLineProfileCLIErrors(commands, outputs []string) error {
+	errorPatterns := []string{
+		"unknown command",
+		"unknown gemport",
+		"error:",
+		"fail",
+		"invalid",
+		"command incomplete",
+		"not found",
+		"already existed",
+		"isn't existed",
+	}
 	for i, output := range outputs {
 		lower := strings.ToLower(output)
-		if strings.Contains(lower, "unknown command") {
+		for _, pattern := range errorPatterns {
+			if !strings.Contains(lower, pattern) {
+				continue
+			}
 			cmd := ""
 			if i < len(commands) {
 				cmd = commands[i]
+			}
+			if pattern == "unknown gemport" {
+				return fmt.Errorf("OLT rejected gemport reference for %q: %s", cmd, strings.TrimSpace(output))
 			}
 			return fmt.Errorf("OLT rejected command %q: %s", cmd, strings.TrimSpace(output))
-		}
-		if strings.Contains(lower, "unknown gemport") {
-			cmd := ""
-			if i < len(commands) {
-				cmd = commands[i]
-			}
-			return fmt.Errorf("OLT rejected gemport reference for %q: %s", cmd, strings.TrimSpace(output))
 		}
 	}
 	return nil

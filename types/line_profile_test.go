@@ -51,6 +51,44 @@ func TestLineProfileValidateMissingName(t *testing.T) {
 	}
 }
 
+func TestLineProfileValidateNilTcont(t *testing.T) {
+	profile := &LineProfile{
+		Name:   "line_vlan_100",
+		Tconts: []*LineProfileTcont{nil},
+	}
+	if err := profile.Validate(); err == nil {
+		t.Fatalf("expected validation error for nil tcont")
+	}
+}
+
+func TestLineProfileValidateInvalidCOS(t *testing.T) {
+	profile := &LineProfile{
+		Name: "line_vlan_100",
+		Tconts: []*LineProfileTcont{
+			{
+				ID: 1,
+				Gemports: []*LineProfileGemport{
+					{
+						ID:      1,
+						TcontID: 1,
+						Services: []*LineProfileService{
+							{
+								Name:      "INTERNET",
+								GemportID: 1,
+								VLAN:      100,
+								COS:       "foo",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+	if err := profile.Validate(); err == nil {
+		t.Fatalf("expected validation error for invalid cos")
+	}
+}
+
 func TestLineProfileMvlanParse(t *testing.T) {
 	mvlan := &LineProfileMvlan{Raw: "200,201-203"}
 	if err := mvlan.Validate(); err != nil {
