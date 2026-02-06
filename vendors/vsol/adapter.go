@@ -244,40 +244,145 @@ func (a *Adapter) CreateSubscriber(ctx context.Context, subscriber *model.Subscr
 	bandwidthUp := tier.Spec.BandwidthUp     // Mbps
 
 	// V-SOL CLI command sequence for GPON ONU provisioning
-	var commands []string
+	var (
+		commands   []string
+		outputs    []string
+		assignedID = onuID
+	)
 
 	if a.detectPONType() == "gpon" {
-		commands = a.buildGPONCommands(ponPort, onuID, serial, vlan, bandwidthDown, bandwidthUp, subscriber, tier)
+		// Auto-assign flow needs command output parsing to capture ONU ID.
+		if onuID <= 0 {
+			var err error
+			assignedID, outputs, err = a.provisionGPONWithConfirm(ctx, ponPort, serial, vlan, subscriber)
+			if err != nil {
+				return nil, fmt.Errorf("V-SOL provisioning failed: %w", err)
+			}
+		} else {
+			commands = a.buildGPONCommands(ponPort, onuID, serial, vlan, bandwidthDown, bandwidthUp, subscriber, tier)
+		}
 	} else {
 		commands = a.buildEPONCommands(ponPort, onuID, serial, vlan, bandwidthDown, bandwidthUp, subscriber, tier)
 	}
 
-	// Execute commands
-	outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
-	if err != nil {
-		return nil, fmt.Errorf("V-SOL provisioning failed: %w", err)
+	if len(commands) > 0 {
+		var err error
+		outputs, err = a.cliExecutor.ExecCommands(ctx, commands)
+		if err != nil {
+			return nil, fmt.Errorf("V-SOL provisioning failed: %w", err)
+		}
 	}
 
 	// Build result
 	result := &types.SubscriberResult{
 		SubscriberID:  subscriber.Name,
-		SessionID:     fmt.Sprintf("onu-%s-%d", ponPort, onuID),
+		SessionID:     fmt.Sprintf("onu-%s-%d", ponPort, assignedID),
 		AssignedIP:    subscriber.Spec.IPAddress,
 		AssignedIPv6:  subscriber.Spec.IPv6Address,
-		InterfaceName: fmt.Sprintf("gpon %s onu %d", ponPort, onuID),
+		InterfaceName: fmt.Sprintf("gpon %s onu %d", ponPort, assignedID),
 		VLAN:          vlan,
 		Metadata: map[string]interface{}{
 			"vendor":      "vsol",
 			"model":       a.detectModel(),
 			"pon_type":    a.detectPONType(),
 			"pon_port":    ponPort,
-			"onu_id":      onuID,
+			"onu_id":      assignedID,
 			"serial":      serial,
 			"cli_outputs": outputs,
 		},
 	}
 
 	return result, nil
+}
+
+func (a *Adapter) provisionGPONWithConfirm(ctx context.Context, ponPort, serial string, vlan int, subscriber *model.Subscriber) (int, []string, error) {
+	outputs := make([]string, 0, 8)
+	record := func(output string) {
+		if output != "" {
+			outputs = append(outputs, output)
+		}
+	}
+
+	// Enter config + interface
+	if out, err := a.cliExecutor.ExecCommand(ctx, "configure terminal"); err != nil {
+		return 0, outputs, err
+	} else {
+		record(out)
+	}
+	if out, err := a.cliExecutor.ExecCommand(ctx, fmt.Sprintf("interface gpon %s", ponPort)); err != nil {
+		return 0, outputs, err
+	} else {
+		record(out)
+	}
+
+	confirmOut, err := a.cliExecutor.ExecCommand(ctx, "onu confirm")
+	record(confirmOut)
+	if err != nil {
+		return 0, outputs, err
+	}
+
+	onuID, ok := parseVSOLConfirmOnuID(confirmOut)
+	if !ok {
+		return 0, outputs, fmt.Errorf("unable to parse ONU ID from confirm output")
+	}
+
+	if lineProfile, hasLineProfile := common.GetAnnotationString(subscriber.Annotations, "nano.io/line-profile"); hasLineProfile && lineProfile != "" {
+		if out, err := a.cliExecutor.ExecCommand(ctx, fmt.Sprintf("onu %d profile line name %s", onuID, lineProfile)); err != nil {
+			record(out)
+			return 0, outputs, err
+		} else {
+			record(out)
+		}
+	} else if vlan > 0 {
+		// Standard provisioning (no line profile) to populate VLAN
+		steps := []string{
+			fmt.Sprintf("onu %d tcont 1", onuID),
+			fmt.Sprintf("onu %d gemport 1 tcont 1", onuID),
+			fmt.Sprintf("onu %d service INTERNET gemport 1 vlan %d cos 0-7", onuID, vlan),
+			fmt.Sprintf("onu %d service-port 1 gemport 1 uservlan %d vlan %d", onuID, vlan, vlan),
+			fmt.Sprintf("onu %d portvlan eth 1 mode tag vlan %d", onuID, vlan),
+		}
+		for _, cmd := range steps {
+			out, err := a.cliExecutor.ExecCommand(ctx, cmd)
+			record(out)
+			if err != nil {
+				return 0, outputs, err
+			}
+		}
+	}
+
+	// Exit interface/config
+	if out, err := a.cliExecutor.ExecCommand(ctx, "exit"); err != nil {
+		record(out)
+		return 0, outputs, err
+	} else {
+		record(out)
+	}
+	if out, err := a.cliExecutor.ExecCommand(ctx, "end"); err != nil {
+		record(out)
+		return 0, outputs, err
+	} else {
+		record(out)
+	}
+
+	_ = serial // reserved for future serial validation
+	return onuID, outputs, nil
+}
+
+func parseVSOLConfirmOnuID(output string) (int, bool) {
+	re := regexp.MustCompile(`onu\\s+(\\d+)\\s+OK`)
+	if matches := re.FindStringSubmatch(output); len(matches) > 1 {
+		if id, err := strconv.Atoi(matches[1]); err == nil {
+			return id, true
+		}
+	}
+	re = regexp.MustCompile(`Register\\s+pon\\s+\\d+\\s+onu\\s+(\\d+)\\s+OK`)
+	if matches := re.FindStringSubmatch(output); len(matches) > 1 {
+		if id, err := strconv.Atoi(matches[1]); err == nil {
+			return id, true
+		}
+	}
+	return 0, false
 }
 
 // buildGPONCommands builds V-SOL GPON CLI commands
