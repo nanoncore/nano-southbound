@@ -237,6 +237,8 @@ func (a *Adapter) CreateSubscriber(ctx context.Context, subscriber *model.Subscr
 	onuID := 0
 	if id, ok := common.GetAnnotationInt(subscriber.Annotations, "nanoncore.com/onu-id"); ok {
 		onuID = id
+	} else if id, ok := common.GetAnnotationInt(subscriber.Annotations, "nano.io/onu-id"); ok {
+		onuID = id
 	}
 
 	// Get bandwidth rates in kbps
@@ -3058,6 +3060,9 @@ func (a *Adapter) getPONPort(subscriber *model.Subscriber) string {
 // getONUID extracts or generates ONU ID
 func (a *Adapter) getONUID(subscriber *model.Subscriber) int {
 	if id, ok := common.GetAnnotationInt(subscriber.Annotations, "nanoncore.com/onu-id"); ok {
+		return id
+	}
+	if id, ok := common.GetAnnotationInt(subscriber.Annotations, "nano.io/onu-id"); ok {
 		return id
 	}
 	// Generate from VLAN as fallback
