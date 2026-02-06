@@ -413,13 +413,10 @@ func (a *Adapter) buildGPONCommands(ponPort string, onuID int, serial string, vl
 		// Get line profile (service configuration) - optional
 		lineProfile, hasLineProfile := common.GetAnnotationString(subscriber.Annotations, "nano.io/line-profile")
 
-		// Check if this is a "line profile" (contains "line" in name)
-		usesLineProfile := hasLineProfile && strings.Contains(lineProfile, "line")
-
 		// Step 1: Add ONU with ONU profile (hardware capabilities)
 		commands = append(commands, fmt.Sprintf("onu add %d profile %s sn %s", onuID, onuProfile, serial))
 
-		if usesLineProfile {
+		if hasLineProfile && lineProfile != "" {
 			// NAN-260: Two-step provisioning with line profile (validated Test 6)
 			// Step 2: Apply line profile (service configuration with VLAN)
 			commands = append(commands, fmt.Sprintf("onu %d profile line name %s", onuID, lineProfile))
@@ -1488,13 +1485,34 @@ func (a *Adapter) GetONURunningConfig(ctx context.Context, ponPort string, onuID
 	}
 
 	outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
-	if err != nil {
-		return "", fmt.Errorf("failed to get ONU running config: %w", err)
+	unknownCommand := false
+	for _, out := range outputs {
+		outLower := strings.ToLower(out)
+		if strings.Contains(outLower, "unknown command") || strings.Contains(outLower, "error:") {
+			unknownCommand = true
+			break
+		}
+	}
+	if err == nil && !unknownCommand {
+		// Join all outputs into a single string for parsing
+		// The show command output is in outputs[2] (third command)
+		return strings.Join(outputs, "\n"), nil
 	}
 
-	// Join all outputs into a single string for parsing
-	// The show command output is in outputs[2] (third command)
-	return strings.Join(outputs, "\n"), nil
+	// Fallback: some V-SOL builds do not support "show running-config onu X"
+	fallbackCommands := []string{
+		"end",
+		"terminal length 0",
+		"show running-config",
+	}
+	fallbackOutputs, fallbackErr := a.cliExecutor.ExecCommands(ctx, fallbackCommands)
+	if fallbackErr != nil {
+		if err != nil {
+			return "", fmt.Errorf("failed to get ONU running config: %w", err)
+		}
+		return "", fmt.Errorf("failed to get ONU running config: %w", fallbackErr)
+	}
+	return strings.Join(fallbackOutputs, "\n"), nil
 }
 
 // GetONUVLANViaSNMP retrieves the service VLAN for an ONU via SNMP (NAN-257)
