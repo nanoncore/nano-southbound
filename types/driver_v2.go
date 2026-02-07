@@ -228,6 +228,9 @@ type ONUInfo struct {
 	// OutputRateBps is the current output rate in bytes per second
 	OutputRateBps uint64 `json:"output_rate_bps,omitempty"`
 
+	// ONUProfile is the ONU hardware profile (vendor-specific)
+	ONUProfile string `json:"onu_profile,omitempty"`
+
 	// LineProfile is the assigned line profile
 	LineProfile string `json:"line_profile,omitempty"`
 

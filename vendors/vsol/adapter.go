@@ -1173,15 +1173,15 @@ func (a *Adapter) parseV1600ONUList(output string, ponPort string) []types.ONUIn
 			}
 
 			onu := types.ONUInfo{
-				PONPort:     extractedPort,
-				ONUID:       onuID,
-				Model:       fields[1],
-				LineProfile: fields[2],
-				Serial:      serial,
-				Vendor:      detectONUVendor(serial), // Detect vendor from serial prefix
-				IsOnline:    true,                    // Default to true, will be updated from state
-				AdminState:  "enabled",
-				OperState:   "unknown", // Will be updated from show onu state
+				PONPort:    extractedPort,
+				ONUID:      onuID,
+				Model:      fields[1],
+				ONUProfile: fields[2],
+				Serial:     serial,
+				Vendor:     detectONUVendor(serial), // Detect vendor from serial prefix
+				IsOnline:   true,                    // Default to true, will be updated from state
+				AdminState: "enabled",
+				OperState:  "unknown", // Will be updated from show onu state
 			}
 
 			// Mode field (fields[3]) indicates auth type (sn = serial number)
@@ -2634,6 +2634,7 @@ func (a *Adapter) getONUListSNMP(ctx context.Context) ([]types.ONUInfo, error) {
 		}
 		if val, ok := profiles[index]; ok {
 			if profile, ok := common.ParseStringSNMPValue(val); ok {
+				onu.ONUProfile = profile
 				if onu.Metadata == nil {
 					onu.Metadata = map[string]interface{}{}
 				}

@@ -62,6 +62,9 @@ func TestGetONUListSNMPLineProfile(t *testing.T) {
 	if onu.LineProfile != "line_vlan_999" {
 		t.Fatalf("expected line profile line_vlan_999, got %q", onu.LineProfile)
 	}
+	if onu.ONUProfile != "AN5506-04-F1" {
+		t.Fatalf("expected ONU profile AN5506-04-F1, got %q", onu.ONUProfile)
+	}
 	if onu.Metadata == nil {
 		t.Fatalf("expected metadata to be populated")
 	}
