@@ -1,0 +1,18 @@
+scan:
+  scanners:
+    - vuln
+    - config
+    - secret
+  severity:
+    - HIGH
+    - CRITICAL
+  # Fail CI when HIGH/CRITICAL are found
+  exit-code: 1
+
+cache:
+  dir: .trivycache
+
+# Keep scan scope tight and avoid noise
+skip-dirs:
+  - .git
+  - .trivycache
