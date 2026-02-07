@@ -1173,15 +1173,15 @@ func (a *Adapter) parseV1600ONUList(output string, ponPort string) []types.ONUIn
 			}
 
 			onu := types.ONUInfo{
-				PONPort:     extractedPort,
-				ONUID:       onuID,
-				Model:       fields[1],
-				LineProfile: fields[2],
-				Serial:      serial,
-				Vendor:      detectONUVendor(serial), // Detect vendor from serial prefix
-				IsOnline:    true,                    // Default to true, will be updated from state
-				AdminState:  "enabled",
-				OperState:   "unknown", // Will be updated from show onu state
+				PONPort:    extractedPort,
+				ONUID:      onuID,
+				Model:      fields[1],
+				ONUProfile: fields[2],
+				Serial:     serial,
+				Vendor:     detectONUVendor(serial), // Detect vendor from serial prefix
+				IsOnline:   true,                    // Default to true, will be updated from state
+				AdminState: "enabled",
+				OperState:  "unknown", // Will be updated from show onu state
 			}
 
 			// Mode field (fields[3]) indicates auth type (sn = serial number)
@@ -2543,6 +2543,7 @@ func (a *Adapter) getONUListSNMP(ctx context.Context) ([]types.ONUInfo, error) {
 	voltages, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUVoltage)
 	biasCurrents, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUBiasCurrent)
 	profiles, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUProfile)
+	lineProfiles, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONULineProfile)
 	// Service VLAN is available via SNMP at OIDONUServiceVLAN
 	// Format: {pon_idx}.{onu_idx}.{gem_idx} - we need to map this to {pon_idx}.{onu_idx}
 	serviceVLANs, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUServiceVLAN)
@@ -2626,9 +2627,18 @@ func (a *Adapter) getONUListSNMP(ctx context.Context) ([]types.ONUInfo, error) {
 				onu.BiasCurrent = bias
 			}
 		}
-		if val, ok := profiles[index]; ok {
+		if val, ok := lineProfiles[index]; ok {
 			if profile, ok := common.ParseStringSNMPValue(val); ok {
 				onu.LineProfile = profile
+			}
+		}
+		if val, ok := profiles[index]; ok {
+			if profile, ok := common.ParseStringSNMPValue(val); ok {
+				onu.ONUProfile = profile
+				if onu.Metadata == nil {
+					onu.Metadata = map[string]interface{}{}
+				}
+				onu.Metadata["onu_profile"] = profile
 			}
 		}
 		// Service VLAN - OID index is {pon}.{onu}.{gem}, we match on {pon}.{onu}
