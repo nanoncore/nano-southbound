@@ -59,7 +59,8 @@ const (
 	// onu_idx = 1-128 (ONU ID)
 	OIDONUAdminState   = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.1"  // Admin state (1=enable, 2=disable)
 	OIDONUOMCCState    = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.2"  // OMCC state
-	OIDONUProfile      = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.3"  // Profile name
+	OIDONUProfile      = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.3"  // ONU hardware profile name
+	OIDONULineProfile  = "1.3.6.1.4.1.37950.1.1.6.2.2.7.1.4"  // Line profile name (V-SOL)
 	OIDONUAuthMode     = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.4"  // Auth mode (sn/password)
 	OIDONUSerialNumber = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.5"  // Serial number
 	OIDONUModel        = "1.3.6.1.4.1.37950.1.1.6.1.1.2.1.6"  // Model name

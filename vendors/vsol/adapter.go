@@ -2543,6 +2543,7 @@ func (a *Adapter) getONUListSNMP(ctx context.Context) ([]types.ONUInfo, error) {
 	voltages, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUVoltage)
 	biasCurrents, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUBiasCurrent)
 	profiles, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUProfile)
+	lineProfiles, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONULineProfile)
 	// Service VLAN is available via SNMP at OIDONUServiceVLAN
 	// Format: {pon_idx}.{onu_idx}.{gem_idx} - we need to map this to {pon_idx}.{onu_idx}
 	serviceVLANs, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUServiceVLAN)
@@ -2626,9 +2627,17 @@ func (a *Adapter) getONUListSNMP(ctx context.Context) ([]types.ONUInfo, error) {
 				onu.BiasCurrent = bias
 			}
 		}
-		if val, ok := profiles[index]; ok {
+		if val, ok := lineProfiles[index]; ok {
 			if profile, ok := common.ParseStringSNMPValue(val); ok {
 				onu.LineProfile = profile
+			}
+		}
+		if val, ok := profiles[index]; ok {
+			if profile, ok := common.ParseStringSNMPValue(val); ok {
+				if onu.Metadata == nil {
+					onu.Metadata = map[string]interface{}{}
+				}
+				onu.Metadata["onu_profile"] = profile
 			}
 		}
 		// Service VLAN - OID index is {pon}.{onu}.{gem}, we match on {pon}.{onu}
