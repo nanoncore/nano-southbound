@@ -137,6 +137,14 @@ Contributions are welcome! To add support for a new vendor:
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
 
+## Security Scanning (Local)
+
+Run the same Trivy scan used in CI:
+
+```bash
+./scripts/trivy.sh
+```
+
 ## License
 
 Apache 2.0 - See [LICENSE](LICENSE) for details.
