@@ -15,6 +15,12 @@ import (
 	"github.com/nanoncore/nano-southbound/vendors/common"
 )
 
+// Compile-time interface conformance checks
+var (
+	_ types.Driver   = (*Adapter)(nil)
+	_ types.DriverV2 = (*Adapter)(nil)
+)
+
 // Adapter wraps a base driver with Huawei-specific logic
 // Huawei OLTs (MA5600T/MA5800-X series) require BOTH protocols:
 // - CLI for configuration (provisioning, deletion, updates)
@@ -1450,15 +1456,23 @@ func (a *Adapter) GetONUDistance(ctx context.Context, ponPort string, onuID int)
 }
 
 // RestartONU triggers a reboot of the specified ONU.
-func (a *Adapter) RestartONU(ctx context.Context, ponPort string, onuID int) error {
+func (a *Adapter) RestartONU(ctx context.Context, ponPort string, onuID int) (*types.RestartONUResult, error) {
+	result := &types.RestartONUResult{
+		Success: false,
+	}
+
 	if a.cliExecutor == nil {
-		return fmt.Errorf("CLI executor not available")
+		result.Error = "CLI executor not available"
+		result.Message = "Cannot connect to OLT"
+		return result, fmt.Errorf("CLI executor not available")
 	}
 
 	// Parse PON port (format: frame/slot/port, e.g., "0/0/1")
 	parts := strings.Split(ponPort, "/")
 	if len(parts) != 3 {
-		return fmt.Errorf("invalid PON port format: %s (expected frame/slot/port)", ponPort)
+		result.Error = fmt.Sprintf("invalid PON port format: %s (expected frame/slot/port)", ponPort)
+		result.Message = "Invalid PON port format"
+		return result, fmt.Errorf("invalid PON port format: %s (expected frame/slot/port)", ponPort)
 	}
 
 	frame, _ := strconv.Atoi(parts[0])
@@ -1476,7 +1490,17 @@ func (a *Adapter) RestartONU(ctx context.Context, ponPort string, onuID int) err
 	}
 
 	_, err := a.cliExecutor.ExecCommands(ctx, commands)
-	return err
+	if err != nil {
+		result.Error = err.Error()
+		result.Message = "Failed to send reset command"
+		return result, err
+	}
+
+	result.Success = true
+	result.DeactivateSuccess = true
+	result.ActivateSuccess = true
+	result.Message = "ONT reset command sent successfully"
+	return result, nil
 }
 
 // ApplyProfile applies a bandwidth/service profile to an ONU.

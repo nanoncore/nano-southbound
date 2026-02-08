@@ -15,6 +15,12 @@ import (
 	"github.com/nanoncore/nano-southbound/vendors/common"
 )
 
+// Compile-time interface conformance checks
+var (
+	_ types.Driver   = (*Adapter)(nil)
+	_ types.DriverV2 = (*Adapter)(nil)
+)
+
 // Adapter wraps a base driver with V-SOL-specific logic
 // V-SOL OLTs (V1600G series) use CLI + SNMP, with optional EMS REST API
 type Adapter struct {
