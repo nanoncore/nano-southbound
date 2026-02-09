@@ -2643,14 +2643,28 @@ func (a *Adapter) getONUListSNMP(ctx context.Context) ([]types.ONUInfo, error) {
 	return results, nil
 }
 
-// GetONUProfiles fetches ONU profile, line profile, and VLAN assignments via SNMP.
-// This is a lightweight alternative to GetONUList for the config sync tier.
+// GetONUProfiles fetches ONU profile, line profile, and VLAN assignments.
+// Uses SNMP (preferred) with CLI fallback for the config sync tier.
 func (a *Adapter) GetONUProfiles(ctx context.Context) ([]types.ONUInfo, error) {
-	if a.snmpExecutor == nil {
-		return nil, fmt.Errorf("SNMP executor not available for profile sync")
+	// Try SNMP first (lightweight: 4 walks)
+	if a.snmpExecutor != nil && !a.preferCLI() {
+		results, err := a.getONUProfilesSNMP(ctx)
+		if err == nil {
+			return results, nil
+		}
+		// Fall through to CLI on SNMP failure
 	}
 
-	// Walk serial numbers as the base index (identifies all ONUs)
+	// CLI fallback: iterate PON ports, parse profiles from onu info + running-config
+	if a.cliExecutor != nil && a.detectPONType() == "gpon" {
+		return a.getONUProfilesCLI(ctx)
+	}
+
+	return nil, fmt.Errorf("neither SNMP nor CLI available for profile sync")
+}
+
+// getONUProfilesSNMP fetches profiles via SNMP OID walks.
+func (a *Adapter) getONUProfilesSNMP(ctx context.Context) ([]types.ONUInfo, error) {
 	serials, err := a.snmpExecutor.WalkSNMP(ctx, OIDONUSerialNumber)
 	if err != nil {
 		return nil, fmt.Errorf("failed to walk ONU serials: %w", err)
@@ -2660,7 +2674,6 @@ func (a *Adapter) GetONUProfiles(ctx context.Context) ([]types.ONUInfo, error) {
 		return nil, nil
 	}
 
-	// Walk only profile-related OIDs (lightweight)
 	profiles, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUProfile)
 	lineProfiles, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONULineProfile)
 	serviceVLANs, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUServiceVLAN)
@@ -2716,6 +2729,113 @@ func (a *Adapter) GetONUProfiles(ctx context.Context) ([]types.ONUInfo, error) {
 	}
 
 	return results, nil
+}
+
+// getONUProfilesCLI fetches profiles via CLI commands (fallback when SNMP unavailable).
+// For each PON port: "show onu info all" for ONUProfile + "show running-config" for
+// line profiles and VLANs.
+func (a *Adapter) getONUProfilesCLI(ctx context.Context) ([]types.ONUInfo, error) {
+	var results []types.ONUInfo
+
+	ponPorts := a.getPONPortList()
+	for _, ponPort := range ponPorts {
+		commands := []string{
+			"configure terminal",
+			fmt.Sprintf("interface gpon %s", ponPort),
+			"show onu info all",
+			"show running-config",
+			"exit",
+			"exit",
+		}
+
+		outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
+		if err != nil {
+			continue // Skip this PON port on error
+		}
+
+		// Parse "show onu info all" (index 2) → get serial, onuId, ONUProfile
+		var portONUs []types.ONUInfo
+		if len(outputs) > 2 {
+			portONUs = a.parseV1600ONUList(outputs[2], ponPort)
+		}
+		if len(portONUs) == 0 {
+			continue
+		}
+
+		// Parse "show running-config" (index 3) → get line profiles and VLANs per ONU ID
+		var runningConfig string
+		if len(outputs) > 3 {
+			runningConfig = common.StripANSI(outputs[3])
+		}
+
+		if runningConfig != "" {
+			for i := range portONUs {
+				lp, vlan := parseONURunningConfigProfiles(runningConfig, portONUs[i].ONUID)
+				if lp != "" {
+					portONUs[i].LineProfile = lp
+				}
+				if vlan > 0 {
+					portONUs[i].VLAN = vlan
+				}
+			}
+		}
+
+		results = append(results, portONUs...)
+	}
+
+	if len(results) == 0 {
+		return nil, fmt.Errorf("CLI profile sync found no ONUs across all PON ports")
+	}
+
+	return results, nil
+}
+
+// parseONURunningConfigProfiles extracts line-profile and VLAN for a specific ONU ID
+// from the full running-config output of a PON interface.
+// Looks for patterns:
+//
+//	onu <id> line-profile <name>
+//	onu <id> service-port <n> gemport <n> uservlan <vlan> vlan <vlan>
+//	onu <id> service <name> gemport <n> vlan <vlan>
+func parseONURunningConfigProfiles(config string, onuID int) (lineProfile string, vlan int) {
+	idStr := strconv.Itoa(onuID)
+	for _, line := range strings.Split(config, "\n") {
+		line = strings.TrimSpace(line)
+
+		// Match "onu <id> ..." lines
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] != "onu" || fields[1] != idStr {
+			continue
+		}
+
+		// "onu X line-profile <name>"
+		if fields[2] == "line-profile" && len(fields) >= 4 {
+			lineProfile = fields[3]
+			continue
+		}
+
+		// "onu X service-port Y gemport Z uservlan VVV vlan VVV"
+		if fields[2] == "service-port" && vlan == 0 {
+			re := regexp.MustCompile(`uservlan\s+(\d+)`)
+			if match := re.FindStringSubmatch(line); len(match) > 1 {
+				if v, err := strconv.Atoi(match[1]); err == nil && v > 0 {
+					vlan = v
+				}
+			}
+			continue
+		}
+
+		// "onu X service <name> gemport Y vlan VVV"
+		if fields[2] == "service" && vlan == 0 {
+			re := regexp.MustCompile(`vlan\s+(\d+)`)
+			if match := re.FindStringSubmatch(line); len(match) > 1 {
+				if v, err := strconv.Atoi(match[1]); err == nil && v > 0 {
+					vlan = v
+				}
+			}
+		}
+	}
+	return
 }
 
 // getONUPowerSNMP retrieves optical power readings for a specific ONU using SNMP
