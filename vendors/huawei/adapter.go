@@ -2460,6 +2460,12 @@ func (a *Adapter) AddServicePort(ctx context.Context, req *types.AddServicePortR
 }
 
 // DeleteServicePort removes a service port mapping.
+// GetONUProfiles fetches ONU profile and VLAN assignments.
+// TODO: Implement Huawei SNMP/CLI profile retrieval.
+func (a *Adapter) GetONUProfiles(ctx context.Context) ([]types.ONUInfo, error) {
+	return nil, fmt.Errorf("GetONUProfiles not yet implemented for Huawei")
+}
+
 func (a *Adapter) DeleteServicePort(ctx context.Context, ponPort string, ontID int) error {
 	if a.cliExecutor == nil {
 		return fmt.Errorf("CLI executor not available")

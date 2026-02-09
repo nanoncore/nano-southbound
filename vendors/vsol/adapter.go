@@ -2643,6 +2643,81 @@ func (a *Adapter) getONUListSNMP(ctx context.Context) ([]types.ONUInfo, error) {
 	return results, nil
 }
 
+// GetONUProfiles fetches ONU profile, line profile, and VLAN assignments via SNMP.
+// This is a lightweight alternative to GetONUList for the config sync tier.
+func (a *Adapter) GetONUProfiles(ctx context.Context) ([]types.ONUInfo, error) {
+	if a.snmpExecutor == nil {
+		return nil, fmt.Errorf("SNMP executor not available for profile sync")
+	}
+
+	// Walk serial numbers as the base index (identifies all ONUs)
+	serials, err := a.snmpExecutor.WalkSNMP(ctx, OIDONUSerialNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk ONU serials: %w", err)
+	}
+
+	if len(serials) == 0 {
+		return nil, nil
+	}
+
+	// Walk only profile-related OIDs (lightweight)
+	profiles, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUProfile)
+	lineProfiles, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONULineProfile)
+	serviceVLANs, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUServiceVLAN)
+
+	results := make([]types.ONUInfo, 0, len(serials))
+	for index, serialVal := range serials {
+		ponIdx, onuIdx, err := ParseONUIndex(index)
+		if err != nil {
+			continue
+		}
+
+		serial, ok := common.ParseStringSNMPValue(serialVal)
+		if !ok || serial == "" {
+			continue
+		}
+
+		onu := types.ONUInfo{
+			PONPort: PONIndexToPort(ponIdx),
+			ONUID:   onuIdx,
+			Serial:  serial,
+		}
+
+		if val, ok := profiles[index]; ok {
+			if profile, ok := common.ParseStringSNMPValue(val); ok {
+				onu.ONUProfile = profile
+			}
+		}
+		if val, ok := lineProfiles[index]; ok {
+			if profile, ok := common.ParseStringSNMPValue(val); ok {
+				onu.LineProfile = profile
+			}
+		}
+
+		// Service VLAN — try gem index 1 first, then search
+		vlanIndex := fmt.Sprintf(".%d.%d.1", ponIdx, onuIdx)
+		if val, ok := serviceVLANs[vlanIndex]; ok {
+			if vlan, ok := common.ParseIntSNMPValue(val); ok && vlan > 0 {
+				onu.VLAN = int(vlan)
+			}
+		} else {
+			prefix := fmt.Sprintf(".%d.%d.", ponIdx, onuIdx)
+			for vlanIdx, val := range serviceVLANs {
+				if strings.HasPrefix(vlanIdx, prefix) {
+					if vlan, ok := common.ParseIntSNMPValue(val); ok && vlan > 0 {
+						onu.VLAN = int(vlan)
+						break
+					}
+				}
+			}
+		}
+
+		results = append(results, onu)
+	}
+
+	return results, nil
+}
+
 // getONUPowerSNMP retrieves optical power readings for a specific ONU using SNMP
 func (a *Adapter) getONUPowerSNMP(ctx context.Context, ponPort string, onuID int) (*types.ONUPowerReading, error) {
 	if a.snmpExecutor == nil {
