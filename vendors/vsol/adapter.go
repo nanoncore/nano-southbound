@@ -753,39 +753,8 @@ func (a *Adapter) DiscoverONUs(ctx context.Context, ponPorts []string) ([]types.
 			}
 		}
 
-		// If no autofind results, fall back to registered ONUs (V1600 behavior)
-		if len(discoveries) == 0 {
-			for _, ponPort := range portsToScan {
-				commands := []string{
-					"configure terminal",
-					fmt.Sprintf("interface gpon %s", ponPort),
-					"show onu info",
-					"exit",
-					"exit",
-				}
-
-				outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
-				if err != nil {
-					continue
-				}
-
-				// Parse the "show onu info" output (index 2 in the commands)
-				if len(outputs) > 2 {
-					onus := a.parseV1600ONUList(outputs[2], ponPort)
-					for _, onu := range onus {
-						discovery := types.ONUDiscovery{
-							PONPort:      onu.PONPort,
-							Serial:       onu.Serial,
-							Model:        onu.Model,
-							RxPowerDBm:   onu.RxPowerDBm,
-							DistanceM:    onu.DistanceM,
-							DiscoveredAt: time.Now(),
-						}
-						discoveries = append(discoveries, discovery)
-					}
-				}
-			}
-		}
+		// Note: Do NOT fall back to "show onu info" — that returns provisioned ONUs,
+		// not unprovisioned ones. If auto-find is empty, there are no pending ONUs.
 	} else {
 		// EPON: try autofind first, fall back to registered LLIDs
 		cmd := "show llid autofind all"
