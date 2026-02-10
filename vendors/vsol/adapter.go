@@ -2643,6 +2643,201 @@ func (a *Adapter) getONUListSNMP(ctx context.Context) ([]types.ONUInfo, error) {
 	return results, nil
 }
 
+// GetONUProfiles fetches ONU profile, line profile, and VLAN assignments.
+// Uses SNMP (preferred) with CLI fallback for the config sync tier.
+func (a *Adapter) GetONUProfiles(ctx context.Context) ([]types.ONUInfo, error) {
+	// Try SNMP first (lightweight: 4 walks)
+	if a.snmpExecutor != nil && !a.preferCLI() {
+		results, err := a.getONUProfilesSNMP(ctx)
+		if err == nil {
+			return results, nil
+		}
+		// Fall through to CLI on SNMP failure
+	}
+
+	// CLI fallback: iterate PON ports, parse profiles from onu info + running-config
+	if a.cliExecutor != nil && a.detectPONType() == "gpon" {
+		return a.getONUProfilesCLI(ctx)
+	}
+
+	return nil, fmt.Errorf("neither SNMP nor CLI available for profile sync")
+}
+
+// getONUProfilesSNMP fetches profiles via SNMP OID walks.
+func (a *Adapter) getONUProfilesSNMP(ctx context.Context) ([]types.ONUInfo, error) {
+	serials, err := a.snmpExecutor.WalkSNMP(ctx, OIDONUSerialNumber)
+	if err != nil {
+		return nil, fmt.Errorf("failed to walk ONU serials: %w", err)
+	}
+
+	if len(serials) == 0 {
+		return nil, nil
+	}
+
+	profiles, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUProfile)
+	lineProfiles, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONULineProfile)
+	serviceVLANs, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUServiceVLAN)
+
+	results := make([]types.ONUInfo, 0, len(serials))
+	for index, serialVal := range serials {
+		ponIdx, onuIdx, err := ParseONUIndex(index)
+		if err != nil {
+			continue
+		}
+
+		serial, ok := common.ParseStringSNMPValue(serialVal)
+		if !ok || serial == "" {
+			continue
+		}
+
+		onu := types.ONUInfo{
+			PONPort: PONIndexToPort(ponIdx),
+			ONUID:   onuIdx,
+			Serial:  serial,
+		}
+
+		if val, ok := profiles[index]; ok {
+			if profile, ok := common.ParseStringSNMPValue(val); ok {
+				onu.ONUProfile = profile
+			}
+		}
+		if val, ok := lineProfiles[index]; ok {
+			if profile, ok := common.ParseStringSNMPValue(val); ok {
+				onu.LineProfile = profile
+			}
+		}
+
+		// Service VLAN — try gem index 1 first, then search
+		vlanIndex := fmt.Sprintf(".%d.%d.1", ponIdx, onuIdx)
+		if val, ok := serviceVLANs[vlanIndex]; ok {
+			if vlan, ok := common.ParseIntSNMPValue(val); ok && vlan > 0 {
+				onu.VLAN = int(vlan)
+			}
+		} else {
+			prefix := fmt.Sprintf(".%d.%d.", ponIdx, onuIdx)
+			for vlanIdx, val := range serviceVLANs {
+				if strings.HasPrefix(vlanIdx, prefix) {
+					if vlan, ok := common.ParseIntSNMPValue(val); ok && vlan > 0 {
+						onu.VLAN = int(vlan)
+						break
+					}
+				}
+			}
+		}
+
+		results = append(results, onu)
+	}
+
+	return results, nil
+}
+
+// getONUProfilesCLI fetches profiles via CLI commands (fallback when SNMP unavailable).
+// For each PON port: "show onu info all" for ONUProfile + "show running-config" for
+// line profiles and VLANs.
+func (a *Adapter) getONUProfilesCLI(ctx context.Context) ([]types.ONUInfo, error) {
+	var results []types.ONUInfo
+
+	ponPorts := a.getPONPortList()
+	for _, ponPort := range ponPorts {
+		commands := []string{
+			"configure terminal",
+			fmt.Sprintf("interface gpon %s", ponPort),
+			"show onu info all",
+			"show running-config",
+			"exit",
+			"exit",
+		}
+
+		outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
+		if err != nil {
+			continue // Skip this PON port on error
+		}
+
+		// Parse "show onu info all" (index 2) → get serial, onuId, ONUProfile
+		var portONUs []types.ONUInfo
+		if len(outputs) > 2 {
+			portONUs = a.parseV1600ONUList(outputs[2], ponPort)
+		}
+		if len(portONUs) == 0 {
+			continue
+		}
+
+		// Parse "show running-config" (index 3) → get line profiles and VLANs per ONU ID
+		var runningConfig string
+		if len(outputs) > 3 {
+			runningConfig = common.StripANSI(outputs[3])
+		}
+
+		if runningConfig != "" {
+			for i := range portONUs {
+				lp, vlan := parseONURunningConfigProfiles(runningConfig, portONUs[i].ONUID)
+				if lp != "" {
+					portONUs[i].LineProfile = lp
+				}
+				if vlan > 0 {
+					portONUs[i].VLAN = vlan
+				}
+			}
+		}
+
+		results = append(results, portONUs...)
+	}
+
+	if len(results) == 0 {
+		return nil, fmt.Errorf("CLI profile sync found no ONUs across all PON ports")
+	}
+
+	return results, nil
+}
+
+// parseONURunningConfigProfiles extracts line-profile and VLAN for a specific ONU ID
+// from the full running-config output of a PON interface.
+// Looks for patterns:
+//
+//	onu <id> line-profile <name>
+//	onu <id> service-port <n> gemport <n> uservlan <vlan> vlan <vlan>
+//	onu <id> service <name> gemport <n> vlan <vlan>
+func parseONURunningConfigProfiles(config string, onuID int) (lineProfile string, vlan int) {
+	idStr := strconv.Itoa(onuID)
+	for _, line := range strings.Split(config, "\n") {
+		line = strings.TrimSpace(line)
+
+		// Match "onu <id> ..." lines
+		fields := strings.Fields(line)
+		if len(fields) < 3 || fields[0] != "onu" || fields[1] != idStr {
+			continue
+		}
+
+		// "onu X line-profile <name>"
+		if fields[2] == "line-profile" && len(fields) >= 4 {
+			lineProfile = fields[3]
+			continue
+		}
+
+		// "onu X service-port Y gemport Z uservlan VVV vlan VVV"
+		if fields[2] == "service-port" && vlan == 0 {
+			re := regexp.MustCompile(`uservlan\s+(\d+)`)
+			if match := re.FindStringSubmatch(line); len(match) > 1 {
+				if v, err := strconv.Atoi(match[1]); err == nil && v > 0 {
+					vlan = v
+				}
+			}
+			continue
+		}
+
+		// "onu X service <name> gemport Y vlan VVV"
+		if fields[2] == "service" && vlan == 0 {
+			re := regexp.MustCompile(`vlan\s+(\d+)`)
+			if match := re.FindStringSubmatch(line); len(match) > 1 {
+				if v, err := strconv.Atoi(match[1]); err == nil && v > 0 {
+					vlan = v
+				}
+			}
+		}
+	}
+	return
+}
+
 // getONUPowerSNMP retrieves optical power readings for a specific ONU using SNMP
 func (a *Adapter) getONUPowerSNMP(ctx context.Context, ponPort string, onuID int) (*types.ONUPowerReading, error) {
 	if a.snmpExecutor == nil {
@@ -3588,7 +3783,24 @@ func (a *Adapter) ListVLANs(ctx context.Context) ([]types.VLANInfo, error) {
 		return nil, fmt.Errorf("failed to list VLANs: %w", err)
 	}
 
-	return a.parseVLANList(output), nil
+	vlans := a.parseVLANList(output)
+
+	// Enrich each VLAN with details from "show vlan {id}"
+	for i, v := range vlans {
+		detail, err := a.GetVLAN(ctx, v.ID)
+		if err != nil {
+			continue
+		}
+		if detail != nil {
+			vlans[i].Name = detail.Name
+			vlans[i].Description = detail.Description
+			vlans[i].Type = detail.Type
+			vlans[i].ServicePortCount = detail.ServicePortCount
+			vlans[i].Metadata = detail.Metadata
+		}
+	}
+
+	return vlans, nil
 }
 
 // parseVLANList parses V-SOL CLI output for VLAN list.
@@ -3691,42 +3903,119 @@ func (a *Adapter) GetVLAN(ctx context.Context, vlanID int) (*types.VLANInfo, err
 	}
 
 	// Parse single VLAN output
+	// Example format from V-SOL OLT:
+	//   Vlan ID        : 702
+	//   Name           : cpe
+	//   IP Address     : 10.0.0.254/24
+	//   IPv6 Address   :
+	//       Link-Local : fe80::2be:8207:1bff:fe67:3e6d
+	//   Mac Address    : 80:07:1b:67:3e:6d
+	//   Tagged Ports   : ge0/11
+	//                    xaui
+	//   Untagged Ports :
 	vlan := &types.VLANInfo{
-		ID:   vlanID,
-		Type: "static",
+		ID:       vlanID,
+		Type:     "static",
+		Metadata: make(map[string]interface{}),
 	}
 
 	foundField := false
 	lines := strings.Split(output, "\n")
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		lineLower := strings.ToLower(line)
 
-		if strings.HasPrefix(lineLower, "name") {
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) == 2 {
-				vlan.Name = strings.TrimSpace(parts[1])
-				foundField = true
-			}
-		} else if strings.HasPrefix(lineLower, "description") {
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) == 2 {
-				vlan.Description = strings.TrimSpace(parts[1])
-				foundField = true
-			}
-		} else if strings.Contains(lineLower, "service port") {
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) == 2 {
-				vlan.ServicePortCount, _ = strconv.Atoi(strings.TrimSpace(parts[1]))
-				foundField = true
-			}
-		} else if strings.HasPrefix(lineLower, "type") {
-			parts := strings.SplitN(line, ":", 2)
-			if len(parts) == 2 {
-				vlan.Type = strings.TrimSpace(parts[1])
-				foundField = true
-			}
+	// Track current multi-line field being collected
+	var currentField string
+	var portValues []string
+
+	flushPorts := func() {
+		if currentField != "" && len(portValues) > 0 {
+			vlan.Metadata[currentField] = portValues
 		}
+		currentField = ""
+		portValues = nil
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" {
+			continue
+		}
+		trimmedLower := strings.ToLower(trimmed)
+
+		// Check if this is a continuation line (indented, no ":" key prefix)
+		// Continuation lines for ports are indented and contain port names
+		if currentField != "" && !strings.Contains(trimmed, ":") {
+			// Continuation of multi-line port field
+			ports := strings.Fields(trimmed)
+			portValues = append(portValues, ports...)
+			continue
+		}
+
+		// New field — flush any pending multi-line port data
+		flushPorts()
+
+		parts := strings.SplitN(trimmed, ":", 2)
+		if len(parts) != 2 {
+			continue
+		}
+
+		key := strings.TrimSpace(strings.ToLower(parts[0]))
+		val := strings.TrimSpace(parts[1])
+
+		switch {
+		case key == "name":
+			vlan.Name = val
+			foundField = true
+		case key == "description":
+			vlan.Description = val
+			foundField = true
+		case key == "type":
+			vlan.Type = val
+			foundField = true
+		case strings.Contains(key, "service port"):
+			vlan.ServicePortCount, _ = strconv.Atoi(val)
+			foundField = true
+		case key == "ip address":
+			if val != "" {
+				vlan.Metadata["ip_address"] = val
+			}
+			foundField = true
+		case key == "mac address":
+			if val != "" {
+				vlan.Metadata["mac_address"] = val
+			}
+			foundField = true
+		case key == "ipv6 address":
+			if val != "" {
+				vlan.Metadata["ipv6_address"] = val
+			}
+			foundField = true
+		case strings.Contains(trimmedLower, "link-local"):
+			// IPv6 Link-Local is a sub-field of IPv6 Address
+			if val != "" {
+				vlan.Metadata["ipv6_link_local"] = val
+			}
+			foundField = true
+		case key == "tagged ports":
+			currentField = "tagged_ports"
+			if val != "" {
+				portValues = strings.Fields(val)
+			}
+			foundField = true
+		case key == "untagged ports":
+			currentField = "untagged_ports"
+			if val != "" {
+				portValues = strings.Fields(val)
+			}
+			foundField = true
+		}
+	}
+
+	// Flush any remaining multi-line port data
+	flushPorts()
+
+	// Clean up empty metadata
+	if len(vlan.Metadata) == 0 {
+		vlan.Metadata = nil
 	}
 
 	if !foundField {

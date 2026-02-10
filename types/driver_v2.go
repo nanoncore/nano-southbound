@@ -110,6 +110,16 @@ type DriverV2 interface {
 
 	// DeleteServicePort removes a service port mapping.
 	DeleteServicePort(ctx context.Context, ponPort string, ontID int) error
+
+	// === Config Sync (Tiered Polling) ===
+
+	// GetONUProfiles fetches profile, line profile, service profile, and VLAN
+	// assignments for all provisioned ONUs. This is used by the config sync
+	// tier (30min default) to keep profile/VLAN data fresh without the overhead
+	// of a full GetONUList. Returns a slice of ONUInfo with only profile-related
+	// fields populated (PONPort, ONUID, Serial, ONUProfile, LineProfile,
+	// ServiceProfile, VLAN).
+	GetONUProfiles(ctx context.Context) ([]ONUInfo, error)
 }
 
 // ONUDiscovery represents an unprovisioned ONU found during discovery.

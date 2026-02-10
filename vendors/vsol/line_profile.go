@@ -16,6 +16,7 @@ func (a *Adapter) ListLineProfiles(ctx context.Context) ([]*types.LineProfile, e
 	}
 
 	commands := []string{
+		"configure terminal",
 		"show profile line",
 		"exit",
 	}
@@ -24,7 +25,7 @@ func (a *Adapter) ListLineProfiles(ctx context.Context) ([]*types.LineProfile, e
 		return nil, fmt.Errorf("failed to list line profiles: %w", err)
 	}
 
-	showOutput := cliOutputAt(outputs, 0)
+	showOutput := cliOutputAt(outputs, 1)
 	profiles, err := parseLineProfiles(showOutput)
 	if err != nil {
 		return nil, err
@@ -42,6 +43,7 @@ func (a *Adapter) GetLineProfile(ctx context.Context, name string) (*types.LineP
 	}
 
 	commands := []string{
+		"configure terminal",
 		fmt.Sprintf("show profile line name %s", name),
 		"exit",
 	}
@@ -49,7 +51,7 @@ func (a *Adapter) GetLineProfile(ctx context.Context, name string) (*types.LineP
 	if err != nil {
 		return nil, fmt.Errorf("failed to get line profile: %w", err)
 	}
-	showOutput := cliOutputAt(outputs, 0)
+	showOutput := cliOutputAt(outputs, 1)
 	profiles, err := parseLineProfiles(showOutput)
 	if err != nil {
 		return nil, err
@@ -90,6 +92,7 @@ func (a *Adapter) DeleteLineProfile(ctx context.Context, name string) error {
 	}
 
 	commands := []string{
+		"configure terminal",
 		fmt.Sprintf("no profile line name %s", name),
 		"exit",
 	}
@@ -101,6 +104,7 @@ func (a *Adapter) DeleteLineProfile(ctx context.Context, name string) error {
 
 func buildLineProfileCreateCommands(profile *types.LineProfile) []string {
 	commands := []string{
+		"configure terminal",
 		fmt.Sprintf("profile line name %s", profile.Name),
 	}
 
