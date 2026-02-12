@@ -131,6 +131,17 @@ func buildLineProfileCreateCommands(profile *types.LineProfile) []string {
 			} else {
 				gemCmd += fmt.Sprintf(" tcont %d", tcont.ID)
 			}
+			if gem.TrafficLimitUp != "" || gem.TrafficLimitDn != "" {
+				up := gem.TrafficLimitUp
+				if up == "" {
+					up = "default"
+				}
+				dn := gem.TrafficLimitDn
+				if dn == "" {
+					dn = "default"
+				}
+				gemCmd += fmt.Sprintf(" traffic-limit up-stream %s down-stream %s", up, dn)
+			}
 			commands = append(commands, gemCmd)
 
 			for _, service := range gem.Services {

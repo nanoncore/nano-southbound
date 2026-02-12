@@ -287,6 +287,40 @@ func (a *Adapter) CreateSubscriber(ctx context.Context, subscriber *model.Subscr
 		}
 	}
 
+	// Apply bandwidth profiles if specified (GPON only — EPON uses llid flowctrl in buildEPONCommands)
+	if a.detectPONType() == "gpon" && (bandwidthUp > 0 || bandwidthDown > 0) {
+		// Convert Mbps to kbps for profile creation
+		bwUpKbps := bandwidthUp * 1000
+		bwDnKbps := bandwidthDown * 1000
+		targetID := assignedID
+
+		bwProfiles, err := a.findOrCreateBandwidthProfiles(ctx, bwUpKbps, bwDnKbps)
+		if err != nil {
+			// Log but don't fail provisioning — bandwidth is best-effort
+			_ = err
+		} else if bwProfiles != nil {
+			var bwCmds []string
+			bwCmds = append(bwCmds,
+				"configure terminal",
+				fmt.Sprintf("interface gpon %s", ponPort),
+			)
+			if bwProfiles.DBAName != "" {
+				bwCmds = append(bwCmds, fmt.Sprintf("onu %d tcont 1 dba %s", targetID, bwProfiles.DBAName))
+			}
+			upName := bwProfiles.TrafficUpName
+			if upName == "" {
+				upName = "default"
+			}
+			dnName := bwProfiles.TrafficDnName
+			if dnName == "" {
+				dnName = "default"
+			}
+			bwCmds = append(bwCmds, fmt.Sprintf("onu %d gemport 1 traffic-limit upstream %s downstream %s", targetID, upName, dnName))
+			bwCmds = append(bwCmds, "exit", "end")
+			_, _ = a.cliExecutor.ExecCommands(ctx, bwCmds)
+		}
+	}
+
 	// Build result
 	result := &types.SubscriberResult{
 		SubscriberID:  subscriber.Name,
@@ -1851,6 +1885,98 @@ func (a *Adapter) verifyONUState(stateOutput string, onuID int, expectOnline boo
 	return false
 }
 
+// bandwidthProfiles holds resolved DBA and traffic profile names for bandwidth application.
+type bandwidthProfiles struct {
+	DBAName        string
+	TrafficUpName  string
+	TrafficDnName  string
+}
+
+// findOrCreateBandwidthProfiles resolves kbps values into named DBA and traffic profiles.
+// If matching profiles exist on the OLT, they are reused. Otherwise, new profiles are auto-created
+// with the naming convention: nano_dba_<kbps> and nano_traffic_<up>_<down>.
+func (a *Adapter) findOrCreateBandwidthProfiles(ctx context.Context, bandwidthUpKbps, bandwidthDownKbps int) (*bandwidthProfiles, error) {
+	if bandwidthUpKbps <= 0 && bandwidthDownKbps <= 0 {
+		return nil, nil
+	}
+
+	result := &bandwidthProfiles{}
+
+	// Resolve DBA profile (upstream T-CONT allocation)
+	if bandwidthUpKbps > 0 {
+		dbaName := fmt.Sprintf("nano_dba_%d", bandwidthUpKbps)
+		dbaProfiles, err := a.ListDBAProfiles(ctx)
+		if err != nil {
+			return nil, fmt.Errorf("failed to list DBA profiles: %w", err)
+		}
+
+		found := false
+		for _, p := range dbaProfiles {
+			if p.Name == dbaName {
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			// Auto-create DBA profile (type 4 = maximum bandwidth)
+			if err := a.CreateDBAProfile(ctx, types.DBAProfile{
+				Name:  dbaName,
+				Type:  4,
+				MaxBW: bandwidthUpKbps,
+			}); err != nil {
+				return nil, fmt.Errorf("failed to create DBA profile %s: %w", dbaName, err)
+			}
+		}
+		result.DBAName = dbaName
+	}
+
+	// Resolve traffic profiles (per-GEM SIR/PIR shaping)
+	// Upstream traffic profile
+	if bandwidthUpKbps > 0 {
+		upName := fmt.Sprintf("nano_traffic_%d", bandwidthUpKbps)
+		if err := a.ensureTrafficProfile(ctx, upName, bandwidthUpKbps); err != nil {
+			return nil, err
+		}
+		result.TrafficUpName = upName
+	}
+
+	// Downstream traffic profile
+	if bandwidthDownKbps > 0 {
+		dnName := fmt.Sprintf("nano_traffic_%d", bandwidthDownKbps)
+		if err := a.ensureTrafficProfile(ctx, dnName, bandwidthDownKbps); err != nil {
+			return nil, err
+		}
+		result.TrafficDnName = dnName
+	}
+
+	return result, nil
+}
+
+// ensureTrafficProfile ensures a traffic profile with the given name and PIR exists.
+func (a *Adapter) ensureTrafficProfile(ctx context.Context, name string, pirKbps int) error {
+	profiles, err := a.ListTrafficProfiles(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list traffic profiles: %w", err)
+	}
+
+	for _, p := range profiles {
+		if p.Name == name {
+			return nil // Already exists
+		}
+	}
+
+	// Auto-create traffic profile (SIR=0, PIR=desired rate)
+	if err := a.CreateTrafficProfile(ctx, types.TrafficProfile{
+		Name: name,
+		SIR:  0,
+		PIR:  pirKbps,
+	}); err != nil {
+		return fmt.Errorf("failed to create traffic profile %s: %w", name, err)
+	}
+	return nil
+}
+
 // ApplyProfile applies a bandwidth/service profile to an ONU (DriverV2)
 func (a *Adapter) ApplyProfile(ctx context.Context, ponPort string, onuID int, profile *types.ONUProfile) error {
 	if a.cliExecutor == nil {
@@ -1882,9 +2008,23 @@ func (a *Adapter) ApplyProfile(ctx context.Context, ponPort string, onuID int, p
 			commands = append(commands, fmt.Sprintf("onu vlan %d user-vlan %d priority %d", onuID, profile.VLAN, profile.Priority))
 		}
 
-		// Update bandwidth
+		// Update bandwidth using DBA + traffic profiles
 		if profile.BandwidthUp > 0 || profile.BandwidthDown > 0 {
-			commands = append(commands, fmt.Sprintf("onu flowctrl %d ingress %d egress %d", onuID, profile.BandwidthUp, profile.BandwidthDown))
+			bwProfiles, err := a.findOrCreateBandwidthProfiles(ctx, profile.BandwidthUp, profile.BandwidthDown)
+			if err == nil && bwProfiles != nil {
+				if bwProfiles.DBAName != "" {
+					commands = append(commands, fmt.Sprintf("onu %d tcont 1 dba %s", onuID, bwProfiles.DBAName))
+				}
+				upName := bwProfiles.TrafficUpName
+				if upName == "" {
+					upName = "default"
+				}
+				dnName := bwProfiles.TrafficDnName
+				if dnName == "" {
+					dnName = "default"
+				}
+				commands = append(commands, fmt.Sprintf("onu %d gemport 1 traffic-limit upstream %s downstream %s", onuID, upName, dnName))
+			}
 		}
 
 		commands = append(commands, "exit", "commit", "end")
@@ -1966,6 +2106,25 @@ func (a *Adapter) BulkProvision(ctx context.Context, operations []types.BulkProv
 					fmt.Sprintf("onu %d service-port 1 gemport 1 uservlan %d vlan %d new_cos 0", op.ONUID, vlan, vlan),
 					fmt.Sprintf("onu %d portvlan eth 1 mode tag vlan %d", op.ONUID, vlan),
 				)
+			}
+
+			// Apply bandwidth profiles if specified
+			if op.Profile != nil && (op.Profile.BandwidthUp > 0 || op.Profile.BandwidthDown > 0) {
+				bwProfiles, err := a.findOrCreateBandwidthProfiles(ctx, op.Profile.BandwidthUp, op.Profile.BandwidthDown)
+				if err == nil && bwProfiles != nil {
+					if bwProfiles.DBAName != "" {
+						commands = append(commands, fmt.Sprintf("onu %d tcont 1 dba %s", op.ONUID, bwProfiles.DBAName))
+					}
+					upName := bwProfiles.TrafficUpName
+					if upName == "" {
+						upName = "default"
+					}
+					dnName := bwProfiles.TrafficDnName
+					if dnName == "" {
+						dnName = "default"
+					}
+					commands = append(commands, fmt.Sprintf("onu %d gemport 1 traffic-limit upstream %s downstream %s", op.ONUID, upName, dnName))
+				}
 			}
 
 			commands = append(commands, "exit")

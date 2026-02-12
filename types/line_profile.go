@@ -277,6 +277,42 @@ func parseVLANList(raw string) ([]int, error) {
 	return vlans, nil
 }
 
+// DBAProfile represents a V-SOL DBA (Dynamic Bandwidth Allocation) profile.
+// DBA profiles control upstream T-CONT bandwidth allocation.
+type DBAProfile struct {
+	ID        int    `json:"id"`
+	Name      string `json:"name"`
+	Type      int    `json:"type"`       // 1=fixed, 2=assured, 3=assured+max, 4=maximum, 5=fixed+assured+max
+	FixedBW   int    `json:"fixed_bw"`   // kbps (types 1, 5)
+	AssuredBW int    `json:"assured_bw"` // kbps (types 2, 3, 5)
+	MaxBW     int    `json:"max_bw"`     // kbps (types 3, 4, 5)
+}
+
+// TrafficProfile represents a V-SOL traffic shaping profile.
+// Traffic profiles control per-GEM port SIR/PIR shaping.
+type TrafficProfile struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+	SIR  int    `json:"sir"` // Sustained Information Rate (kbps)
+	PIR  int    `json:"pir"` // Peak Information Rate (kbps)
+}
+
+// DBAProfileManager defines CRUD operations for DBA profiles.
+type DBAProfileManager interface {
+	ListDBAProfiles(ctx context.Context) ([]DBAProfile, error)
+	GetDBAProfile(ctx context.Context, name string) (*DBAProfile, error)
+	CreateDBAProfile(ctx context.Context, profile DBAProfile) error
+	DeleteDBAProfile(ctx context.Context, name string) error
+}
+
+// TrafficProfileManager defines CRUD operations for traffic profiles.
+type TrafficProfileManager interface {
+	ListTrafficProfiles(ctx context.Context) ([]TrafficProfile, error)
+	GetTrafficProfile(ctx context.Context, name string) (*TrafficProfile, error)
+	CreateTrafficProfile(ctx context.Context, profile TrafficProfile) error
+	DeleteTrafficProfile(ctx context.Context, name string) error
+}
+
 var cosRangePattern = regexp.MustCompile(`^\d(-\d)?$`)
 
 // ValidateCOS checks the COS string format (optional helper).
