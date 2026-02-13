@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"log/slog"
+
 	"github.com/nanoncore/nano-southbound/drivers/cli"
 	"github.com/nanoncore/nano-southbound/drivers/snmp"
 	"github.com/nanoncore/nano-southbound/model"
@@ -284,6 +286,26 @@ func (a *Adapter) CreateSubscriber(ctx context.Context, subscriber *model.Subscr
 		outputs, err = a.cliExecutor.ExecCommands(ctx, commands)
 		if err != nil {
 			return nil, fmt.Errorf("V-SOL provisioning failed: %w", err)
+		}
+	}
+
+	// Apply bandwidth profiles if specified (GPON only — EPON uses llid flowctrl in buildEPONCommands)
+	if a.detectPONType() == "gpon" && (bandwidthUp > 0 || bandwidthDown > 0) {
+		// Convert Mbps to kbps for profile creation
+		bwUpKbps := bandwidthUp * 1000
+		bwDnKbps := bandwidthDown * 1000
+		targetID := assignedID
+
+		bwProfiles, err := a.findOrCreateBandwidthProfiles(ctx, bwUpKbps, bwDnKbps)
+		if err != nil {
+			slog.Warn("failed to create bandwidth profiles, skipping bandwidth config",
+				"onu_id", targetID, "pon_port", ponPort, "error", err)
+		} else if bwProfiles != nil {
+			bwCmds := buildBandwidthCommands(ponPort, targetID, bwProfiles)
+			if _, err := a.cliExecutor.ExecCommands(ctx, bwCmds); err != nil {
+				slog.Warn("failed to apply bandwidth profiles",
+					"onu_id", targetID, "pon_port", ponPort, "error", err)
+			}
 		}
 	}
 
@@ -1851,6 +1873,178 @@ func (a *Adapter) verifyONUState(stateOutput string, onuID int, expectOnline boo
 	return false
 }
 
+// bandwidthProfiles holds resolved DBA and traffic profile names for bandwidth application.
+type bandwidthProfiles struct {
+	DBAName       string
+	TrafficUpName string
+	TrafficDnName string
+}
+
+// buildBandwidthCommands returns a full CLI command sequence (with configure terminal + interface)
+// to apply DBA and traffic profiles to an ONU on a given PON port.
+func buildBandwidthCommands(ponPort string, onuID int, bw *bandwidthProfiles) []string {
+	cmds := []string{
+		"configure terminal",
+		fmt.Sprintf("interface gpon %s", ponPort),
+	}
+	cmds = append(cmds, buildBandwidthONUCommands(onuID, bw)...)
+	cmds = append(cmds, "exit", "end")
+	return cmds
+}
+
+// buildBandwidthONUCommands returns ONU-level bandwidth commands (no interface context).
+// Use this when appending to an existing command sequence that already has interface context.
+func buildBandwidthONUCommands(onuID int, bw *bandwidthProfiles) []string {
+	var cmds []string
+	if bw.DBAName != "" {
+		cmds = append(cmds, fmt.Sprintf("onu %d tcont 1 dba %s", onuID, bw.DBAName))
+	}
+	upName := bw.TrafficUpName
+	if upName == "" {
+		upName = "default"
+	}
+	dnName := bw.TrafficDnName
+	if dnName == "" {
+		dnName = "default"
+	}
+	cmds = append(cmds, fmt.Sprintf("onu %d gemport 1 traffic-limit upstream %s downstream %s", onuID, upName, dnName))
+	return cmds
+}
+
+// profileCache holds pre-fetched profile lists to avoid redundant CLI round-trips
+// during bulk operations. When nil, findOrCreateBandwidthProfiles fetches fresh lists.
+type profileCache struct {
+	dbaProfiles     []types.DBAProfile
+	trafficProfiles []types.TrafficProfile
+}
+
+// newProfileCache fetches and caches current DBA and traffic profile lists from the OLT.
+func (a *Adapter) newProfileCache(ctx context.Context) (*profileCache, error) {
+	dba, err := a.ListDBAProfiles(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list DBA profiles: %w", err)
+	}
+	traffic, err := a.ListTrafficProfiles(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list traffic profiles: %w", err)
+	}
+	return &profileCache{dbaProfiles: dba, trafficProfiles: traffic}, nil
+}
+
+// findOrCreateBandwidthProfiles resolves kbps values into named DBA and traffic profiles.
+// If matching profiles exist on the OLT, they are reused. Otherwise, new profiles are auto-created
+// with the naming convention: nano_dba_<kbps> and nano_traffic_<up>_<down>.
+// Pass a non-nil cache to avoid redundant List calls during bulk operations.
+func (a *Adapter) findOrCreateBandwidthProfiles(ctx context.Context, bandwidthUpKbps, bandwidthDownKbps int) (*bandwidthProfiles, error) {
+	return a.findOrCreateBandwidthProfilesCached(ctx, bandwidthUpKbps, bandwidthDownKbps, nil)
+}
+
+func (a *Adapter) findOrCreateBandwidthProfilesCached(ctx context.Context, bandwidthUpKbps, bandwidthDownKbps int, cache *profileCache) (*bandwidthProfiles, error) {
+	if bandwidthUpKbps <= 0 && bandwidthDownKbps <= 0 {
+		return nil, nil
+	}
+
+	result := &bandwidthProfiles{}
+
+	// Resolve DBA profile (upstream T-CONT allocation)
+	if bandwidthUpKbps > 0 {
+		dbaName := fmt.Sprintf("nano_dba_%d", bandwidthUpKbps)
+		if err := a.ensureDBAProfile(ctx, dbaName, bandwidthUpKbps, cache); err != nil {
+			return nil, err
+		}
+		result.DBAName = dbaName
+	}
+
+	// Resolve traffic profiles (per-GEM SIR/PIR shaping)
+	if bandwidthUpKbps > 0 {
+		upName := fmt.Sprintf("nano_traffic_%d", bandwidthUpKbps)
+		if err := a.ensureTrafficProfile(ctx, upName, bandwidthUpKbps, cache); err != nil {
+			return nil, err
+		}
+		result.TrafficUpName = upName
+	}
+
+	if bandwidthDownKbps > 0 {
+		dnName := fmt.Sprintf("nano_traffic_%d", bandwidthDownKbps)
+		if err := a.ensureTrafficProfile(ctx, dnName, bandwidthDownKbps, cache); err != nil {
+			return nil, err
+		}
+		result.TrafficDnName = dnName
+	}
+
+	return result, nil
+}
+
+// ensureDBAProfile ensures a DBA profile with the given name exists. Uses cache if provided.
+func (a *Adapter) ensureDBAProfile(ctx context.Context, name string, maxBWKbps int, cache *profileCache) error {
+	var dbaProfiles []types.DBAProfile
+	if cache != nil {
+		dbaProfiles = cache.dbaProfiles
+	} else {
+		var err error
+		dbaProfiles, err = a.ListDBAProfiles(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to list DBA profiles: %w", err)
+		}
+	}
+
+	for _, p := range dbaProfiles {
+		if p.Name == name {
+			return nil
+		}
+	}
+
+	profile := types.DBAProfile{Name: name, Type: 4, MaxBW: maxBWKbps}
+	if err := a.CreateDBAProfile(ctx, profile); err != nil {
+		// Handle TOCTOU: if another caller created it concurrently, treat as success
+		if strings.Contains(err.Error(), "already exists") {
+			return nil
+		}
+		return fmt.Errorf("failed to create DBA profile %s: %w", name, err)
+	}
+
+	// Update cache so subsequent calls in the same batch don't re-create
+	if cache != nil {
+		cache.dbaProfiles = append(cache.dbaProfiles, profile)
+	}
+	return nil
+}
+
+// ensureTrafficProfile ensures a traffic profile with the given name and PIR exists. Uses cache if provided.
+func (a *Adapter) ensureTrafficProfile(ctx context.Context, name string, pirKbps int, cache *profileCache) error {
+	var trafficProfiles []types.TrafficProfile
+	if cache != nil {
+		trafficProfiles = cache.trafficProfiles
+	} else {
+		var err error
+		trafficProfiles, err = a.ListTrafficProfiles(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to list traffic profiles: %w", err)
+		}
+	}
+
+	for _, p := range trafficProfiles {
+		if p.Name == name {
+			return nil
+		}
+	}
+
+	profile := types.TrafficProfile{Name: name, SIR: 0, PIR: pirKbps}
+	if err := a.CreateTrafficProfile(ctx, profile); err != nil {
+		// Handle TOCTOU: if another caller created it concurrently, treat as success
+		if strings.Contains(err.Error(), "already exists") {
+			return nil
+		}
+		return fmt.Errorf("failed to create traffic profile %s: %w", name, err)
+	}
+
+	// Update cache so subsequent calls in the same batch don't re-create
+	if cache != nil {
+		cache.trafficProfiles = append(cache.trafficProfiles, profile)
+	}
+	return nil
+}
+
 // ApplyProfile applies a bandwidth/service profile to an ONU (DriverV2)
 func (a *Adapter) ApplyProfile(ctx context.Context, ponPort string, onuID int, profile *types.ONUProfile) error {
 	if a.cliExecutor == nil {
@@ -1882,9 +2076,15 @@ func (a *Adapter) ApplyProfile(ctx context.Context, ponPort string, onuID int, p
 			commands = append(commands, fmt.Sprintf("onu vlan %d user-vlan %d priority %d", onuID, profile.VLAN, profile.Priority))
 		}
 
-		// Update bandwidth
+		// Update bandwidth using DBA + traffic profiles
 		if profile.BandwidthUp > 0 || profile.BandwidthDown > 0 {
-			commands = append(commands, fmt.Sprintf("onu flowctrl %d ingress %d egress %d", onuID, profile.BandwidthUp, profile.BandwidthDown))
+			bwProfiles, err := a.findOrCreateBandwidthProfiles(ctx, profile.BandwidthUp, profile.BandwidthDown)
+			if err != nil {
+				slog.Warn("failed to create bandwidth profiles for profile update",
+					"onu_id", onuID, "pon_port", ponPort, "error", err)
+			} else if bwProfiles != nil {
+				commands = append(commands, buildBandwidthONUCommands(onuID, bwProfiles)...)
+			}
 		}
 
 		commands = append(commands, "exit", "commit", "end")
@@ -1931,6 +2131,23 @@ func (a *Adapter) BulkProvision(ctx context.Context, operations []types.BulkProv
 		Results: make([]types.BulkOpResult, len(operations)),
 	}
 
+	// Pre-fetch profile lists to avoid redundant CLI round-trips per operation
+	var cache *profileCache
+	needsCache := false
+	for _, op := range operations {
+		if op.Profile != nil && (op.Profile.BandwidthUp > 0 || op.Profile.BandwidthDown > 0) {
+			needsCache = true
+			break
+		}
+	}
+	if needsCache {
+		var err error
+		cache, err = a.newProfileCache(ctx)
+		if err != nil {
+			slog.Warn("failed to pre-fetch profile cache for bulk provision, will fetch per-operation", "error", err)
+		}
+	}
+
 	// Enter config mode once
 	if _, err := a.cliExecutor.ExecCommand(ctx, "configure terminal"); err != nil {
 		return nil, fmt.Errorf("failed to enter config mode: %w", err)
@@ -1966,6 +2183,17 @@ func (a *Adapter) BulkProvision(ctx context.Context, operations []types.BulkProv
 					fmt.Sprintf("onu %d service-port 1 gemport 1 uservlan %d vlan %d new_cos 0", op.ONUID, vlan, vlan),
 					fmt.Sprintf("onu %d portvlan eth 1 mode tag vlan %d", op.ONUID, vlan),
 				)
+			}
+
+			// Apply bandwidth profiles if specified
+			if op.Profile != nil && (op.Profile.BandwidthUp > 0 || op.Profile.BandwidthDown > 0) {
+				bwProfiles, err := a.findOrCreateBandwidthProfilesCached(ctx, op.Profile.BandwidthUp, op.Profile.BandwidthDown, cache)
+				if err != nil {
+					slog.Warn("failed to create bandwidth profiles for bulk provision",
+						"onu_id", op.ONUID, "pon_port", op.PONPort, "error", err)
+				} else if bwProfiles != nil {
+					commands = append(commands, buildBandwidthONUCommands(op.ONUID, bwProfiles)...)
+				}
 			}
 
 			commands = append(commands, "exit")

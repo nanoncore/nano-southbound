@@ -91,6 +91,9 @@ func (a *Adapter) CreateONUProfile(ctx context.Context, profile *types.ONUHardwa
 	if err := profile.Validate(); err != nil {
 		return err
 	}
+	if err := validateProfileName(profile.Name); err != nil {
+		return err
+	}
 
 	commands := buildONUProfileCreateCommands(profile)
 	if _, err := a.cliExecutor.ExecCommands(ctx, commands); err != nil {
@@ -329,4 +332,22 @@ func cliOutputAt(outputs []string, index int) string {
 		return outputs[index]
 	}
 	return ""
+}
+
+// reValidProfileName matches names that are safe for CLI interpolation:
+// alphanumeric, underscores, hyphens, and dots only.
+var reValidProfileName = regexp.MustCompile(`^[a-zA-Z0-9_.\-]+$`)
+
+// validateProfileName ensures a profile name is safe to interpolate into CLI commands.
+func validateProfileName(name string) error {
+	if name == "" {
+		return fmt.Errorf("profile name is required")
+	}
+	if len(name) > 64 {
+		return fmt.Errorf("profile name too long (max 64 characters)")
+	}
+	if !reValidProfileName.MatchString(name) {
+		return fmt.Errorf("profile name %q contains invalid characters (only alphanumeric, underscore, hyphen, dot allowed)", name)
+	}
+	return nil
 }
