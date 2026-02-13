@@ -1,6 +1,7 @@
 package vsol
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/nanoncore/nano-southbound/types"
@@ -229,8 +230,14 @@ func TestDetectProfileCLIErrors(t *testing.T) {
 			errMsg:  "profile already exists",
 		},
 		{
-			name:    "not found",
+			name:    "not found isn't existed",
 			outputs: []string{"profile isn't existed"},
+			wantErr: true,
+			errMsg:  "profile does not exist",
+		},
+		{
+			name:    "not found is not exist",
+			outputs: []string{"profile is not exist"},
 			wantErr: true,
 			errMsg:  "profile does not exist",
 		},
@@ -243,7 +250,7 @@ func TestDetectProfileCLIErrors(t *testing.T) {
 				if err == nil {
 					t.Fatal("expected error, got nil")
 				}
-				if !containsSubstring(err.Error(), tt.errMsg) {
+				if !strings.Contains(err.Error(), tt.errMsg) {
 					t.Errorf("error %q should contain %q", err.Error(), tt.errMsg)
 				}
 			} else if err != nil {
@@ -253,15 +260,18 @@ func TestDetectProfileCLIErrors(t *testing.T) {
 	}
 }
 
-func containsSubstring(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(s) > 0 && containsStr(s, substr))
-}
-
-func containsStr(s, sub string) bool {
-	for i := 0; i <= len(s)-len(sub); i++ {
-		if s[i:i+len(sub)] == sub {
-			return true
+func TestValidateProfileName(t *testing.T) {
+	valid := []string{"default", "nano_dba_50000", "plan-100M", "profile.v2"}
+	for _, name := range valid {
+		if err := validateProfileName(name); err != nil {
+			t.Errorf("expected %q to be valid, got error: %v", name, err)
 		}
 	}
-	return false
+
+	invalid := []string{"", "has space", "semi;colon", "pipe|cmd", "new\nline", "back`tick", strings.Repeat("a", 65)}
+	for _, name := range invalid {
+		if err := validateProfileName(name); err == nil {
+			t.Errorf("expected %q to be invalid, got nil", name)
+		}
+	}
 }

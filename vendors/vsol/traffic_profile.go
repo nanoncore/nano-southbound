@@ -63,8 +63,8 @@ func (a *Adapter) CreateTrafficProfile(ctx context.Context, profile types.Traffi
 	if a.cliExecutor == nil {
 		return fmt.Errorf("CLI executor not available - V-SOL requires CLI driver")
 	}
-	if profile.Name == "" {
-		return fmt.Errorf("profile name is required")
+	if err := validateProfileName(profile.Name); err != nil {
+		return err
 	}
 	if profile.PIR <= 0 {
 		return fmt.Errorf("PIR must be greater than 0")

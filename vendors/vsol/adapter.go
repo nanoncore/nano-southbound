@@ -8,6 +8,8 @@ import (
 	"strings"
 	"time"
 
+	"log/slog"
+
 	"github.com/nanoncore/nano-southbound/drivers/cli"
 	"github.com/nanoncore/nano-southbound/drivers/snmp"
 	"github.com/nanoncore/nano-southbound/model"
@@ -296,28 +298,14 @@ func (a *Adapter) CreateSubscriber(ctx context.Context, subscriber *model.Subscr
 
 		bwProfiles, err := a.findOrCreateBandwidthProfiles(ctx, bwUpKbps, bwDnKbps)
 		if err != nil {
-			// Log but don't fail provisioning — bandwidth is best-effort
-			_ = err
+			slog.Warn("failed to create bandwidth profiles, skipping bandwidth config",
+				"onu_id", targetID, "pon_port", ponPort, "error", err)
 		} else if bwProfiles != nil {
-			var bwCmds []string
-			bwCmds = append(bwCmds,
-				"configure terminal",
-				fmt.Sprintf("interface gpon %s", ponPort),
-			)
-			if bwProfiles.DBAName != "" {
-				bwCmds = append(bwCmds, fmt.Sprintf("onu %d tcont 1 dba %s", targetID, bwProfiles.DBAName))
+			bwCmds := buildBandwidthCommands(ponPort, targetID, bwProfiles)
+			if _, err := a.cliExecutor.ExecCommands(ctx, bwCmds); err != nil {
+				slog.Warn("failed to apply bandwidth profiles",
+					"onu_id", targetID, "pon_port", ponPort, "error", err)
 			}
-			upName := bwProfiles.TrafficUpName
-			if upName == "" {
-				upName = "default"
-			}
-			dnName := bwProfiles.TrafficDnName
-			if dnName == "" {
-				dnName = "default"
-			}
-			bwCmds = append(bwCmds, fmt.Sprintf("onu %d gemport 1 traffic-limit upstream %s downstream %s", targetID, upName, dnName))
-			bwCmds = append(bwCmds, "exit", "end")
-			_, _ = a.cliExecutor.ExecCommands(ctx, bwCmds)
 		}
 	}
 
@@ -1892,6 +1880,37 @@ type bandwidthProfiles struct {
 	TrafficDnName string
 }
 
+// buildBandwidthCommands returns a full CLI command sequence (with configure terminal + interface)
+// to apply DBA and traffic profiles to an ONU on a given PON port.
+func buildBandwidthCommands(ponPort string, onuID int, bw *bandwidthProfiles) []string {
+	cmds := []string{
+		"configure terminal",
+		fmt.Sprintf("interface gpon %s", ponPort),
+	}
+	cmds = append(cmds, buildBandwidthONUCommands(onuID, bw)...)
+	cmds = append(cmds, "exit", "end")
+	return cmds
+}
+
+// buildBandwidthONUCommands returns ONU-level bandwidth commands (no interface context).
+// Use this when appending to an existing command sequence that already has interface context.
+func buildBandwidthONUCommands(onuID int, bw *bandwidthProfiles) []string {
+	var cmds []string
+	if bw.DBAName != "" {
+		cmds = append(cmds, fmt.Sprintf("onu %d tcont 1 dba %s", onuID, bw.DBAName))
+	}
+	upName := bw.TrafficUpName
+	if upName == "" {
+		upName = "default"
+	}
+	dnName := bw.TrafficDnName
+	if dnName == "" {
+		dnName = "default"
+	}
+	cmds = append(cmds, fmt.Sprintf("onu %d gemport 1 traffic-limit upstream %s downstream %s", onuID, upName, dnName))
+	return cmds
+}
+
 // findOrCreateBandwidthProfiles resolves kbps values into named DBA and traffic profiles.
 // If matching profiles exist on the OLT, they are reused. Otherwise, new profiles are auto-created
 // with the naming convention: nano_dba_<kbps> and nano_traffic_<up>_<down>.
@@ -2011,19 +2030,11 @@ func (a *Adapter) ApplyProfile(ctx context.Context, ponPort string, onuID int, p
 		// Update bandwidth using DBA + traffic profiles
 		if profile.BandwidthUp > 0 || profile.BandwidthDown > 0 {
 			bwProfiles, err := a.findOrCreateBandwidthProfiles(ctx, profile.BandwidthUp, profile.BandwidthDown)
-			if err == nil && bwProfiles != nil {
-				if bwProfiles.DBAName != "" {
-					commands = append(commands, fmt.Sprintf("onu %d tcont 1 dba %s", onuID, bwProfiles.DBAName))
-				}
-				upName := bwProfiles.TrafficUpName
-				if upName == "" {
-					upName = "default"
-				}
-				dnName := bwProfiles.TrafficDnName
-				if dnName == "" {
-					dnName = "default"
-				}
-				commands = append(commands, fmt.Sprintf("onu %d gemport 1 traffic-limit upstream %s downstream %s", onuID, upName, dnName))
+			if err != nil {
+				slog.Warn("failed to create bandwidth profiles for profile update",
+					"onu_id", onuID, "pon_port", ponPort, "error", err)
+			} else if bwProfiles != nil {
+				commands = append(commands, buildBandwidthONUCommands(onuID, bwProfiles)...)
 			}
 		}
 
@@ -2111,19 +2122,11 @@ func (a *Adapter) BulkProvision(ctx context.Context, operations []types.BulkProv
 			// Apply bandwidth profiles if specified
 			if op.Profile != nil && (op.Profile.BandwidthUp > 0 || op.Profile.BandwidthDown > 0) {
 				bwProfiles, err := a.findOrCreateBandwidthProfiles(ctx, op.Profile.BandwidthUp, op.Profile.BandwidthDown)
-				if err == nil && bwProfiles != nil {
-					if bwProfiles.DBAName != "" {
-						commands = append(commands, fmt.Sprintf("onu %d tcont 1 dba %s", op.ONUID, bwProfiles.DBAName))
-					}
-					upName := bwProfiles.TrafficUpName
-					if upName == "" {
-						upName = "default"
-					}
-					dnName := bwProfiles.TrafficDnName
-					if dnName == "" {
-						dnName = "default"
-					}
-					commands = append(commands, fmt.Sprintf("onu %d gemport 1 traffic-limit upstream %s downstream %s", op.ONUID, upName, dnName))
+				if err != nil {
+					slog.Warn("failed to create bandwidth profiles for bulk provision",
+						"onu_id", op.ONUID, "pon_port", op.PONPort, "error", err)
+				} else if bwProfiles != nil {
+					commands = append(commands, buildBandwidthONUCommands(op.ONUID, bwProfiles)...)
 				}
 			}
 

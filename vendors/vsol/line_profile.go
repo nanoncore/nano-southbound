@@ -70,6 +70,9 @@ func (a *Adapter) CreateLineProfile(ctx context.Context, profile *types.LineProf
 	if err := profile.Validate(); err != nil {
 		return err
 	}
+	if err := validateProfileName(profile.Name); err != nil {
+		return err
+	}
 
 	commands := buildLineProfileCreateCommands(profile)
 	outputs, err := a.cliExecutor.ExecCommands(ctx, commands)

@@ -65,8 +65,8 @@ func (a *Adapter) CreateDBAProfile(ctx context.Context, profile types.DBAProfile
 	if a.cliExecutor == nil {
 		return fmt.Errorf("CLI executor not available - V-SOL requires CLI driver")
 	}
-	if profile.Name == "" {
-		return fmt.Errorf("profile name is required")
+	if err := validateProfileName(profile.Name); err != nil {
+		return err
 	}
 	if profile.Type < 1 || profile.Type > 5 {
 		return fmt.Errorf("profile type must be between 1 and 5")
@@ -220,7 +220,7 @@ func detectProfileCLIErrors(outputs []string) error {
 		if strings.Contains(lower, "already existed") {
 			return fmt.Errorf("profile already exists: %s", strings.TrimSpace(output))
 		}
-		if strings.Contains(lower, "isn't existed") {
+		if strings.Contains(lower, "isn't existed") || strings.Contains(lower, "is not exist") {
 			return fmt.Errorf("profile does not exist: %s", strings.TrimSpace(output))
 		}
 	}
