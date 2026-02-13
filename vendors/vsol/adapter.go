@@ -1911,10 +1911,35 @@ func buildBandwidthONUCommands(onuID int, bw *bandwidthProfiles) []string {
 	return cmds
 }
 
+// profileCache holds pre-fetched profile lists to avoid redundant CLI round-trips
+// during bulk operations. When nil, findOrCreateBandwidthProfiles fetches fresh lists.
+type profileCache struct {
+	dbaProfiles     []types.DBAProfile
+	trafficProfiles []types.TrafficProfile
+}
+
+// newProfileCache fetches and caches current DBA and traffic profile lists from the OLT.
+func (a *Adapter) newProfileCache(ctx context.Context) (*profileCache, error) {
+	dba, err := a.ListDBAProfiles(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list DBA profiles: %w", err)
+	}
+	traffic, err := a.ListTrafficProfiles(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to list traffic profiles: %w", err)
+	}
+	return &profileCache{dbaProfiles: dba, trafficProfiles: traffic}, nil
+}
+
 // findOrCreateBandwidthProfiles resolves kbps values into named DBA and traffic profiles.
 // If matching profiles exist on the OLT, they are reused. Otherwise, new profiles are auto-created
 // with the naming convention: nano_dba_<kbps> and nano_traffic_<up>_<down>.
+// Pass a non-nil cache to avoid redundant List calls during bulk operations.
 func (a *Adapter) findOrCreateBandwidthProfiles(ctx context.Context, bandwidthUpKbps, bandwidthDownKbps int) (*bandwidthProfiles, error) {
+	return a.findOrCreateBandwidthProfilesCached(ctx, bandwidthUpKbps, bandwidthDownKbps, nil)
+}
+
+func (a *Adapter) findOrCreateBandwidthProfilesCached(ctx context.Context, bandwidthUpKbps, bandwidthDownKbps int, cache *profileCache) (*bandwidthProfiles, error) {
 	if bandwidthUpKbps <= 0 && bandwidthDownKbps <= 0 {
 		return nil, nil
 	}
@@ -1924,46 +1949,24 @@ func (a *Adapter) findOrCreateBandwidthProfiles(ctx context.Context, bandwidthUp
 	// Resolve DBA profile (upstream T-CONT allocation)
 	if bandwidthUpKbps > 0 {
 		dbaName := fmt.Sprintf("nano_dba_%d", bandwidthUpKbps)
-		dbaProfiles, err := a.ListDBAProfiles(ctx)
-		if err != nil {
-			return nil, fmt.Errorf("failed to list DBA profiles: %w", err)
-		}
-
-		found := false
-		for _, p := range dbaProfiles {
-			if p.Name == dbaName {
-				found = true
-				break
-			}
-		}
-
-		if !found {
-			// Auto-create DBA profile (type 4 = maximum bandwidth)
-			if err := a.CreateDBAProfile(ctx, types.DBAProfile{
-				Name:  dbaName,
-				Type:  4,
-				MaxBW: bandwidthUpKbps,
-			}); err != nil {
-				return nil, fmt.Errorf("failed to create DBA profile %s: %w", dbaName, err)
-			}
+		if err := a.ensureDBAProfile(ctx, dbaName, bandwidthUpKbps, cache); err != nil {
+			return nil, err
 		}
 		result.DBAName = dbaName
 	}
 
 	// Resolve traffic profiles (per-GEM SIR/PIR shaping)
-	// Upstream traffic profile
 	if bandwidthUpKbps > 0 {
 		upName := fmt.Sprintf("nano_traffic_%d", bandwidthUpKbps)
-		if err := a.ensureTrafficProfile(ctx, upName, bandwidthUpKbps); err != nil {
+		if err := a.ensureTrafficProfile(ctx, upName, bandwidthUpKbps, cache); err != nil {
 			return nil, err
 		}
 		result.TrafficUpName = upName
 	}
 
-	// Downstream traffic profile
 	if bandwidthDownKbps > 0 {
 		dnName := fmt.Sprintf("nano_traffic_%d", bandwidthDownKbps)
-		if err := a.ensureTrafficProfile(ctx, dnName, bandwidthDownKbps); err != nil {
+		if err := a.ensureTrafficProfile(ctx, dnName, bandwidthDownKbps, cache); err != nil {
 			return nil, err
 		}
 		result.TrafficDnName = dnName
@@ -1972,26 +1975,72 @@ func (a *Adapter) findOrCreateBandwidthProfiles(ctx context.Context, bandwidthUp
 	return result, nil
 }
 
-// ensureTrafficProfile ensures a traffic profile with the given name and PIR exists.
-func (a *Adapter) ensureTrafficProfile(ctx context.Context, name string, pirKbps int) error {
-	profiles, err := a.ListTrafficProfiles(ctx)
-	if err != nil {
-		return fmt.Errorf("failed to list traffic profiles: %w", err)
-	}
-
-	for _, p := range profiles {
-		if p.Name == name {
-			return nil // Already exists
+// ensureDBAProfile ensures a DBA profile with the given name exists. Uses cache if provided.
+func (a *Adapter) ensureDBAProfile(ctx context.Context, name string, maxBWKbps int, cache *profileCache) error {
+	var dbaProfiles []types.DBAProfile
+	if cache != nil {
+		dbaProfiles = cache.dbaProfiles
+	} else {
+		var err error
+		dbaProfiles, err = a.ListDBAProfiles(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to list DBA profiles: %w", err)
 		}
 	}
 
-	// Auto-create traffic profile (SIR=0, PIR=desired rate)
-	if err := a.CreateTrafficProfile(ctx, types.TrafficProfile{
-		Name: name,
-		SIR:  0,
-		PIR:  pirKbps,
-	}); err != nil {
+	for _, p := range dbaProfiles {
+		if p.Name == name {
+			return nil
+		}
+	}
+
+	profile := types.DBAProfile{Name: name, Type: 4, MaxBW: maxBWKbps}
+	if err := a.CreateDBAProfile(ctx, profile); err != nil {
+		// Handle TOCTOU: if another caller created it concurrently, treat as success
+		if strings.Contains(err.Error(), "already exists") {
+			return nil
+		}
+		return fmt.Errorf("failed to create DBA profile %s: %w", name, err)
+	}
+
+	// Update cache so subsequent calls in the same batch don't re-create
+	if cache != nil {
+		cache.dbaProfiles = append(cache.dbaProfiles, profile)
+	}
+	return nil
+}
+
+// ensureTrafficProfile ensures a traffic profile with the given name and PIR exists. Uses cache if provided.
+func (a *Adapter) ensureTrafficProfile(ctx context.Context, name string, pirKbps int, cache *profileCache) error {
+	var trafficProfiles []types.TrafficProfile
+	if cache != nil {
+		trafficProfiles = cache.trafficProfiles
+	} else {
+		var err error
+		trafficProfiles, err = a.ListTrafficProfiles(ctx)
+		if err != nil {
+			return fmt.Errorf("failed to list traffic profiles: %w", err)
+		}
+	}
+
+	for _, p := range trafficProfiles {
+		if p.Name == name {
+			return nil
+		}
+	}
+
+	profile := types.TrafficProfile{Name: name, SIR: 0, PIR: pirKbps}
+	if err := a.CreateTrafficProfile(ctx, profile); err != nil {
+		// Handle TOCTOU: if another caller created it concurrently, treat as success
+		if strings.Contains(err.Error(), "already exists") {
+			return nil
+		}
 		return fmt.Errorf("failed to create traffic profile %s: %w", name, err)
+	}
+
+	// Update cache so subsequent calls in the same batch don't re-create
+	if cache != nil {
+		cache.trafficProfiles = append(cache.trafficProfiles, profile)
 	}
 	return nil
 }
@@ -2082,6 +2131,23 @@ func (a *Adapter) BulkProvision(ctx context.Context, operations []types.BulkProv
 		Results: make([]types.BulkOpResult, len(operations)),
 	}
 
+	// Pre-fetch profile lists to avoid redundant CLI round-trips per operation
+	var cache *profileCache
+	needsCache := false
+	for _, op := range operations {
+		if op.Profile != nil && (op.Profile.BandwidthUp > 0 || op.Profile.BandwidthDown > 0) {
+			needsCache = true
+			break
+		}
+	}
+	if needsCache {
+		var err error
+		cache, err = a.newProfileCache(ctx)
+		if err != nil {
+			slog.Warn("failed to pre-fetch profile cache for bulk provision, will fetch per-operation", "error", err)
+		}
+	}
+
 	// Enter config mode once
 	if _, err := a.cliExecutor.ExecCommand(ctx, "configure terminal"); err != nil {
 		return nil, fmt.Errorf("failed to enter config mode: %w", err)
@@ -2121,7 +2187,7 @@ func (a *Adapter) BulkProvision(ctx context.Context, operations []types.BulkProv
 
 			// Apply bandwidth profiles if specified
 			if op.Profile != nil && (op.Profile.BandwidthUp > 0 || op.Profile.BandwidthDown > 0) {
-				bwProfiles, err := a.findOrCreateBandwidthProfiles(ctx, op.Profile.BandwidthUp, op.Profile.BandwidthDown)
+				bwProfiles, err := a.findOrCreateBandwidthProfilesCached(ctx, op.Profile.BandwidthUp, op.Profile.BandwidthDown, cache)
 				if err != nil {
 					slog.Warn("failed to create bandwidth profiles for bulk provision",
 						"onu_id", op.ONUID, "pon_port", op.PONPort, "error", err)

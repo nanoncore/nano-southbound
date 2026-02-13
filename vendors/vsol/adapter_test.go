@@ -2,10 +2,12 @@ package vsol
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/nanoncore/nano-southbound/model"
+	"github.com/nanoncore/nano-southbound/types"
 )
 
 func TestExtractPONPortFromIndex(t *testing.T) {
@@ -352,3 +354,276 @@ func equalStringSlices(a, b []string) bool {
 	}
 	return true
 }
+
+// --- findOrCreateBandwidthProfiles tests ---
+
+// profileMockCLI is a mock CLI that simulates show profile dba/traffic output
+// and tracks profile creation commands.
+type profileMockCLI struct {
+	dbaOutput     string
+	trafficOutput string
+	commands      []string
+}
+
+func (m *profileMockCLI) ExecCommand(_ context.Context, command string) (string, error) {
+	m.commands = append(m.commands, command)
+	return "", nil
+}
+
+func (m *profileMockCLI) ExecCommands(_ context.Context, commands []string) ([]string, error) {
+	results := make([]string, len(commands))
+	for i, cmd := range commands {
+		m.commands = append(m.commands, cmd)
+		if cmd == "show profile dba" {
+			results[i] = m.dbaOutput
+		} else if cmd == "show profile traffic" {
+			results[i] = m.trafficOutput
+		} else if strings.HasPrefix(cmd, "profile dba id") {
+			results[i] = "profile_id:99 create success"
+		} else if strings.HasPrefix(cmd, "profile traffic id") {
+			results[i] = "profile_id:99 create success"
+		}
+	}
+	return results, nil
+}
+
+func TestFindOrCreateBandwidthProfiles_ExistingProfiles(t *testing.T) {
+	mock := &profileMockCLI{
+		dbaOutput: `
+###############DBA PROFILE###########
+*****************************
+              Id: 1
+            name: default
+            type: 4
+         maximum: 1024000 Kbps
+
+*****************************
+              Id: 5
+            name: nano_dba_50000
+            type: 4
+         maximum: 50000 Kbps
+`,
+		trafficOutput: `
+###############TRAFFIC PROFILE###########
+*****************************
+Id:   1
+Name: default
+sir:  0 Kbps
+pir:  1024000 Kbps
+
+*****************************
+Id:   5
+Name: nano_traffic_50000
+sir:  0 Kbps
+pir:  50000 Kbps
+
+*****************************
+Id:   6
+Name: nano_traffic_100000
+sir:  0 Kbps
+pir:  100000 Kbps
+`,
+	}
+
+	adapter := &Adapter{cliExecutor: mock}
+	ctx := context.Background()
+
+	result, err := adapter.findOrCreateBandwidthProfiles(ctx, 50000, 100000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("expected non-nil result")
+	}
+	if result.DBAName != "nano_dba_50000" {
+		t.Errorf("DBAName: got %q, want nano_dba_50000", result.DBAName)
+	}
+	if result.TrafficUpName != "nano_traffic_50000" {
+		t.Errorf("TrafficUpName: got %q, want nano_traffic_50000", result.TrafficUpName)
+	}
+	if result.TrafficDnName != "nano_traffic_100000" {
+		t.Errorf("TrafficDnName: got %q, want nano_traffic_100000", result.TrafficDnName)
+	}
+
+	// Should NOT have any create commands since all profiles already exist
+	for _, cmd := range mock.commands {
+		if strings.HasPrefix(cmd, "profile dba id") || strings.HasPrefix(cmd, "profile traffic id") {
+			t.Errorf("unexpected create command: %s", cmd)
+		}
+	}
+}
+
+func TestFindOrCreateBandwidthProfiles_CreatesNewProfiles(t *testing.T) {
+	mock := &profileMockCLI{
+		dbaOutput: `
+###############DBA PROFILE###########
+*****************************
+              Id: 1
+            name: default
+            type: 4
+         maximum: 1024000 Kbps
+`,
+		trafficOutput: `
+###############TRAFFIC PROFILE###########
+*****************************
+Id:   1
+Name: default
+sir:  0 Kbps
+pir:  1024000 Kbps
+`,
+	}
+
+	adapter := &Adapter{cliExecutor: mock}
+	ctx := context.Background()
+
+	result, err := adapter.findOrCreateBandwidthProfiles(ctx, 50000, 100000)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result.DBAName != "nano_dba_50000" {
+		t.Errorf("DBAName: got %q, want nano_dba_50000", result.DBAName)
+	}
+	if result.TrafficUpName != "nano_traffic_50000" {
+		t.Errorf("TrafficUpName: got %q, want nano_traffic_50000", result.TrafficUpName)
+	}
+	if result.TrafficDnName != "nano_traffic_100000" {
+		t.Errorf("TrafficDnName: got %q, want nano_traffic_100000", result.TrafficDnName)
+	}
+
+	// Should have create commands for all 3 profiles
+	createCount := 0
+	for _, cmd := range mock.commands {
+		if strings.HasPrefix(cmd, "profile dba id") || strings.HasPrefix(cmd, "profile traffic id") {
+			createCount++
+		}
+	}
+	if createCount != 3 {
+		t.Errorf("expected 3 create commands, got %d (commands: %v)", createCount, mock.commands)
+	}
+}
+
+func TestFindOrCreateBandwidthProfiles_ZeroBandwidth(t *testing.T) {
+	adapter := &Adapter{}
+	ctx := context.Background()
+
+	result, err := adapter.findOrCreateBandwidthProfiles(ctx, 0, 0)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if result != nil {
+		t.Errorf("expected nil result for zero bandwidth, got %+v", result)
+	}
+}
+
+func TestFindOrCreateBandwidthProfiles_CachedAvoidsDuplicateLists(t *testing.T) {
+	mock := &profileMockCLI{
+		dbaOutput: `
+###############DBA PROFILE###########
+*****************************
+              Id: 1
+            name: default
+            type: 4
+         maximum: 1024000 Kbps
+`,
+		trafficOutput: `
+###############TRAFFIC PROFILE###########
+*****************************
+Id:   1
+Name: default
+sir:  0 Kbps
+pir:  1024000 Kbps
+`,
+	}
+
+	adapter := &Adapter{cliExecutor: mock}
+	ctx := context.Background()
+
+	cache, err := adapter.newProfileCache(ctx)
+	if err != nil {
+		t.Fatalf("newProfileCache: %v", err)
+	}
+
+	// Reset commands to track only the findOrCreate calls
+	mock.commands = nil
+
+	// First call creates profiles — internally CreateDBAProfile/CreateTrafficProfile
+	// still list to auto-assign IDs, so some "show profile" commands are expected.
+	_, err = adapter.findOrCreateBandwidthProfilesCached(ctx, 50000, 100000, cache)
+	if err != nil {
+		t.Fatalf("first call: %v", err)
+	}
+	firstCallCmds := len(mock.commands)
+
+	// Second call with same bandwidth should find profiles in cache — zero CLI commands
+	mock.commands = nil
+	_, err = adapter.findOrCreateBandwidthProfilesCached(ctx, 50000, 100000, cache)
+	if err != nil {
+		t.Fatalf("second call: %v", err)
+	}
+
+	if len(mock.commands) != 0 {
+		t.Errorf("second call should issue 0 commands (all cached), got %d: %v", len(mock.commands), mock.commands)
+	}
+	if firstCallCmds == 0 {
+		t.Errorf("first call should have issued commands to create profiles")
+	}
+}
+
+func TestBuildBandwidthONUCommands(t *testing.T) {
+	bw := &bandwidthProfiles{
+		DBAName:       "nano_dba_50000",
+		TrafficUpName: "nano_traffic_50000",
+		TrafficDnName: "nano_traffic_100000",
+	}
+
+	cmds := buildBandwidthONUCommands(7, bw)
+	if len(cmds) != 2 {
+		t.Fatalf("expected 2 commands, got %d: %v", len(cmds), cmds)
+	}
+	if cmds[0] != "onu 7 tcont 1 dba nano_dba_50000" {
+		t.Errorf("cmd[0]: got %q", cmds[0])
+	}
+	if cmds[1] != "onu 7 gemport 1 traffic-limit upstream nano_traffic_50000 downstream nano_traffic_100000" {
+		t.Errorf("cmd[1]: got %q", cmds[1])
+	}
+}
+
+func TestBuildBandwidthONUCommandsDefaults(t *testing.T) {
+	bw := &bandwidthProfiles{
+		DBAName: "test_dba",
+		// TrafficUpName and TrafficDnName are empty — should default to "default"
+	}
+
+	cmds := buildBandwidthONUCommands(3, bw)
+	if len(cmds) != 2 {
+		t.Fatalf("expected 2 commands, got %d: %v", len(cmds), cmds)
+	}
+	if cmds[1] != "onu 3 gemport 1 traffic-limit upstream default downstream default" {
+		t.Errorf("expected defaults, got %q", cmds[1])
+	}
+}
+
+func TestBuildBandwidthCommands(t *testing.T) {
+	bw := &bandwidthProfiles{
+		DBAName:       "nano_dba_50000",
+		TrafficUpName: "nano_traffic_50000",
+		TrafficDnName: "nano_traffic_100000",
+	}
+
+	cmds := buildBandwidthCommands("0/1", 5, bw)
+	expected := []string{
+		"configure terminal",
+		"interface gpon 0/1",
+		"onu 5 tcont 1 dba nano_dba_50000",
+		"onu 5 gemport 1 traffic-limit upstream nano_traffic_50000 downstream nano_traffic_100000",
+		"exit",
+		"end",
+	}
+	if !equalStringSlices(cmds, expected) {
+		t.Errorf("got %v, want %v", cmds, expected)
+	}
+}
+
+// Ensure unused imports are used
+var _ = types.DBAProfile{}
+var _ = strings.Contains
