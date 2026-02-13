@@ -11,10 +11,12 @@ import (
 )
 
 var (
-	reDBAProfileRow = regexp.MustCompile(`^\s*(\d+)\s+(\S+)\s+(\d)\s+(.+)$`)
-	reDBABWFixed    = regexp.MustCompile(`Fixed:\s*(\d+)`)
-	reDBABWAssured  = regexp.MustCompile(`Assured:\s*(\d+)`)
-	reDBABWMax      = regexp.MustCompile(`Max:\s*(\d+)`)
+	reDBAId      = regexp.MustCompile(`(?i)^\s*Id:\s*(\d+)`)
+	reDBAName    = regexp.MustCompile(`(?i)^\s*name:\s*(\S+)`)
+	reDBAType    = regexp.MustCompile(`(?i)^\s*type:\s*(\d+)`)
+	reDBAFixed   = regexp.MustCompile(`(?i)^\s*fixed:\s*(\d+)`)
+	reDBAAssured = regexp.MustCompile(`(?i)^\s*assured:\s*(\d+)`)
+	reDBAMaximum = regexp.MustCompile(`(?i)^\s*maximum:\s*(\d+)`)
 )
 
 // ListDBAProfiles lists DBA profiles on the OLT.
@@ -25,7 +27,7 @@ func (a *Adapter) ListDBAProfiles(ctx context.Context) ([]types.DBAProfile, erro
 
 	commands := []string{
 		"configure terminal",
-		"show profile dba all",
+		"show profile dba",
 		"exit",
 	}
 	outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
@@ -126,74 +128,83 @@ func (a *Adapter) DeleteDBAProfile(ctx context.Context, name string) error {
 func buildDBAProfileCreateCommands(id int, profile types.DBAProfile) []string {
 	commands := []string{
 		"configure terminal",
-		fmt.Sprintf("profile dba id %d", id),
-		fmt.Sprintf("name %s", profile.Name),
+		fmt.Sprintf("profile dba id %d name %s", id, profile.Name),
 	}
 
-	// Build type + bandwidth command based on DBA type
 	switch profile.Type {
 	case 1: // fixed
-		commands = append(commands, fmt.Sprintf("type 1 bandwidth %d", profile.FixedBW))
+		commands = append(commands, fmt.Sprintf("type 1 fixed %d", profile.FixedBW))
 	case 2: // assured
-		commands = append(commands, fmt.Sprintf("type 2 bandwidth %d", profile.AssuredBW))
+		commands = append(commands, fmt.Sprintf("type 2 assured %d", profile.AssuredBW))
 	case 3: // assured + max
-		commands = append(commands, fmt.Sprintf("type 3 bandwidth %d bandwidth %d", profile.AssuredBW, profile.MaxBW))
+		commands = append(commands, fmt.Sprintf("type 3 assured %d maximum %d", profile.AssuredBW, profile.MaxBW))
 	case 4: // maximum
-		commands = append(commands, fmt.Sprintf("type 4 bandwidth %d", profile.MaxBW))
+		commands = append(commands, fmt.Sprintf("type 4 maximum %d", profile.MaxBW))
 	case 5: // fixed + assured + max
-		commands = append(commands, fmt.Sprintf("type 5 bandwidth %d bandwidth %d bandwidth %d", profile.FixedBW, profile.AssuredBW, profile.MaxBW))
+		commands = append(commands, fmt.Sprintf("type 5 fixed %d assured %d maximum %d", profile.FixedBW, profile.AssuredBW, profile.MaxBW))
 	}
 
 	commands = append(commands, "commit", "exit", "exit")
 	return commands
 }
 
-// parseDBAProfiles parses the output of "show profile dba all".
-// Expected format:
+// parseDBAProfiles parses the output of "show profile dba".
+// Expected DETAILED format:
 //
-//	------+---------------------+------+-----------------------
-//	  Id    Name                 Type   Bindwidth(kbps)
-//	------+---------------------+------+-----------------------
-//	  1     default              4      Max: 1024000
-//	  3     test_dba_50M         4      Max: 50000
-//	------+---------------------+------+-----------------------
+//	###############DBA PROFILE###########
+//	*****************************
+//	              Id: 1
+//	            name: INTERNET
+//	            type: 4
+//	         maximum: 512000 Kbps
+//
+//	*****************************
+//	              Id: 511
+//	            name: default1
+//	            type: 3
+//	         assured: 1024 Kbps
+//	         maximum: 1024000 Kbps
 func parseDBAProfiles(output string) ([]types.DBAProfile, error) {
 	clean := sanitizeProfileOutput(output)
 	lines := strings.Split(clean, "\n")
 
 	var profiles []types.DBAProfile
+	var current *types.DBAProfile
+
 	for _, raw := range lines {
 		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "---") || strings.Contains(line, "Bindwidth") || strings.Contains(line, "Bandwidth") {
+
+		// Profile separator — emit current and start new
+		if strings.HasPrefix(line, "*****") {
+			if current != nil && current.Name != "" {
+				profiles = append(profiles, *current)
+			}
+			current = &types.DBAProfile{}
 			continue
 		}
 
-		match := reDBAProfileRow.FindStringSubmatch(line)
-		if match == nil {
+		if current == nil {
 			continue
 		}
 
-		id, _ := strconv.Atoi(match[1])
-		dbaType, _ := strconv.Atoi(match[3])
-		bwPart := match[4]
+		if m := reDBAId.FindStringSubmatch(line); len(m) == 2 {
+			current.ID, _ = strconv.Atoi(m[1])
+		} else if m := reDBAName.FindStringSubmatch(line); len(m) == 2 {
+			current.Name = m[1]
+		} else if m := reDBAType.FindStringSubmatch(line); len(m) == 2 {
+			current.Type, _ = strconv.Atoi(m[1])
+		} else if m := reDBAFixed.FindStringSubmatch(line); len(m) == 2 {
+			current.FixedBW, _ = strconv.Atoi(m[1])
+		} else if m := reDBAAssured.FindStringSubmatch(line); len(m) == 2 {
+			current.AssuredBW, _ = strconv.Atoi(m[1])
+		} else if m := reDBAMaximum.FindStringSubmatch(line); len(m) == 2 {
+			current.MaxBW, _ = strconv.Atoi(m[1])
+		}
+	}
 
-		profile := types.DBAProfile{
-			ID:   id,
-			Name: match[2],
-			Type: dbaType,
-		}
-
-		if m := reDBABWFixed.FindStringSubmatch(bwPart); len(m) == 2 {
-			profile.FixedBW, _ = strconv.Atoi(m[1])
-		}
-		if m := reDBABWAssured.FindStringSubmatch(bwPart); len(m) == 2 {
-			profile.AssuredBW, _ = strconv.Atoi(m[1])
-		}
-		if m := reDBABWMax.FindStringSubmatch(bwPart); len(m) == 2 {
-			profile.MaxBW, _ = strconv.Atoi(m[1])
-		}
-
-		profiles = append(profiles, profile)
+	// Emit last profile
+	if current != nil && current.Name != "" {
+		profiles = append(profiles, *current)
 	}
 
 	return profiles, nil

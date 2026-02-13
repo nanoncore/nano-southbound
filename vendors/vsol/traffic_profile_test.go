@@ -8,12 +8,19 @@ import (
 
 func TestParseTrafficProfiles(t *testing.T) {
 	output := `
-------+---------------------+---------------+---------------
-  Id    Name                 SIR(kbps)       PIR(kbps)
-------+---------------------+---------------+---------------
-  1     default              0               1024000
-  3     nano_traffic_50000   0               50000
-------+---------------------+---------------+---------------
+###############TRAFFIC PROFILE###########
+*****************************
+Id:   1
+Name: default
+sir:  0 Kbps
+pir:  1024000 Kbps
+
+*****************************
+Id:   3
+Name: nano_traffic_50000
+sir:  0 Kbps
+pir:  50000 Kbps
+
 `
 	profiles, err := parseTrafficProfiles(output)
 	if err != nil {
@@ -42,10 +49,7 @@ func TestParseTrafficProfiles(t *testing.T) {
 
 func TestParseTrafficProfilesEmpty(t *testing.T) {
 	output := `
-------+---------------------+---------------+---------------
-  Id    Name                 SIR(kbps)       PIR(kbps)
-------+---------------------+---------------+---------------
-------+---------------------+---------------+---------------
+###############TRAFFIC PROFILE###########
 `
 	profiles, err := parseTrafficProfiles(output)
 	if err != nil {
@@ -58,12 +62,19 @@ func TestParseTrafficProfilesEmpty(t *testing.T) {
 
 func TestParseTrafficProfilesWithSIR(t *testing.T) {
 	output := `
-------+---------------------+---------------+---------------
-  Id    Name                 SIR(kbps)       PIR(kbps)
-------+---------------------+---------------+---------------
-  1     default              0               1024000
-  2     guaranteed_50m       50000           100000
-------+---------------------+---------------+---------------
+###############TRAFFIC PROFILE###########
+*****************************
+Id:   1
+Name: default
+sir:  0 Kbps
+pir:  1024000 Kbps
+
+*****************************
+Id:   2
+Name: guaranteed_50m
+sir:  50000 Kbps
+pir:  100000 Kbps
+
 `
 	profiles, err := parseTrafficProfiles(output)
 	if err != nil {
@@ -86,10 +97,8 @@ func TestBuildTrafficProfileCreateCommands(t *testing.T) {
 	got := buildTrafficProfileCreateCommands(5, profile)
 	want := []string{
 		"configure terminal",
-		"profile traffic id 5",
-		"name nano_traffic_100000",
-		"sir 0",
-		"pir 100000",
+		"profile traffic id 5 name nano_traffic_100000",
+		"sir 0 pir 100000",
 		"commit",
 		"exit",
 		"exit",

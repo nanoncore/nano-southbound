@@ -10,7 +10,12 @@ import (
 	"github.com/nanoncore/nano-southbound/types"
 )
 
-var reTrafficProfileRow = regexp.MustCompile(`^\s*(\d+)\s+(\S+)\s+(\d+)\s+(\d+)\s*$`)
+var (
+	reTrafficId   = regexp.MustCompile(`(?i)^\s*Id:\s*(\d+)`)
+	reTrafficName = regexp.MustCompile(`(?i)^\s*Name:\s*(\S+)`)
+	reTrafficSIR  = regexp.MustCompile(`(?i)^\s*sir:\s*(\d+)`)
+	reTrafficPIR  = regexp.MustCompile(`(?i)^\s*pir:\s*(\d+)`)
+)
 
 // ListTrafficProfiles lists traffic profiles on the OLT.
 func (a *Adapter) ListTrafficProfiles(ctx context.Context) ([]types.TrafficProfile, error) {
@@ -20,7 +25,7 @@ func (a *Adapter) ListTrafficProfiles(ctx context.Context) ([]types.TrafficProfi
 
 	commands := []string{
 		"configure terminal",
-		"show profile traffic all",
+		"show profile traffic",
 		"exit",
 	}
 	outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
@@ -121,51 +126,64 @@ func (a *Adapter) DeleteTrafficProfile(ctx context.Context, name string) error {
 func buildTrafficProfileCreateCommands(id int, profile types.TrafficProfile) []string {
 	return []string{
 		"configure terminal",
-		fmt.Sprintf("profile traffic id %d", id),
-		fmt.Sprintf("name %s", profile.Name),
-		fmt.Sprintf("sir %d", profile.SIR),
-		fmt.Sprintf("pir %d", profile.PIR),
+		fmt.Sprintf("profile traffic id %d name %s", id, profile.Name),
+		fmt.Sprintf("sir %d pir %d", profile.SIR, profile.PIR),
 		"commit",
 		"exit",
 		"exit",
 	}
 }
 
-// parseTrafficProfiles parses the output of "show profile traffic all".
-// Expected format:
+// parseTrafficProfiles parses the output of "show profile traffic".
+// Expected DETAILED format:
 //
-//	------+---------------------+---------------+---------------
-//	  Id    Name                 SIR(kbps)       PIR(kbps)
-//	------+---------------------+---------------+---------------
-//	  1     default              0               1024000
-//	  3     test_traffic_50M     0               50000
-//	------+---------------------+---------------+---------------
+//	###############TRAFFIC PROFILE###########
+//	*****************************
+//	Id:   1
+//	Name: default
+//	sir:  0 Kbps
+//	pir:  1024000 Kbps
+//
+//	*****************************
+//	Id:   3
+//	Name: test_traffic_50M
+//	sir:  0 Kbps
+//	pir:  50000 Kbps
 func parseTrafficProfiles(output string) ([]types.TrafficProfile, error) {
 	clean := sanitizeProfileOutput(output)
 	lines := strings.Split(clean, "\n")
 
 	var profiles []types.TrafficProfile
+	var current *types.TrafficProfile
+
 	for _, raw := range lines {
 		line := strings.TrimSpace(raw)
-		if line == "" || strings.HasPrefix(line, "---") || strings.Contains(line, "SIR") || strings.Contains(line, "PIR") {
+
+		if strings.HasPrefix(line, "*****") {
+			if current != nil && current.Name != "" {
+				profiles = append(profiles, *current)
+			}
+			current = &types.TrafficProfile{}
 			continue
 		}
 
-		match := reTrafficProfileRow.FindStringSubmatch(line)
-		if match == nil {
+		if current == nil {
 			continue
 		}
 
-		id, _ := strconv.Atoi(match[1])
-		sir, _ := strconv.Atoi(match[3])
-		pir, _ := strconv.Atoi(match[4])
+		if m := reTrafficId.FindStringSubmatch(line); len(m) == 2 {
+			current.ID, _ = strconv.Atoi(m[1])
+		} else if m := reTrafficName.FindStringSubmatch(line); len(m) == 2 {
+			current.Name = m[1]
+		} else if m := reTrafficSIR.FindStringSubmatch(line); len(m) == 2 {
+			current.SIR, _ = strconv.Atoi(m[1])
+		} else if m := reTrafficPIR.FindStringSubmatch(line); len(m) == 2 {
+			current.PIR, _ = strconv.Atoi(m[1])
+		}
+	}
 
-		profiles = append(profiles, types.TrafficProfile{
-			ID:   id,
-			Name: match[2],
-			SIR:  sir,
-			PIR:  pir,
-		})
+	if current != nil && current.Name != "" {
+		profiles = append(profiles, *current)
 	}
 
 	return profiles, nil

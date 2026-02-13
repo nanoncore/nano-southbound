@@ -8,12 +8,19 @@ import (
 
 func TestParseDBAProfiles(t *testing.T) {
 	output := `
-------+---------------------+------+-----------------------
-  Id    Name                 Type   Bindwidth(kbps)
-------+---------------------+------+-----------------------
-  1     default              4      Max: 1024000
-  3     nano_dba_50000       4      Max: 50000
-------+---------------------+------+-----------------------
+###############DBA PROFILE###########
+*****************************
+              Id: 1
+            name: default
+            type: 4
+         maximum: 1024000 Kbps
+
+*****************************
+              Id: 3
+            name: nano_dba_50000
+            type: 4
+         maximum: 50000 Kbps
+
 `
 	profiles, err := parseDBAProfiles(output)
 	if err != nil {
@@ -45,15 +52,40 @@ func TestParseDBAProfiles(t *testing.T) {
 
 func TestParseDBAProfilesMultipleTypes(t *testing.T) {
 	output := `
-------+---------------------+------+-----------------------
-  Id    Name                 Type   Bindwidth(kbps)
-------+---------------------+------+-----------------------
-  1     fixed_bw             1      Fixed: 100000
-  2     assured_bw           2      Assured: 50000
-  3     assured_max          3      Assured: 50000 Max: 100000
-  4     max_bw               4      Max: 200000
-  5     full_bw              5      Fixed: 10000 Assured: 50000 Max: 200000
-------+---------------------+------+-----------------------
+###############DBA PROFILE###########
+*****************************
+              Id: 1
+            name: fixed_bw
+            type: 1
+           fixed: 100000 Kbps
+
+*****************************
+              Id: 2
+            name: assured_bw
+            type: 2
+         assured: 50000 Kbps
+
+*****************************
+              Id: 3
+            name: assured_max
+            type: 3
+         assured: 50000 Kbps
+         maximum: 100000 Kbps
+
+*****************************
+              Id: 4
+            name: max_bw
+            type: 4
+         maximum: 200000 Kbps
+
+*****************************
+              Id: 5
+            name: full_bw
+            type: 5
+           fixed: 10000 Kbps
+         assured: 50000 Kbps
+         maximum: 200000 Kbps
+
 `
 	profiles, err := parseDBAProfiles(output)
 	if err != nil {
@@ -91,10 +123,7 @@ func TestParseDBAProfilesMultipleTypes(t *testing.T) {
 
 func TestParseDBAProfilesEmpty(t *testing.T) {
 	output := `
-------+---------------------+------+-----------------------
-  Id    Name                 Type   Bindwidth(kbps)
-------+---------------------+------+-----------------------
-------+---------------------+------+-----------------------
+###############DBA PROFILE###########
 `
 	profiles, err := parseDBAProfiles(output)
 	if err != nil {
@@ -122,9 +151,8 @@ func TestBuildDBAProfileCreateCommands(t *testing.T) {
 			},
 			want: []string{
 				"configure terminal",
-				"profile dba id 3",
-				"name nano_dba_100000",
-				"type 4 bandwidth 100000",
+				"profile dba id 3 name nano_dba_100000",
+				"type 4 maximum 100000",
 				"commit", "exit", "exit",
 			},
 		},
@@ -138,9 +166,8 @@ func TestBuildDBAProfileCreateCommands(t *testing.T) {
 			},
 			want: []string{
 				"configure terminal",
-				"profile dba id 5",
-				"name fixed_100m",
-				"type 1 bandwidth 100000",
+				"profile dba id 5 name fixed_100m",
+				"type 1 fixed 100000",
 				"commit", "exit", "exit",
 			},
 		},
@@ -155,9 +182,8 @@ func TestBuildDBAProfileCreateCommands(t *testing.T) {
 			},
 			want: []string{
 				"configure terminal",
-				"profile dba id 7",
-				"name assured_max",
-				"type 3 bandwidth 50000 bandwidth 100000",
+				"profile dba id 7 name assured_max",
+				"type 3 assured 50000 maximum 100000",
 				"commit", "exit", "exit",
 			},
 		},
