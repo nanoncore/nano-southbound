@@ -51,10 +51,56 @@ func TestBuildLineProfileCreateCommands(t *testing.T) {
 	assertContains(t, joined, "profile line name line_vlan_100")
 	assertContains(t, joined, "tcont 1 name tcont_1 dba default")
 	assertContains(t, joined, "gemport 1 tcont 1")
+	assertContains(t, joined, "gemport 1 traffic-limit upstream default downstream default")
 	assertContains(t, joined, "service INTERNET gemport 1 vlan 100 cos 0-7")
 	assertContains(t, joined, "service-port 1 gemport 1 uservlan 100 vlan 100")
 	assertContains(t, joined, "mvlan 200,201")
 	assertContains(t, joined, "commit")
+}
+
+func TestBuildLineProfileCreateCommandsCustomTraffic(t *testing.T) {
+	profile := &types.LineProfile{
+		Name: "plan_100M",
+		Tconts: []*types.LineProfileTcont{
+			{
+				ID:  1,
+				DBA: "plan_100M_up",
+				Gemports: []*types.LineProfileGemport{
+					{
+						ID:             1,
+						TcontID:        1,
+						TrafficLimitUp: "shape_100M",
+						TrafficLimitDn: "shape_200M",
+						ServicePorts: []*types.LineProfileServicePort{
+							{
+								ID:        1,
+								GemportID: 1,
+								UserVLAN:  702,
+								VLAN:      702,
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+
+	commands := buildLineProfileCreateCommands(profile)
+	joined := strings.Join(commands, "\n")
+
+	assertContains(t, joined, "gemport 1 tcont 1")
+	assertContains(t, joined, "gemport 1 traffic-limit upstream shape_100M downstream shape_200M")
+	assertContains(t, joined, "service-port 1 gemport 1 uservlan 702 vlan 702")
+
+	// Verify traffic-limit is a separate line from gemport creation
+	for i, cmd := range commands {
+		if cmd == "gemport 1 tcont 1" {
+			if i+1 < len(commands) && commands[i+1] != "gemport 1 traffic-limit upstream shape_100M downstream shape_200M" {
+				t.Fatalf("expected traffic-limit command immediately after gemport creation, got %q", commands[i+1])
+			}
+			break
+		}
+	}
 }
 
 func TestParseLineProfiles(t *testing.T) {

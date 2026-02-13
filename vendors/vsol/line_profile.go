@@ -131,6 +131,11 @@ func buildLineProfileCreateCommands(profile *types.LineProfile) []string {
 			} else {
 				gemCmd += fmt.Sprintf(" tcont %d", tcont.ID)
 			}
+			commands = append(commands, gemCmd)
+
+			// Traffic-limit must be a separate command on V-SOL OLTs.
+			// NOTE: The input syntax uses "upstream"/"downstream" (no hyphens),
+			// while the show output displays "up-stream"/"down-stream" (with hyphens).
 			if gem.TrafficLimitUp != "" || gem.TrafficLimitDn != "" {
 				up := gem.TrafficLimitUp
 				if up == "" {
@@ -140,9 +145,8 @@ func buildLineProfileCreateCommands(profile *types.LineProfile) []string {
 				if dn == "" {
 					dn = "default"
 				}
-				gemCmd += fmt.Sprintf(" traffic-limit up-stream %s down-stream %s", up, dn)
+				commands = append(commands, fmt.Sprintf("gemport %d traffic-limit upstream %s downstream %s", gem.ID, up, dn))
 			}
-			commands = append(commands, gemCmd)
 
 			for _, service := range gem.Services {
 				if service == nil {
@@ -206,6 +210,7 @@ func detectLineProfileCLIErrors(commands, outputs []string) error {
 		"not found",
 		"already existed",
 		"isn't existed",
+		"is not exist",
 	}
 	for i, output := range outputs {
 		lower := strings.ToLower(output)
