@@ -1887,9 +1887,9 @@ func (a *Adapter) verifyONUState(stateOutput string, onuID int, expectOnline boo
 
 // bandwidthProfiles holds resolved DBA and traffic profile names for bandwidth application.
 type bandwidthProfiles struct {
-	DBAName        string
-	TrafficUpName  string
-	TrafficDnName  string
+	DBAName       string
+	TrafficUpName string
+	TrafficDnName string
 }
 
 // findOrCreateBandwidthProfiles resolves kbps values into named DBA and traffic profiles.
