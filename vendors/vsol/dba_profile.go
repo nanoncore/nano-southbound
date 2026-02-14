@@ -44,8 +44,8 @@ func (a *Adapter) GetDBAProfile(ctx context.Context, name string) (*types.DBAPro
 	if a.cliExecutor == nil {
 		return nil, fmt.Errorf("CLI executor not available - V-SOL requires CLI driver")
 	}
-	if name == "" {
-		return nil, fmt.Errorf("profile name is required")
+	if err := validateProfileName(name); err != nil {
+		return nil, err
 	}
 
 	profiles, err := a.ListDBAProfiles(ctx)
@@ -100,8 +100,8 @@ func (a *Adapter) DeleteDBAProfile(ctx context.Context, name string) error {
 	if a.cliExecutor == nil {
 		return fmt.Errorf("CLI executor not available - V-SOL requires CLI driver")
 	}
-	if name == "" {
-		return fmt.Errorf("profile name is required")
+	if err := validateProfileName(name); err != nil {
+		return err
 	}
 
 	// Look up profile ID by name

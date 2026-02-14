@@ -60,8 +60,8 @@ func (a *Adapter) GetONUProfile(ctx context.Context, name string) (*types.ONUHar
 	if a.cliExecutor == nil {
 		return nil, fmt.Errorf("CLI executor not available - V-SOL requires CLI driver")
 	}
-	if name == "" {
-		return nil, fmt.Errorf("profile name is required")
+	if err := validateProfileName(name); err != nil {
+		return nil, err
 	}
 
 	commands := []string{
@@ -108,8 +108,8 @@ func (a *Adapter) DeleteONUProfile(ctx context.Context, name string) error {
 	if a.cliExecutor == nil {
 		return fmt.Errorf("CLI executor not available - V-SOL requires CLI driver")
 	}
-	if name == "" {
-		return fmt.Errorf("profile name is required")
+	if err := validateProfileName(name); err != nil {
+		return err
 	}
 
 	commands := []string{

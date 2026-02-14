@@ -1,6 +1,7 @@
 package vsol
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -211,5 +212,45 @@ func assertContains(t *testing.T, haystack, needle string) {
 	t.Helper()
 	if !strings.Contains(haystack, needle) {
 		t.Fatalf("expected to contain %q in:\n%s", needle, haystack)
+	}
+}
+
+func TestGetDeleteONUProfile_ValidatesProfileName(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name string
+		call func(a *Adapter) error
+	}{
+		{
+			name: "get rejects invalid name",
+			call: func(a *Adapter) error {
+				_, err := a.GetONUProfile(ctx, "bad name")
+				return err
+			},
+		},
+		{
+			name: "delete rejects invalid name",
+			call: func(a *Adapter) error {
+				return a.DeleteONUProfile(ctx, "bad name")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exec := &mockCLIExecutor{outputs: map[string]string{}}
+			adapter := &Adapter{cliExecutor: exec}
+
+			err := tt.call(adapter)
+			if err == nil {
+				t.Fatal("expected validation error, got nil")
+			}
+			if !strings.Contains(err.Error(), "contains invalid characters") {
+				t.Fatalf("expected invalid character error, got %v", err)
+			}
+			if len(exec.commands) != 0 {
+				t.Fatalf("expected no CLI commands for invalid profile name, got %v", exec.commands)
+			}
+		})
 	}
 }
