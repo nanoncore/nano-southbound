@@ -1,6 +1,7 @@
 package vsol
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -14,6 +15,10 @@ func TestBuildONUProfileCreateCommands(t *testing.T) {
 	tcont := 8
 	gem := 32
 	ability := "n:1"
+	omciMode := "sync"
+	exOMCI := true
+	wifiNonOMCI := true
+	defaultMcast := "all-inclusive"
 	profile := &types.ONUHardwareProfile{
 		Name:        "AN5506-04-F1",
 		Description: &desc,
@@ -21,9 +26,13 @@ func TestBuildONUProfileCreateCommands(t *testing.T) {
 			Eth:  &eth,
 			Veip: &veip,
 		},
-		TcontNum:       &tcont,
-		GemportNum:     &gem,
-		ServiceAbility: &ability,
+		TcontNum:              &tcont,
+		GemportNum:            &gem,
+		ServiceAbility:        &ability,
+		OmciSendMode:          &omciMode,
+		ExOMCI:                &exOMCI,
+		WifiMngViaNonOMCI:     &wifiNonOMCI,
+		DefaultMulticastRange: &defaultMcast,
 	}
 
 	commands := buildONUProfileCreateCommands(profile)
@@ -35,6 +44,10 @@ func TestBuildONUProfileCreateCommands(t *testing.T) {
 	assertContains(t, joined, "port-num veip 1")
 	assertContains(t, joined, "tcont-num 8 gemport-num 32")
 	assertContains(t, joined, "service-ability n:1")
+	assertContains(t, joined, "omci-send-mode sync")
+	assertContains(t, joined, "ex-omci enable")
+	assertContains(t, joined, "wifi-mng-via-non-omci enable")
+	assertContains(t, joined, "default-multicast-range all-inclusive")
 	assertContains(t, joined, "description \"AN5506-04-F1\"")
 	assertContains(t, joined, "commit")
 	assertContains(t, joined, "exit")
@@ -56,6 +69,7 @@ func TestParseONUProfiles(t *testing.T) {
             Max ipv6host: 0
                 Max veip: 1
      Service ability N:1: 1
+                 Ex-OMCI: disable
   Wifi mgmt via non OMCI: disable
           Omci send mode: async
  Default multicast range: none
@@ -109,6 +123,9 @@ func TestParseONUProfiles(t *testing.T) {
 	if p.ServiceAbility == nil || *p.ServiceAbility != "n:1" {
 		t.Fatalf("expected service ability n:1, got %v", p.ServiceAbility)
 	}
+	if p.ExOMCI == nil || *p.ExOMCI {
+		t.Fatalf("expected ex-omci disabled, got %v", p.ExOMCI)
+	}
 	if p.WifiMngViaNonOMCI == nil || *p.WifiMngViaNonOMCI {
 		t.Fatalf("expected wifi mgmt disabled, got %v", p.WifiMngViaNonOMCI)
 	}
@@ -136,6 +153,7 @@ func TestParseONUProfilesMultiple(t *testing.T) {
 		"Max ipv6host: 0\n" +
 		"Max veip: 0\n" +
 		"Service ability N:1: 1\n" +
+		"Ex-OMCI: disable\n" +
 		"Wifi mgmt via non OMCI: disable\n" +
 		"Omci send mode: async\n" +
 		"Default multicast range: none\n" +
@@ -152,6 +170,7 @@ func TestParseONUProfilesMultiple(t *testing.T) {
 		"Max ipv6host: 0\n" +
 		"Max veip: 1\n" +
 		"Service ability N:1: 1\n" +
+		"Ex-OMCI: enable\n" +
 		"Wifi mgmt via non OMCI: enable\n" +
 		"Omci send mode: sync\n" +
 		"Default multicast range: none\n" +
@@ -170,6 +189,9 @@ func TestParseONUProfilesMultiple(t *testing.T) {
 	}
 	if profiles[1].WifiMngViaNonOMCI == nil || !*profiles[1].WifiMngViaNonOMCI {
 		t.Fatalf("expected wifi mgmt enabled for prof2")
+	}
+	if profiles[1].ExOMCI == nil || !*profiles[1].ExOMCI {
+		t.Fatalf("expected ex-omci enabled for prof2")
 	}
 	if profiles[1].Committed == nil || *profiles[1].Committed {
 		t.Fatalf("expected committed false for prof2")
@@ -190,5 +212,45 @@ func assertContains(t *testing.T, haystack, needle string) {
 	t.Helper()
 	if !strings.Contains(haystack, needle) {
 		t.Fatalf("expected to contain %q in:\n%s", needle, haystack)
+	}
+}
+
+func TestGetDeleteONUProfile_ValidatesProfileName(t *testing.T) {
+	ctx := context.Background()
+	tests := []struct {
+		name string
+		call func(a *Adapter) error
+	}{
+		{
+			name: "get rejects invalid name",
+			call: func(a *Adapter) error {
+				_, err := a.GetONUProfile(ctx, "bad name")
+				return err
+			},
+		},
+		{
+			name: "delete rejects invalid name",
+			call: func(a *Adapter) error {
+				return a.DeleteONUProfile(ctx, "bad name")
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exec := &mockCLIExecutor{outputs: map[string]string{}}
+			adapter := &Adapter{cliExecutor: exec}
+
+			err := tt.call(adapter)
+			if err == nil {
+				t.Fatal("expected validation error, got nil")
+			}
+			if !strings.Contains(err.Error(), "contains invalid characters") {
+				t.Fatalf("expected invalid character error, got %v", err)
+			}
+			if len(exec.commands) != 0 {
+				t.Fatalf("expected no CLI commands for invalid profile name, got %v", exec.commands)
+			}
+		})
 	}
 }

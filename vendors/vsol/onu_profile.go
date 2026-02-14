@@ -23,6 +23,7 @@ var (
 	reMaxIPv6Host        = regexp.MustCompile(`^\s*Max ipv6host:\s*(\d+)`)
 	reMaxVeip            = regexp.MustCompile(`^\s*Max veip:\s*(\d+)`)
 	reServiceAbilityN1   = regexp.MustCompile(`^\s*Service ability N:1:\s*(\d+)`)
+	reExOMCI             = regexp.MustCompile(`^\s*Ex-OMCI:\s*(\S+)`)
 	reWifiMngViaNonOMCI  = regexp.MustCompile(`^\s*Wifi mgmt via non OMCI:\s*(\S+)`)
 	reOmciSendMode       = regexp.MustCompile(`^\s*Omci send mode:\s*(\S+)`)
 	reDefaultMulticast   = regexp.MustCompile(`^\s*Default multicast range:\s*(\S+)`)
@@ -59,8 +60,8 @@ func (a *Adapter) GetONUProfile(ctx context.Context, name string) (*types.ONUHar
 	if a.cliExecutor == nil {
 		return nil, fmt.Errorf("CLI executor not available - V-SOL requires CLI driver")
 	}
-	if name == "" {
-		return nil, fmt.Errorf("profile name is required")
+	if err := validateProfileName(name); err != nil {
+		return nil, err
 	}
 
 	commands := []string{
@@ -107,8 +108,8 @@ func (a *Adapter) DeleteONUProfile(ctx context.Context, name string) error {
 	if a.cliExecutor == nil {
 		return fmt.Errorf("CLI executor not available - V-SOL requires CLI driver")
 	}
-	if name == "" {
-		return fmt.Errorf("profile name is required")
+	if err := validateProfileName(name); err != nil {
+		return err
 	}
 
 	commands := []string{
@@ -159,11 +160,19 @@ func buildONUProfileCreateCommands(profile *types.ONUHardwareProfile) []string {
 	if profile.OmciSendMode != nil {
 		commands = append(commands, fmt.Sprintf("omci-send-mode %s", *profile.OmciSendMode))
 	}
-	if profile.ExOMCI != nil && *profile.ExOMCI {
-		commands = append(commands, "ex-omci")
+	if profile.ExOMCI != nil {
+		if *profile.ExOMCI {
+			commands = append(commands, "ex-omci enable")
+		} else {
+			commands = append(commands, "ex-omci disable")
+		}
 	}
-	if profile.WifiMngViaNonOMCI != nil && *profile.WifiMngViaNonOMCI {
-		commands = append(commands, "wifi-mng-via-non-omci")
+	if profile.WifiMngViaNonOMCI != nil {
+		if *profile.WifiMngViaNonOMCI {
+			commands = append(commands, "wifi-mng-via-non-omci enable")
+		} else {
+			commands = append(commands, "wifi-mng-via-non-omci disable")
+		}
 	}
 	if profile.DefaultMulticastRange != nil {
 		commands = append(commands, fmt.Sprintf("default-multicast-range %s", *profile.DefaultMulticastRange))
@@ -277,6 +286,10 @@ func parseONUProfiles(output string) ([]*types.ONUHardwareProfile, error) {
 				ability := "n:1"
 				current.ServiceAbility = &ability
 			}
+		case reExOMCI.MatchString(line):
+			val := strings.TrimSpace(reExOMCI.FindStringSubmatch(line)[1])
+			enabled := strings.EqualFold(val, "enable")
+			current.ExOMCI = &enabled
 		case reWifiMngViaNonOMCI.MatchString(line):
 			val := strings.TrimSpace(reWifiMngViaNonOMCI.FindStringSubmatch(line)[1])
 			enabled := strings.EqualFold(val, "enable")
