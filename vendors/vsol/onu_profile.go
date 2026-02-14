@@ -23,6 +23,7 @@ var (
 	reMaxIPv6Host        = regexp.MustCompile(`^\s*Max ipv6host:\s*(\d+)`)
 	reMaxVeip            = regexp.MustCompile(`^\s*Max veip:\s*(\d+)`)
 	reServiceAbilityN1   = regexp.MustCompile(`^\s*Service ability N:1:\s*(\d+)`)
+	reExOMCI             = regexp.MustCompile(`^\s*Ex-OMCI:\s*(\S+)`)
 	reWifiMngViaNonOMCI  = regexp.MustCompile(`^\s*Wifi mgmt via non OMCI:\s*(\S+)`)
 	reOmciSendMode       = regexp.MustCompile(`^\s*Omci send mode:\s*(\S+)`)
 	reDefaultMulticast   = regexp.MustCompile(`^\s*Default multicast range:\s*(\S+)`)
@@ -285,6 +286,10 @@ func parseONUProfiles(output string) ([]*types.ONUHardwareProfile, error) {
 				ability := "n:1"
 				current.ServiceAbility = &ability
 			}
+		case reExOMCI.MatchString(line):
+			val := strings.TrimSpace(reExOMCI.FindStringSubmatch(line)[1])
+			enabled := strings.EqualFold(val, "enable")
+			current.ExOMCI = &enabled
 		case reWifiMngViaNonOMCI.MatchString(line):
 			val := strings.TrimSpace(reWifiMngViaNonOMCI.FindStringSubmatch(line)[1])
 			enabled := strings.EqualFold(val, "enable")

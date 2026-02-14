@@ -68,6 +68,7 @@ func TestParseONUProfiles(t *testing.T) {
             Max ipv6host: 0
                 Max veip: 1
      Service ability N:1: 1
+                 Ex-OMCI: disable
   Wifi mgmt via non OMCI: disable
           Omci send mode: async
  Default multicast range: none
@@ -121,6 +122,9 @@ func TestParseONUProfiles(t *testing.T) {
 	if p.ServiceAbility == nil || *p.ServiceAbility != "n:1" {
 		t.Fatalf("expected service ability n:1, got %v", p.ServiceAbility)
 	}
+	if p.ExOMCI == nil || *p.ExOMCI {
+		t.Fatalf("expected ex-omci disabled, got %v", p.ExOMCI)
+	}
 	if p.WifiMngViaNonOMCI == nil || *p.WifiMngViaNonOMCI {
 		t.Fatalf("expected wifi mgmt disabled, got %v", p.WifiMngViaNonOMCI)
 	}
@@ -148,6 +152,7 @@ func TestParseONUProfilesMultiple(t *testing.T) {
 		"Max ipv6host: 0\n" +
 		"Max veip: 0\n" +
 		"Service ability N:1: 1\n" +
+		"Ex-OMCI: disable\n" +
 		"Wifi mgmt via non OMCI: disable\n" +
 		"Omci send mode: async\n" +
 		"Default multicast range: none\n" +
@@ -164,6 +169,7 @@ func TestParseONUProfilesMultiple(t *testing.T) {
 		"Max ipv6host: 0\n" +
 		"Max veip: 1\n" +
 		"Service ability N:1: 1\n" +
+		"Ex-OMCI: enable\n" +
 		"Wifi mgmt via non OMCI: enable\n" +
 		"Omci send mode: sync\n" +
 		"Default multicast range: none\n" +
@@ -182,6 +188,9 @@ func TestParseONUProfilesMultiple(t *testing.T) {
 	}
 	if profiles[1].WifiMngViaNonOMCI == nil || !*profiles[1].WifiMngViaNonOMCI {
 		t.Fatalf("expected wifi mgmt enabled for prof2")
+	}
+	if profiles[1].ExOMCI == nil || !*profiles[1].ExOMCI {
+		t.Fatalf("expected ex-omci enabled for prof2")
 	}
 	if profiles[1].Committed == nil || *profiles[1].Committed {
 		t.Fatalf("expected committed false for prof2")
