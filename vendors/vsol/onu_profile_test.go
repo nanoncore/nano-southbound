@@ -14,6 +14,10 @@ func TestBuildONUProfileCreateCommands(t *testing.T) {
 	tcont := 8
 	gem := 32
 	ability := "n:1"
+	omciMode := "sync"
+	exOMCI := true
+	wifiNonOMCI := true
+	defaultMcast := "all-inclusive"
 	profile := &types.ONUHardwareProfile{
 		Name:        "AN5506-04-F1",
 		Description: &desc,
@@ -21,9 +25,13 @@ func TestBuildONUProfileCreateCommands(t *testing.T) {
 			Eth:  &eth,
 			Veip: &veip,
 		},
-		TcontNum:       &tcont,
-		GemportNum:     &gem,
-		ServiceAbility: &ability,
+		TcontNum:              &tcont,
+		GemportNum:            &gem,
+		ServiceAbility:        &ability,
+		OmciSendMode:          &omciMode,
+		ExOMCI:                &exOMCI,
+		WifiMngViaNonOMCI:     &wifiNonOMCI,
+		DefaultMulticastRange: &defaultMcast,
 	}
 
 	commands := buildONUProfileCreateCommands(profile)
@@ -35,6 +43,10 @@ func TestBuildONUProfileCreateCommands(t *testing.T) {
 	assertContains(t, joined, "port-num veip 1")
 	assertContains(t, joined, "tcont-num 8 gemport-num 32")
 	assertContains(t, joined, "service-ability n:1")
+	assertContains(t, joined, "omci-send-mode sync")
+	assertContains(t, joined, "ex-omci enable")
+	assertContains(t, joined, "wifi-mng-via-non-omci enable")
+	assertContains(t, joined, "default-multicast-range all-inclusive")
 	assertContains(t, joined, "description \"AN5506-04-F1\"")
 	assertContains(t, joined, "commit")
 	assertContains(t, joined, "exit")

@@ -159,11 +159,19 @@ func buildONUProfileCreateCommands(profile *types.ONUHardwareProfile) []string {
 	if profile.OmciSendMode != nil {
 		commands = append(commands, fmt.Sprintf("omci-send-mode %s", *profile.OmciSendMode))
 	}
-	if profile.ExOMCI != nil && *profile.ExOMCI {
-		commands = append(commands, "ex-omci")
+	if profile.ExOMCI != nil {
+		if *profile.ExOMCI {
+			commands = append(commands, "ex-omci enable")
+		} else {
+			commands = append(commands, "ex-omci disable")
+		}
 	}
-	if profile.WifiMngViaNonOMCI != nil && *profile.WifiMngViaNonOMCI {
-		commands = append(commands, "wifi-mng-via-non-omci")
+	if profile.WifiMngViaNonOMCI != nil {
+		if *profile.WifiMngViaNonOMCI {
+			commands = append(commands, "wifi-mng-via-non-omci enable")
+		} else {
+			commands = append(commands, "wifi-mng-via-non-omci disable")
+		}
 	}
 	if profile.DefaultMulticastRange != nil {
 		commands = append(commands, fmt.Sprintf("default-multicast-range %s", *profile.DefaultMulticastRange))
