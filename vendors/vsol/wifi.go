@@ -278,7 +278,7 @@ func (a *Adapter) resolveWifiTarget(ctx context.Context, target types.WifiTarget
 		}
 	}
 
-	onu, err := a.GetONUBySerial(ctx, serial)
+	onu, err := a.resolveONUBySerialFromInventory(ctx, serial)
 	if err != nil {
 		return "", 0, &types.WifiActionResult{
 			OK:        false,
@@ -309,6 +309,29 @@ func (a *Adapter) resolveWifiTarget(ctx context.Context, target types.WifiTarget
 	}
 
 	return onu.PONPort, onu.ONUID, nil
+}
+
+func (a *Adapter) resolveONUBySerialFromInventory(ctx context.Context, serial string) (*types.ONUInfo, error) {
+	if a.config == nil {
+		return a.GetONUBySerial(ctx, serial)
+	}
+
+	onus, err := a.GetONUList(ctx, &types.ONUFilter{Serial: serial})
+	if err != nil {
+		return nil, err
+	}
+	if len(onus) == 0 {
+		return nil, nil
+	}
+
+	serialLower := strings.ToLower(strings.TrimSpace(serial))
+	for i := range onus {
+		if strings.EqualFold(strings.TrimSpace(onus[i].Serial), serialLower) {
+			return &onus[i], nil
+		}
+	}
+
+	return &onus[0], nil
 }
 
 func (a *Adapter) isOMCIProfileReady(ctx context.Context, ponPort string, onuID int) bool {

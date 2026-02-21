@@ -395,6 +395,81 @@ func TestSetWifiConfig_PriProfile_UsesMetadataDefaults(t *testing.T) {
 	}
 }
 
+func TestResolveWifiTarget_SerialOnline(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal": "ok",
+			"interface gpon 0/1": "ok",
+			"show onu info all":  "GPON0/1:3 HG6143D default sn FHTT59CB8310",
+			"show onu state":     "1/1/1:3 enable enable working 1(GPON)",
+			"exit":               "ok",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{},
+	}
+
+	ponPort, onuID, result := adapter.resolveWifiTarget(context.Background(), types.WifiTarget{OnuSerial: "FHTT59CB8310"})
+	if result != nil {
+		t.Fatalf("expected successful resolution, got %+v", result)
+	}
+	if ponPort != "0/1" || onuID != 3 {
+		t.Fatalf("expected 0/1:3, got %s:%d", ponPort, onuID)
+	}
+}
+
+func TestResolveWifiTarget_SerialOffline(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal": "ok",
+			"interface gpon 0/1": "ok",
+			"show onu info all":  "GPON0/1:2 HG6143D default sn HWTCA23A8DF2",
+			"show onu state":     "1/1/1:2 enable enable OffLine 1(GPON)",
+			"exit":               "ok",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{},
+	}
+
+	_, _, result := adapter.resolveWifiTarget(context.Background(), types.WifiTarget{OnuSerial: "HWTCA23A8DF2"})
+	if result == nil {
+		t.Fatalf("expected offline resolution error")
+	}
+	if result.ErrorCode != types.WifiErrorCodeOnuOffline {
+		t.Fatalf("expected ONU_OFFLINE, got %s", result.ErrorCode)
+	}
+}
+
+func TestResolveWifiTarget_SerialNotFound(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal": "ok",
+			"exit":               "ok",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{},
+	}
+
+	_, _, result := adapter.resolveWifiTarget(context.Background(), types.WifiTarget{OnuSerial: "FAKESERIAL9999"})
+	if result == nil {
+		t.Fatalf("expected not found resolution error")
+	}
+	if result.ErrorCode != types.WifiErrorCodeOnuNotFound {
+		t.Fatalf("expected ONU_NOT_FOUND, got %s", result.ErrorCode)
+	}
+}
+
 func containsString(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
