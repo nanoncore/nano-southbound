@@ -51,6 +51,15 @@ func (a *Adapter) GetWifiConfig(ctx context.Context, target types.WifiTarget) (*
 			OK:        false,
 			ErrorCode: types.WifiErrorCodeReadbackUnavailable,
 			Reason:    "OMCI readback unavailable for this ONU model or environment",
+			FailedStep: "READBACK",
+			Events: []types.WifiActionEvent{
+				{
+					Step:      "READBACK",
+					OK:        false,
+					Timestamp: time.Now().UTC(),
+					Detail:    "readback not supported",
+				},
+			},
 		}, nil
 	}
 
@@ -70,6 +79,15 @@ func (a *Adapter) GetWifiConfig(ctx context.Context, target types.WifiTarget) (*
 		ErrorCode: types.WifiErrorCodeReadbackUnavailable,
 		Reason:    "running config captured but Wi-Fi readback parser not yet enabled",
 		RawOutput: raw,
+		FailedStep: "READBACK",
+		Events: []types.WifiActionEvent{
+			{
+				Step:      "READBACK",
+				OK:        false,
+				Timestamp: time.Now().UTC(),
+				Detail:    "parser unavailable",
+			},
+		},
 	}, nil
 }
 
@@ -106,6 +124,14 @@ func (a *Adapter) SetWifiConfig(ctx context.Context, target types.WifiTarget, cf
 			OK:        false,
 			ErrorCode: types.WifiErrorCodeProfileNotOMCIReady,
 			Reason:    "profile not configured for OMCI Wi-Fi",
+			FailedStep: "PROFILE_OMCI_PRECHECK",
+			Events: []types.WifiActionEvent{
+				{
+					Step:      "PROFILE_OMCI_PRECHECK",
+					OK:        false,
+					Timestamp: time.Now().UTC(),
+				},
+			},
 		}, nil
 	}
 
@@ -125,10 +151,10 @@ func (a *Adapter) SetWifiConfig(ctx context.Context, target types.WifiTarget, cf
 	steps = append(steps, wifiConfigSteps(profile, onuID, cfg, a.priDefaults())...)
 	steps = append(steps,
 		wifiStep{name: "EXIT_INTERFACE", command: "exit"},
-		wifiStep{name: "EXIT_CONFIG", command: "end"},
+		wifiStep{name: "COMMIT", command: "end"},
 	)
 
-	return a.runWifiSteps(ctx, steps), nil
+	return a.runWifiSteps(ctx, steps, true), nil
 }
 
 func (a *Adapter) SetWifiEnabled(ctx context.Context, target types.WifiTarget, enabled bool) (*types.WifiActionResult, error) {
@@ -149,6 +175,14 @@ func (a *Adapter) SetWifiEnabled(ctx context.Context, target types.WifiTarget, e
 			OK:        false,
 			ErrorCode: types.WifiErrorCodeProfileNotOMCIReady,
 			Reason:    "profile not configured for OMCI Wi-Fi",
+			FailedStep: "PROFILE_OMCI_PRECHECK",
+			Events: []types.WifiActionEvent{
+				{
+					Step:      "PROFILE_OMCI_PRECHECK",
+					OK:        false,
+					Timestamp: time.Now().UTC(),
+				},
+			},
 		}, nil
 	}
 
@@ -164,18 +198,25 @@ func (a *Adapter) SetWifiEnabled(ctx context.Context, target types.WifiTarget, e
 	steps := []wifiStep{
 		{name: "ENTER_CONFIG", command: "configure terminal"},
 		{name: "ENTER_PON_INTERFACE", command: fmt.Sprintf("interface gpon %s", ponPort)},
-		{name: "ENABLE_WIFI", command: wifiEnableCommand(profile, onuID, enabled, a.priDefaults())},
+		{name: "SET_ENABLED", command: wifiEnableCommand(profile, onuID, enabled, a.priDefaults())},
 		{name: "EXIT_INTERFACE", command: "exit"},
-		{name: "EXIT_CONFIG", command: "end"},
+		{name: "COMMIT", command: "end"},
 	}
 
-	return a.runWifiSteps(ctx, steps), nil
+	return a.runWifiSteps(ctx, steps, true), nil
 }
 
-func (a *Adapter) runWifiSteps(ctx context.Context, steps []wifiStep) *types.WifiActionResult {
+func (a *Adapter) runWifiSteps(ctx context.Context, steps []wifiStep, includePrecheckEvent bool) *types.WifiActionResult {
 	result := &types.WifiActionResult{
 		OK:     true,
-		Events: make([]types.WifiActionEvent, 0, len(steps)),
+		Events: make([]types.WifiActionEvent, 0, len(steps)+1),
+	}
+	if includePrecheckEvent {
+		result.Events = append(result.Events, types.WifiActionEvent{
+			Step:      "PROFILE_OMCI_PRECHECK",
+			OK:        true,
+			Timestamp: time.Now().UTC(),
+		})
 	}
 
 	var rawBuilder strings.Builder
@@ -206,7 +247,9 @@ func (a *Adapter) runWifiSteps(ctx context.Context, steps []wifiStep) *types.Wif
 			result.FailedStep = step.name
 			result.RawOutput = rawBuilder.String()
 			result.Reason = normalizeReason(err, output)
-			if successfulSteps > 0 {
+			if classifyWifiErrCode(err, output) == types.WifiErrorCodeCommandTimeout {
+				result.ErrorCode = types.WifiErrorCodeCommandTimeout
+			} else if successfulSteps > 0 {
 				result.ErrorCode = types.WifiErrorCodePartialApply
 			} else {
 				result.ErrorCode = classifyWifiErrCode(err, output)
@@ -357,7 +400,7 @@ func wifiConfigSteps(profile wifiCommandProfile, onuID int, cfg types.WifiConfig
 	case wifiCommandProfilePri:
 		return []wifiStep{
 			{name: "SET_SSID", command: priSSIDCommand(onuID, cfg), sensitive: len(strings.TrimSpace(cfg.Password)) > 0},
-			{name: "ENABLE_WIFI", command: wifiEnableCommand(profile, onuID, cfg.Enabled, priDefaults)},
+			{name: "SET_ENABLED", command: wifiEnableCommand(profile, onuID, cfg.Enabled, priDefaults)},
 		}
 	default:
 		steps := []wifiStep{
@@ -370,7 +413,7 @@ func wifiConfigSteps(profile wifiCommandProfile, onuID int, cfg types.WifiConfig
 				sensitive: true,
 			})
 		}
-		steps = append(steps, wifiStep{name: "ENABLE_WIFI", command: wifiEnableCommand(profile, onuID, cfg.Enabled, priDefaults)})
+		steps = append(steps, wifiStep{name: "SET_ENABLED", command: wifiEnableCommand(profile, onuID, cfg.Enabled, priDefaults)})
 		return steps
 	}
 }

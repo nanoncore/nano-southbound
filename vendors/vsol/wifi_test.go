@@ -73,8 +73,11 @@ func TestSetWifiConfig_Success(t *testing.T) {
 	if result.FailedStep != "" {
 		t.Fatalf("expected no failed step, got %s", result.FailedStep)
 	}
-	if len(result.Events) != 7 {
-		t.Fatalf("expected 7 events, got %d", len(result.Events))
+	if len(result.Events) != 8 {
+		t.Fatalf("expected 8 events, got %d", len(result.Events))
+	}
+	if result.Events[0].Step != "PROFILE_OMCI_PRECHECK" || !result.Events[0].OK {
+		t.Fatalf("expected successful PROFILE_OMCI_PRECHECK event, got %+v", result.Events[0])
 	}
 	if strings.Contains(result.RawOutput, "SuperSecret123") {
 		t.Fatalf("raw output must redact password")
@@ -126,6 +129,9 @@ func TestSetWifiConfig_ProfileNotReady(t *testing.T) {
 	}
 	if result.ErrorCode != types.WifiErrorCodeProfileNotOMCIReady {
 		t.Fatalf("expected PROFILE_NOT_OMCI_READY, got %s", result.ErrorCode)
+	}
+	if result.FailedStep != "PROFILE_OMCI_PRECHECK" {
+		t.Fatalf("expected failed step PROFILE_OMCI_PRECHECK, got %s", result.FailedStep)
 	}
 }
 
@@ -200,8 +206,11 @@ func TestSetWifiConfig_CommandTimeout(t *testing.T) {
 	if result.OK {
 		t.Fatalf("expected failure")
 	}
-	if result.ErrorCode != types.WifiErrorCodePartialApply {
-		t.Fatalf("expected PARTIAL_APPLY (post-first-step timeout), got %s", result.ErrorCode)
+	if result.ErrorCode != types.WifiErrorCodeCommandTimeout {
+		t.Fatalf("expected COMMAND_TIMEOUT, got %s", result.ErrorCode)
+	}
+	if result.FailedStep != "ENTER_PON_INTERFACE" {
+		t.Fatalf("expected failed step ENTER_PON_INTERFACE, got %s", result.FailedStep)
 	}
 }
 
