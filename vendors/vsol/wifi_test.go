@@ -212,6 +212,87 @@ func TestSetWifiConfig_PartialApply(t *testing.T) {
 	}
 }
 
+func TestSetWifiConfig_PartialApplyOnPasswordStep(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal":                     "ok",
+			"interface gpon 0/1":                     "ok",
+			"onu 7 wifi ssid \"Nanoncore\"":          "ok",
+			"onu 7 wifi password \"SuperSecret123\"": "% Unknown command.",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config: &types.EquipmentConfig{
+			Metadata: map[string]string{
+				"skip_omci_profile_check": "true",
+				"wifi_command_profile":    "legacy",
+			},
+		},
+	}
+
+	result, err := adapter.SetWifiConfig(context.Background(), types.WifiTarget{PONPort: "0/1", ONUID: 7}, types.WifiConfig{
+		SSID:     "Nanoncore",
+		Password: "SuperSecret123",
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("SetWifiConfig returned error: %v", err)
+	}
+	if result.OK {
+		t.Fatalf("expected failure")
+	}
+	if result.ErrorCode != types.WifiErrorCodePartialApply {
+		t.Fatalf("expected PARTIAL_APPLY, got %s", result.ErrorCode)
+	}
+	if result.FailedStep != "SET_PASSWORD" {
+		t.Fatalf("expected failed step SET_PASSWORD, got %s", result.FailedStep)
+	}
+}
+
+func TestSetWifiConfig_PartialApplyOnEnableStep(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal":                     "ok",
+			"interface gpon 0/1":                     "ok",
+			"onu 7 wifi ssid \"Nanoncore\"":          "ok",
+			"onu 7 wifi password \"SuperSecret123\"": "ok",
+			"onu 7 wifi enable":                      "% Error: command failed",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config: &types.EquipmentConfig{
+			Metadata: map[string]string{
+				"skip_omci_profile_check": "true",
+				"wifi_command_profile":    "legacy",
+			},
+		},
+	}
+
+	result, err := adapter.SetWifiConfig(context.Background(), types.WifiTarget{PONPort: "0/1", ONUID: 7}, types.WifiConfig{
+		SSID:     "Nanoncore",
+		Password: "SuperSecret123",
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("SetWifiConfig returned error: %v", err)
+	}
+	if result.OK {
+		t.Fatalf("expected failure")
+	}
+	if result.ErrorCode != types.WifiErrorCodePartialApply {
+		t.Fatalf("expected PARTIAL_APPLY, got %s", result.ErrorCode)
+	}
+	if result.FailedStep != "SET_ENABLED" {
+		t.Fatalf("expected failed step SET_ENABLED, got %s", result.FailedStep)
+	}
+}
+
 func TestSetWifiConfig_CommandTimeout(t *testing.T) {
 	timeoutErr := fmt.Errorf("timeout waiting for prompt")
 	mock := &wifiMockCLI{
@@ -249,6 +330,47 @@ func TestSetWifiConfig_CommandTimeout(t *testing.T) {
 	}
 	if result.FailedStep != "ENTER_PON_INTERFACE" {
 		t.Fatalf("expected failed step ENTER_PON_INTERFACE, got %s", result.FailedStep)
+	}
+}
+
+func TestSetWifiConfig_CommandTimeoutOnSSIDStep(t *testing.T) {
+	timeoutErr := fmt.Errorf("timeout waiting for prompt")
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal": "ok",
+			"interface gpon 0/1": "ok",
+		},
+		errByCommand: map[string]error{
+			"onu 7 wifi ssid \"Nanoncore\"": timeoutErr,
+		},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config: &types.EquipmentConfig{
+			Metadata: map[string]string{
+				"skip_omci_profile_check": "true",
+				"wifi_command_profile":    "legacy",
+			},
+		},
+	}
+
+	result, err := adapter.SetWifiConfig(context.Background(), types.WifiTarget{PONPort: "0/1", ONUID: 7}, types.WifiConfig{
+		SSID:     "Nanoncore",
+		Password: "SuperSecret123",
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("SetWifiConfig returned error: %v", err)
+	}
+	if result.OK {
+		t.Fatalf("expected failure")
+	}
+	if result.ErrorCode != types.WifiErrorCodeCommandTimeout {
+		t.Fatalf("expected COMMAND_TIMEOUT, got %s", result.ErrorCode)
+	}
+	if result.FailedStep != "SET_SSID" {
+		t.Fatalf("expected failed step SET_SSID, got %s", result.FailedStep)
 	}
 }
 
@@ -307,6 +429,11 @@ func TestSetWifiConfig_PriProfile_Success(t *testing.T) {
 	}
 	if strings.Contains(result.RawOutput, "StrongPass1") {
 		t.Fatalf("raw output must redact shared_key")
+	}
+	for _, event := range result.Events {
+		if strings.Contains(event.Detail, "StrongPass1") {
+			t.Fatalf("event detail must redact shared_key")
+		}
 	}
 }
 
