@@ -654,6 +654,13 @@ Wifi mgmt via non OMCI: enable
 	}
 }
 
+func TestClassifyWifiErrCode_OnuNotFoundPonMarker(t *testing.T) {
+	errCode := classifyWifiErrCode(nil, "Error: pon 2 onu 99 not found.")
+	if errCode != types.WifiErrorCodeOnuNotFound {
+		t.Fatalf("expected ONU_NOT_FOUND, got %s", errCode)
+	}
+}
+
 func containsString(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
