@@ -305,6 +305,87 @@ func TestSetWifiConfig_AutoProfileByModelHint_UsesPri(t *testing.T) {
 	}
 }
 
+func TestSetWifiConfig_UnresolvedProfileFailsClosed(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal": "ok",
+			"interface gpon 0/1": "ok",
+			"onu 9 pri ?":        "",
+			"onu 9 wifi ?":       "",
+			"exit":               "ok",
+			"end":                "ok",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config: &types.EquipmentConfig{
+			Metadata: map[string]string{
+				"skip_omci_profile_check": "true",
+			},
+		},
+	}
+
+	result, err := adapter.SetWifiConfig(context.Background(), types.WifiTarget{PONPort: "0/1", ONUID: 9}, types.WifiConfig{
+		SSID:     "LabSSID",
+		Password: "StrongPass1",
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("SetWifiConfig returned error: %v", err)
+	}
+	if result.OK {
+		t.Fatalf("expected failure when profile cannot be resolved")
+	}
+	if result.ErrorCode != types.WifiErrorCodeUnsupportedOperation {
+		t.Fatalf("expected UNSUPPORTED_OPERATION, got %s", result.ErrorCode)
+	}
+}
+
+func TestSetWifiConfig_PriProfile_UsesMetadataDefaults(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal": "ok",
+			"interface gpon 0/2": "ok",
+			"onu 9 pri wifi_ssid 1 name \"LabSSID\" hide disable auth_mode open encrypt_type none": "ok",
+			"onu 9 pri wifi_switch 1 enable fcc chl_36 80211acanac 7 20/40":                        "ok",
+			"exit": "ok",
+			"end":  "ok",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config: &types.EquipmentConfig{
+			Metadata: map[string]string{
+				"skip_omci_profile_check": "true",
+				"wifi_command_profile":    "pri",
+				"wifi_pri_country":        "fcc",
+				"wifi_pri_channel":        "chl_36",
+				"wifi_pri_standard":       "80211acanac",
+				"wifi_pri_power":          "7",
+				"wifi_pri_width":          "20/40",
+			},
+		},
+	}
+
+	result, err := adapter.SetWifiConfig(context.Background(), types.WifiTarget{PONPort: "0/2", ONUID: 9}, types.WifiConfig{
+		SSID:    "LabSSID",
+		Enabled: true,
+	})
+	if err != nil {
+		t.Fatalf("SetWifiConfig returned error: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("expected success, got errorCode=%s reason=%s", result.ErrorCode, result.Reason)
+	}
+	if !containsString(mock.commands, "onu 9 pri wifi_switch 1 enable fcc chl_36 80211acanac 7 20/40") {
+		t.Fatalf("expected metadata-driven PRI switch command, got sequence: %+v", mock.commands)
+	}
+}
+
 func containsString(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {

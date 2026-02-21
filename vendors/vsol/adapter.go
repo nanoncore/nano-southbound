@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"log/slog"
@@ -26,11 +27,13 @@ var (
 // Adapter wraps a base driver with V-SOL-specific logic
 // V-SOL OLTs (V1600G series) use CLI + SNMP, with optional EMS REST API
 type Adapter struct {
-	baseDriver      types.Driver
-	secondaryDriver types.Driver // SNMP driver when primary is CLI
-	cliExecutor     types.CLIExecutor
-	snmpExecutor    types.SNMPExecutor
-	config          *types.EquipmentConfig
+	baseDriver       types.Driver
+	secondaryDriver  types.Driver // SNMP driver when primary is CLI
+	cliExecutor      types.CLIExecutor
+	snmpExecutor     types.SNMPExecutor
+	config           *types.EquipmentConfig
+	wifiProfileMu    sync.RWMutex
+	wifiProfileCache map[string]string
 }
 
 var (

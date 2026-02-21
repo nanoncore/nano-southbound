@@ -46,17 +46,18 @@ const (
 type WifiErrorCode string
 
 const (
-	WifiErrorCodeProfileNotOMCIReady WifiErrorCode = "PROFILE_NOT_OMCI_READY"
-	WifiErrorCodeOnuOffline          WifiErrorCode = "ONU_OFFLINE"
-	WifiErrorCodeOnuNotFound         WifiErrorCode = "ONU_NOT_FOUND"
-	WifiErrorCodePartialApply        WifiErrorCode = "PARTIAL_APPLY"
-	WifiErrorCodeCommandTimeout      WifiErrorCode = "COMMAND_TIMEOUT"
-	WifiErrorCodeReadbackUnavailable WifiErrorCode = "READBACK_UNAVAILABLE"
-	WifiErrorCodeCancelUnsupported   WifiErrorCode = "CANCEL_UNSUPPORTED"
-	WifiErrorCodeRateLimited         WifiErrorCode = "RATE_LIMITED"
-	WifiErrorCodeInvalidValue        WifiErrorCode = "INVALID_VALUE"
-	WifiErrorCodePermissionDenied    WifiErrorCode = "PERMISSION_DENIED"
-	WifiErrorCodeInternalError       WifiErrorCode = "INTERNAL_ERROR"
+	WifiErrorCodeProfileNotOMCIReady  WifiErrorCode = "PROFILE_NOT_OMCI_READY"
+	WifiErrorCodeOnuOffline           WifiErrorCode = "ONU_OFFLINE"
+	WifiErrorCodeOnuNotFound          WifiErrorCode = "ONU_NOT_FOUND"
+	WifiErrorCodeUnsupportedOperation WifiErrorCode = "UNSUPPORTED_OPERATION"
+	WifiErrorCodePartialApply         WifiErrorCode = "PARTIAL_APPLY"
+	WifiErrorCodeCommandTimeout       WifiErrorCode = "COMMAND_TIMEOUT"
+	WifiErrorCodeReadbackUnavailable  WifiErrorCode = "READBACK_UNAVAILABLE"
+	WifiErrorCodeCancelUnsupported    WifiErrorCode = "CANCEL_UNSUPPORTED"
+	WifiErrorCodeRateLimited          WifiErrorCode = "RATE_LIMITED"
+	WifiErrorCodeInvalidValue         WifiErrorCode = "INVALID_VALUE"
+	WifiErrorCodePermissionDenied     WifiErrorCode = "PERMISSION_DENIED"
+	WifiErrorCodeInternalError        WifiErrorCode = "INTERNAL_ERROR"
 )
 
 // WifiActionEvent captures per-step execution results.

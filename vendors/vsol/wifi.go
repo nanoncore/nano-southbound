@@ -3,6 +3,7 @@ package vsol
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -24,6 +25,19 @@ const (
 	wifiCommandProfileLegacy wifiCommandProfile = "legacy"
 	wifiCommandProfilePri    wifiCommandProfile = "pri"
 )
+
+var (
+	reWifiPasswordValue = regexp.MustCompile(`(?i)(wifi\s+password\s+)(".*?"|\S+)`)
+	reSharedKeyValue    = regexp.MustCompile(`(?i)(shared_key\s+)(".*?"|\S+)`)
+)
+
+type priWifiDefaults struct {
+	Country  string
+	Channel  string
+	Standard string
+	Power    int
+	Width    string
+}
 
 func (a *Adapter) GetWifiConfig(ctx context.Context, target types.WifiTarget) (*types.WifiActionResult, error) {
 	ponPort, onuID, result := a.resolveWifiTarget(ctx, target)
@@ -99,7 +113,7 @@ func (a *Adapter) SetWifiConfig(ctx context.Context, target types.WifiTarget, cf
 	if err != nil {
 		return &types.WifiActionResult{
 			OK:        false,
-			ErrorCode: types.WifiErrorCodeInternalError,
+			ErrorCode: classifyWifiErrCode(err, ""),
 			Reason:    err.Error(),
 		}, nil
 	}
@@ -108,7 +122,7 @@ func (a *Adapter) SetWifiConfig(ctx context.Context, target types.WifiTarget, cf
 		{name: "ENTER_CONFIG", command: "configure terminal"},
 		{name: "ENTER_PON_INTERFACE", command: fmt.Sprintf("interface gpon %s", ponPort)},
 	}
-	steps = append(steps, wifiConfigSteps(profile, onuID, cfg)...)
+	steps = append(steps, wifiConfigSteps(profile, onuID, cfg, a.priDefaults())...)
 	steps = append(steps,
 		wifiStep{name: "EXIT_INTERFACE", command: "exit"},
 		wifiStep{name: "EXIT_CONFIG", command: "end"},
@@ -142,7 +156,7 @@ func (a *Adapter) SetWifiEnabled(ctx context.Context, target types.WifiTarget, e
 	if err != nil {
 		return &types.WifiActionResult{
 			OK:        false,
-			ErrorCode: types.WifiErrorCodeInternalError,
+			ErrorCode: classifyWifiErrCode(err, ""),
 			Reason:    err.Error(),
 		}, nil
 	}
@@ -150,7 +164,7 @@ func (a *Adapter) SetWifiEnabled(ctx context.Context, target types.WifiTarget, e
 	steps := []wifiStep{
 		{name: "ENTER_CONFIG", command: "configure terminal"},
 		{name: "ENTER_PON_INTERFACE", command: fmt.Sprintf("interface gpon %s", ponPort)},
-		{name: "ENABLE_WIFI", command: wifiEnableCommand(profile, onuID, enabled)},
+		{name: "ENABLE_WIFI", command: wifiEnableCommand(profile, onuID, enabled, a.priDefaults())},
 		{name: "EXIT_INTERFACE", command: "exit"},
 		{name: "EXIT_CONFIG", command: "end"},
 	}
@@ -289,6 +303,8 @@ func classifyWifiErrCode(err error, output string) types.WifiErrorCode {
 	}
 
 	switch {
+	case strings.Contains(combined, "unsupported operation"):
+		return types.WifiErrorCodeUnsupportedOperation
 	case strings.Contains(combined, "timeout"):
 		return types.WifiErrorCodeCommandTimeout
 	case strings.Contains(combined, "permission denied"), strings.Contains(combined, "not authorized"):
@@ -336,12 +352,12 @@ func quoteArg(v string) string {
 	return strconv.Quote(strings.TrimSpace(v))
 }
 
-func wifiConfigSteps(profile wifiCommandProfile, onuID int, cfg types.WifiConfig) []wifiStep {
+func wifiConfigSteps(profile wifiCommandProfile, onuID int, cfg types.WifiConfig, priDefaults priWifiDefaults) []wifiStep {
 	switch profile {
 	case wifiCommandProfilePri:
 		return []wifiStep{
 			{name: "SET_SSID", command: priSSIDCommand(onuID, cfg), sensitive: len(strings.TrimSpace(cfg.Password)) > 0},
-			{name: "ENABLE_WIFI", command: wifiEnableCommand(profile, onuID, cfg.Enabled)},
+			{name: "ENABLE_WIFI", command: wifiEnableCommand(profile, onuID, cfg.Enabled, priDefaults)},
 		}
 	default:
 		steps := []wifiStep{
@@ -354,17 +370,35 @@ func wifiConfigSteps(profile wifiCommandProfile, onuID int, cfg types.WifiConfig
 				sensitive: true,
 			})
 		}
-		steps = append(steps, wifiStep{name: "ENABLE_WIFI", command: wifiEnableCommand(profile, onuID, cfg.Enabled)})
+		steps = append(steps, wifiStep{name: "ENABLE_WIFI", command: wifiEnableCommand(profile, onuID, cfg.Enabled, priDefaults)})
 		return steps
 	}
 }
 
-func wifiEnableCommand(profile wifiCommandProfile, onuID int, enabled bool) string {
+func wifiEnableCommand(profile wifiCommandProfile, onuID int, enabled bool, defaults priWifiDefaults) string {
 	switch profile {
 	case wifiCommandProfilePri:
 		if enabled {
-			// V1600G PRI path from lab: country/channel/standard/power required.
-			return fmt.Sprintf("onu %d pri wifi_switch 1 enable global auto 80211acanac 10", onuID)
+			// PRI path is firmware-specific and therefore metadata-driven.
+			if strings.TrimSpace(defaults.Width) != "" {
+				return fmt.Sprintf(
+					"onu %d pri wifi_switch 1 enable %s %s %s %d %s",
+					onuID,
+					defaults.Country,
+					defaults.Channel,
+					defaults.Standard,
+					defaults.Power,
+					defaults.Width,
+				)
+			}
+			return fmt.Sprintf(
+				"onu %d pri wifi_switch 1 enable %s %s %s %d",
+				onuID,
+				defaults.Country,
+				defaults.Channel,
+				defaults.Standard,
+				defaults.Power,
+			)
 		}
 		return fmt.Sprintf("onu %d pri wifi_switch 1 disable", onuID)
 	default:
@@ -394,11 +428,51 @@ func priSSIDCommand(onuID int, cfg types.WifiConfig) string {
 	)
 }
 
+func (a *Adapter) priDefaults() priWifiDefaults {
+	defaults := priWifiDefaults{
+		Country:  "global",
+		Channel:  "auto",
+		Standard: "80211acanac",
+		Power:    10,
+		Width:    "",
+	}
+	if a.config == nil || a.config.Metadata == nil {
+		return defaults
+	}
+	if country := strings.TrimSpace(a.config.Metadata["wifi_pri_country"]); country != "" {
+		defaults.Country = country
+	}
+	if channel := strings.TrimSpace(a.config.Metadata["wifi_pri_channel"]); channel != "" {
+		defaults.Channel = channel
+	}
+	if standard := strings.TrimSpace(a.config.Metadata["wifi_pri_standard"]); standard != "" {
+		defaults.Standard = standard
+	}
+	if width := strings.TrimSpace(a.config.Metadata["wifi_pri_width"]); width != "" {
+		defaults.Width = width
+	}
+	if powerRaw := strings.TrimSpace(a.config.Metadata["wifi_pri_power"]); powerRaw != "" {
+		if power, err := strconv.Atoi(powerRaw); err == nil && power >= 0 && power <= 20 {
+			defaults.Power = power
+		}
+	}
+	return defaults
+}
+
 func (a *Adapter) resolveWifiCommandProfile(ctx context.Context, ponPort string, onuID int, serial string) (wifiCommandProfile, error) {
-	if forced := a.forcedWifiCommandProfile(); forced != "" {
+	if forced, err := a.forcedWifiCommandProfile(); err != nil {
+		return "", err
+	} else if forced != "" {
 		return forced, nil
 	}
+
+	cacheKey := a.wifiCommandProfileCacheKey(ctx, serial, ponPort, onuID)
+	if cached, ok := a.getCachedWifiCommandProfile(cacheKey); ok {
+		return cached, nil
+	}
+
 	if hinted := a.hintWifiCommandProfile(ctx, serial); hinted != "" {
+		a.setCachedWifiCommandProfile(cacheKey, hinted)
 		return hinted, nil
 	}
 	probed, err := a.probeWifiCommandProfile(ctx, ponPort, onuID)
@@ -406,16 +480,29 @@ func (a *Adapter) resolveWifiCommandProfile(ctx context.Context, ponPort string,
 		return "", err
 	}
 	if probed != "" {
+		a.setCachedWifiCommandProfile(cacheKey, probed)
 		return probed, nil
 	}
-	return wifiCommandProfileLegacy, nil
+	return "", fmt.Errorf(
+		"unsupported operation: unresolved Wi-Fi command profile for onu %d on gpon %s (set metadata wifi_command_profile)",
+		onuID,
+		ponPort,
+	)
 }
 
-func (a *Adapter) forcedWifiCommandProfile() wifiCommandProfile {
+func (a *Adapter) forcedWifiCommandProfile() (wifiCommandProfile, error) {
 	if a.config == nil || a.config.Metadata == nil {
-		return ""
+		return "", nil
 	}
-	return normalizeWifiCommandProfile(a.config.Metadata["wifi_command_profile"])
+	raw := strings.TrimSpace(a.config.Metadata["wifi_command_profile"])
+	if raw == "" {
+		return "", nil
+	}
+	normalized := normalizeWifiCommandProfile(raw)
+	if normalized == "" {
+		return "", fmt.Errorf("unsupported operation: invalid wifi_command_profile %q", raw)
+	}
+	return normalized, nil
 }
 
 func (a *Adapter) hintWifiCommandProfile(ctx context.Context, serial string) wifiCommandProfile {
@@ -436,6 +523,51 @@ func (a *Adapter) hintWifiCommandProfile(ctx context.Context, serial string) wif
 		return wifiCommandProfilePri
 	}
 	return ""
+}
+
+func (a *Adapter) wifiCommandProfileCacheKey(ctx context.Context, serial, ponPort string, onuID int) string {
+	model := ""
+	firmware := ""
+	onuModel := ""
+	if a.config != nil && a.config.Metadata != nil {
+		model = strings.ToLower(strings.TrimSpace(a.config.Metadata["model"]))
+		firmware = strings.ToLower(strings.TrimSpace(a.config.Metadata["firmware"]))
+	}
+	if model == "" {
+		model = strings.ToLower(strings.TrimSpace(a.detectModel()))
+	}
+	if strings.TrimSpace(serial) != "" {
+		if onu, err := a.GetONUBySerial(ctx, serial); err == nil && onu != nil {
+			onuModel = strings.ToLower(strings.TrimSpace(onu.Model))
+		}
+	}
+	if onuModel == "" {
+		onuModel = fmt.Sprintf("%s:%d", ponPort, onuID)
+	}
+	return strings.Join([]string{string(types.VendorVSOL), model, firmware, onuModel}, "|")
+}
+
+func (a *Adapter) getCachedWifiCommandProfile(key string) (wifiCommandProfile, bool) {
+	a.wifiProfileMu.RLock()
+	defer a.wifiProfileMu.RUnlock()
+	if a.wifiProfileCache == nil {
+		return "", false
+	}
+	raw, ok := a.wifiProfileCache[key]
+	if !ok {
+		return "", false
+	}
+	normalized := normalizeWifiCommandProfile(raw)
+	return normalized, normalized != ""
+}
+
+func (a *Adapter) setCachedWifiCommandProfile(key string, profile wifiCommandProfile) {
+	a.wifiProfileMu.Lock()
+	defer a.wifiProfileMu.Unlock()
+	if a.wifiProfileCache == nil {
+		a.wifiProfileCache = make(map[string]string)
+	}
+	a.wifiProfileCache[key] = string(profile)
 }
 
 func (a *Adapter) probeWifiCommandProfile(ctx context.Context, ponPort string, onuID int) (wifiCommandProfile, error) {
@@ -489,21 +621,9 @@ func redactPassword(text string) string {
 	if text == "" {
 		return text
 	}
-	fields := strings.Fields(text)
-	if len(fields) == 0 {
-		return text
-	}
-
-	for i := 0; i < len(fields)-1; i++ {
-		token := strings.ToLower(fields[i])
-		if token == "shared_key" {
-			fields[i+1] = "<redacted>"
-		}
-		if token == "password" && i >= 3 && strings.ToLower(fields[i-1]) == "wifi" {
-			fields[i+1] = "<redacted>"
-		}
-	}
-	return strings.Join(fields, " ")
+	text = reWifiPasswordValue.ReplaceAllString(text, `${1}<redacted>`)
+	text = reSharedKeyValue.ReplaceAllString(text, `${1}<redacted>`)
+	return text
 }
 
 func firstLine(v string) string {
