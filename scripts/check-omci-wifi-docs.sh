@@ -2,33 +2,20 @@
 set -euo pipefail
 
 DOC="docs/omci-wifi-spec.md"
+EXPECTED_HASH="c43f5d2b1d581152d73dade303c3a8d3c1f117734699a9208b73fa604795aff5"
 
 if [[ ! -f "$DOC" ]]; then
   echo "missing $DOC"
   exit 1
 fi
 
-require() {
-  local pattern="$1"
-  local message="$2"
-  if command -v rg >/dev/null 2>&1; then
-    if ! rg -q --fixed-strings "$pattern" "$DOC"; then
-      echo "OMCI docs drift: $message"
-      exit 1
-    fi
-  else
-    if ! grep -Fq "$pattern" "$DOC"; then
-      echo "OMCI docs drift: $message"
-      exit 1
-    fi
-  fi
-}
+ACTUAL_HASH="$(sha256sum "$DOC" | awk '{print $1}')"
+if [[ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]]; then
+  echo "OMCI docs drift: $DOC hash mismatch"
+  echo "expected: $EXPECTED_HASH"
+  echo "actual:   $ACTUAL_HASH"
+  echo "canonical: nanoncore/docs/omci-wifi-spec.md"
+  exit 1
+fi
 
-require 'Version: 1.0.0' 'missing spec version'
-require 'WifiManager interface (southbound)' 'missing southbound interface section'
-require 'SetWifiConfig(onu, config) -> WifiActionResult' 'missing SetWifiConfig contract'
-require 'PARTIAL_APPLY' 'missing partial apply error code'
-require 'COMMAND_TIMEOUT' 'missing timeout error code'
-require 'Parser-compatible behavior is mandatory.' 'missing simulator/parser parity requirement'
-
-echo "OMCI docs check passed ($DOC)"
+echo "OMCI docs check passed ($DOC, sha256=$ACTUAL_HASH)"
