@@ -52,7 +52,10 @@ func TestSetWifiConfig_Success(t *testing.T) {
 	adapter := &Adapter{
 		cliExecutor: mock,
 		config: &types.EquipmentConfig{
-			Metadata: map[string]string{"skip_omci_profile_check": "true"},
+			Metadata: map[string]string{
+				"skip_omci_profile_check": "true",
+				"wifi_command_profile":    "legacy",
+			},
 		},
 	}
 
@@ -139,7 +142,10 @@ func TestSetWifiConfig_PartialApply(t *testing.T) {
 	adapter := &Adapter{
 		cliExecutor: mock,
 		config: &types.EquipmentConfig{
-			Metadata: map[string]string{"skip_omci_profile_check": "true"},
+			Metadata: map[string]string{
+				"skip_omci_profile_check": "true",
+				"wifi_command_profile":    "legacy",
+			},
 		},
 	}
 
@@ -176,7 +182,10 @@ func TestSetWifiConfig_CommandTimeout(t *testing.T) {
 	adapter := &Adapter{
 		cliExecutor: mock,
 		config: &types.EquipmentConfig{
-			Metadata: map[string]string{"skip_omci_profile_check": "true"},
+			Metadata: map[string]string{
+				"skip_omci_profile_check": "true",
+				"wifi_command_profile":    "legacy",
+			},
 		},
 	}
 
@@ -213,4 +222,94 @@ func TestGetWifiConfig_ReadbackUnavailable(t *testing.T) {
 	if result.ErrorCode != types.WifiErrorCodeReadbackUnavailable {
 		t.Fatalf("expected READBACK_UNAVAILABLE, got %s", result.ErrorCode)
 	}
+}
+
+func TestSetWifiConfig_PriProfile_Success(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal": "ok",
+			"interface gpon 0/2": "ok",
+			"onu 9 pri wifi_ssid 1 name \"LabSSID\" hide disable auth_mode wpa2psk encrypt_type aes shared_key \"StrongPass1\" rekey_interval 3600": "ok",
+			"onu 9 pri wifi_switch 1 enable global auto 80211acanac 10":                                                                             "ok",
+			"exit": "ok",
+			"end":  "ok",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config: &types.EquipmentConfig{
+			Metadata: map[string]string{
+				"skip_omci_profile_check": "true",
+				"wifi_command_profile":    "pri",
+			},
+		},
+	}
+
+	result, err := adapter.SetWifiConfig(context.Background(), types.WifiTarget{PONPort: "0/2", ONUID: 9}, types.WifiConfig{
+		SSID:     "LabSSID",
+		Password: "StrongPass1",
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("SetWifiConfig returned error: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("expected success, got errorCode=%s reason=%s", result.ErrorCode, result.Reason)
+	}
+	if strings.Contains(result.RawOutput, "StrongPass1") {
+		t.Fatalf("raw output must redact shared_key")
+	}
+}
+
+func TestSetWifiConfig_AutoProfileByModelHint_UsesPri(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal": "ok",
+			"interface gpon 0/2": "ok",
+			"onu 9 pri wifi_ssid 1 name \"LabSSID\" hide disable auth_mode open encrypt_type none": "ok",
+			"onu 9 pri wifi_switch 1 disable": "ok",
+			"exit":                            "ok",
+			"end":                             "ok",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config: &types.EquipmentConfig{
+			Metadata: map[string]string{
+				"skip_omci_profile_check": "true",
+				"model":                   "V1600G1",
+			},
+		},
+	}
+
+	result, err := adapter.SetWifiConfig(context.Background(), types.WifiTarget{PONPort: "0/2", ONUID: 9}, types.WifiConfig{
+		SSID:    "LabSSID",
+		Enabled: false,
+	})
+	if err != nil {
+		t.Fatalf("SetWifiConfig returned error: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("expected success, got errorCode=%s reason=%s", result.ErrorCode, result.Reason)
+	}
+
+	if !containsString(mock.commands, "onu 9 pri wifi_ssid 1 name \"LabSSID\" hide disable auth_mode open encrypt_type none") {
+		t.Fatalf("expected PRI SSID command, got sequence: %+v", mock.commands)
+	}
+	if !containsString(mock.commands, "onu 9 pri wifi_switch 1 disable") {
+		t.Fatalf("expected PRI switch command, got sequence: %+v", mock.commands)
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

@@ -18,6 +18,13 @@ type wifiStep struct {
 	sensitive bool
 }
 
+type wifiCommandProfile string
+
+const (
+	wifiCommandProfileLegacy wifiCommandProfile = "legacy"
+	wifiCommandProfilePri    wifiCommandProfile = "pri"
+)
+
 func (a *Adapter) GetWifiConfig(ctx context.Context, target types.WifiTarget) (*types.WifiActionResult, error) {
 	ponPort, onuID, result := a.resolveWifiTarget(ctx, target)
 	if result != nil {
@@ -88,15 +95,24 @@ func (a *Adapter) SetWifiConfig(ctx context.Context, target types.WifiTarget, cf
 		}, nil
 	}
 
+	profile, err := a.resolveWifiCommandProfile(ctx, ponPort, onuID, target.OnuSerial)
+	if err != nil {
+		return &types.WifiActionResult{
+			OK:        false,
+			ErrorCode: types.WifiErrorCodeInternalError,
+			Reason:    err.Error(),
+		}, nil
+	}
+
 	steps := []wifiStep{
 		{name: "ENTER_CONFIG", command: "configure terminal"},
 		{name: "ENTER_PON_INTERFACE", command: fmt.Sprintf("interface gpon %s", ponPort)},
-		{name: "SET_SSID", command: fmt.Sprintf("onu %d wifi ssid %s", onuID, quoteArg(cfg.SSID))},
-		{name: "SET_PASSWORD", command: fmt.Sprintf("onu %d wifi password %s", onuID, quoteArg(cfg.Password)), sensitive: true},
-		{name: "ENABLE_WIFI", command: wifiEnableCommand(onuID, cfg.Enabled)},
-		{name: "EXIT_INTERFACE", command: "exit"},
-		{name: "EXIT_CONFIG", command: "end"},
 	}
+	steps = append(steps, wifiConfigSteps(profile, onuID, cfg)...)
+	steps = append(steps,
+		wifiStep{name: "EXIT_INTERFACE", command: "exit"},
+		wifiStep{name: "EXIT_CONFIG", command: "end"},
+	)
 
 	return a.runWifiSteps(ctx, steps), nil
 }
@@ -122,10 +138,19 @@ func (a *Adapter) SetWifiEnabled(ctx context.Context, target types.WifiTarget, e
 		}, nil
 	}
 
+	profile, err := a.resolveWifiCommandProfile(ctx, ponPort, onuID, target.OnuSerial)
+	if err != nil {
+		return &types.WifiActionResult{
+			OK:        false,
+			ErrorCode: types.WifiErrorCodeInternalError,
+			Reason:    err.Error(),
+		}, nil
+	}
+
 	steps := []wifiStep{
 		{name: "ENTER_CONFIG", command: "configure terminal"},
 		{name: "ENTER_PON_INTERFACE", command: fmt.Sprintf("interface gpon %s", ponPort)},
-		{name: "ENABLE_WIFI", command: wifiEnableCommand(onuID, enabled)},
+		{name: "ENABLE_WIFI", command: wifiEnableCommand(profile, onuID, enabled)},
 		{name: "EXIT_INTERFACE", command: "exit"},
 		{name: "EXIT_CONFIG", command: "end"},
 	}
@@ -283,6 +308,7 @@ func hasCLIErrorMarker(output string) bool {
 	lower := strings.ToLower(output)
 	markers := []string{
 		"unknown command",
+		"no matched command",
 		"% error",
 		"error:",
 		"invalid input",
@@ -310,11 +336,142 @@ func quoteArg(v string) string {
 	return strconv.Quote(strings.TrimSpace(v))
 }
 
-func wifiEnableCommand(onuID int, enabled bool) string {
-	if enabled {
-		return fmt.Sprintf("onu %d wifi enable", onuID)
+func wifiConfigSteps(profile wifiCommandProfile, onuID int, cfg types.WifiConfig) []wifiStep {
+	switch profile {
+	case wifiCommandProfilePri:
+		return []wifiStep{
+			{name: "SET_SSID", command: priSSIDCommand(onuID, cfg), sensitive: len(strings.TrimSpace(cfg.Password)) > 0},
+			{name: "ENABLE_WIFI", command: wifiEnableCommand(profile, onuID, cfg.Enabled)},
+		}
+	default:
+		steps := []wifiStep{
+			{name: "SET_SSID", command: fmt.Sprintf("onu %d wifi ssid %s", onuID, quoteArg(cfg.SSID))},
+		}
+		if strings.TrimSpace(cfg.Password) != "" {
+			steps = append(steps, wifiStep{
+				name:      "SET_PASSWORD",
+				command:   fmt.Sprintf("onu %d wifi password %s", onuID, quoteArg(cfg.Password)),
+				sensitive: true,
+			})
+		}
+		steps = append(steps, wifiStep{name: "ENABLE_WIFI", command: wifiEnableCommand(profile, onuID, cfg.Enabled)})
+		return steps
 	}
-	return fmt.Sprintf("onu %d wifi disable", onuID)
+}
+
+func wifiEnableCommand(profile wifiCommandProfile, onuID int, enabled bool) string {
+	switch profile {
+	case wifiCommandProfilePri:
+		if enabled {
+			// V1600G PRI path from lab: country/channel/standard/power required.
+			return fmt.Sprintf("onu %d pri wifi_switch 1 enable global auto 80211acanac 10", onuID)
+		}
+		return fmt.Sprintf("onu %d pri wifi_switch 1 disable", onuID)
+	default:
+		if enabled {
+			return fmt.Sprintf("onu %d wifi enable", onuID)
+		}
+		return fmt.Sprintf("onu %d wifi disable", onuID)
+	}
+}
+
+func priSSIDCommand(onuID int, cfg types.WifiConfig) string {
+	ssid := strings.TrimSpace(cfg.SSID)
+	password := strings.TrimSpace(cfg.Password)
+	if password == "" {
+		return fmt.Sprintf(
+			"onu %d pri wifi_ssid 1 name %s hide disable auth_mode open encrypt_type none",
+			onuID,
+			quoteArg(ssid),
+		)
+	}
+
+	return fmt.Sprintf(
+		"onu %d pri wifi_ssid 1 name %s hide disable auth_mode wpa2psk encrypt_type aes shared_key %s rekey_interval 3600",
+		onuID,
+		quoteArg(ssid),
+		quoteArg(password),
+	)
+}
+
+func (a *Adapter) resolveWifiCommandProfile(ctx context.Context, ponPort string, onuID int, serial string) (wifiCommandProfile, error) {
+	if forced := a.forcedWifiCommandProfile(); forced != "" {
+		return forced, nil
+	}
+	if hinted := a.hintWifiCommandProfile(ctx, serial); hinted != "" {
+		return hinted, nil
+	}
+	probed, err := a.probeWifiCommandProfile(ctx, ponPort, onuID)
+	if err != nil {
+		return "", err
+	}
+	if probed != "" {
+		return probed, nil
+	}
+	return wifiCommandProfileLegacy, nil
+}
+
+func (a *Adapter) forcedWifiCommandProfile() wifiCommandProfile {
+	if a.config == nil || a.config.Metadata == nil {
+		return ""
+	}
+	return normalizeWifiCommandProfile(a.config.Metadata["wifi_command_profile"])
+}
+
+func (a *Adapter) hintWifiCommandProfile(ctx context.Context, serial string) wifiCommandProfile {
+	model := ""
+	firmware := ""
+	if a.config != nil && a.config.Metadata != nil {
+		model = strings.ToLower(strings.TrimSpace(a.config.Metadata["model"]))
+		firmware = strings.ToLower(strings.TrimSpace(a.config.Metadata["firmware"]))
+	}
+	if model == "" && strings.TrimSpace(serial) != "" {
+		if onu, err := a.GetONUBySerial(ctx, serial); err == nil && onu != nil {
+			model = strings.ToLower(strings.TrimSpace(onu.Model))
+		}
+	}
+
+	// Known path: V1600G/V2.1.6R exposes Wi-Fi on `onu <id> pri ...`.
+	if strings.Contains(model, "v1600g") || strings.Contains(firmware, "v2.1.6r") {
+		return wifiCommandProfilePri
+	}
+	return ""
+}
+
+func (a *Adapter) probeWifiCommandProfile(ctx context.Context, ponPort string, onuID int) (wifiCommandProfile, error) {
+	if a.cliExecutor == nil {
+		return "", fmt.Errorf("CLI executor not available")
+	}
+	priProbe := []string{
+		"configure terminal",
+		fmt.Sprintf("interface gpon %s", ponPort),
+		fmt.Sprintf("onu %d pri ?", onuID),
+		"exit",
+		"end",
+	}
+	if outputs, err := a.cliExecutor.ExecCommands(ctx, priProbe); err == nil {
+		joined := strings.ToLower(strings.Join(outputs, "\n"))
+		if strings.Contains(joined, "wifi_ssid") && strings.Contains(joined, "wifi_switch") {
+			return wifiCommandProfilePri, nil
+		}
+	}
+
+	legacyProbe := []string{
+		"configure terminal",
+		fmt.Sprintf("interface gpon %s", ponPort),
+		fmt.Sprintf("onu %d wifi ?", onuID),
+		"exit",
+		"end",
+	}
+	if outputs, err := a.cliExecutor.ExecCommands(ctx, legacyProbe); err == nil {
+		joined := strings.ToLower(strings.Join(outputs, "\n"))
+		if strings.Contains(joined, "ssid") &&
+			!strings.Contains(joined, "unknown command") &&
+			!strings.Contains(joined, "no matched command") {
+			return wifiCommandProfileLegacy, nil
+		}
+	}
+	return "", nil
 }
 
 func sanitizeOutput(step wifiStep, output string) string {
@@ -333,13 +490,20 @@ func redactPassword(text string) string {
 		return text
 	}
 	fields := strings.Fields(text)
-	if len(fields) < 4 {
+	if len(fields) == 0 {
 		return text
 	}
-	if strings.ToLower(fields[2]) == "wifi" && strings.ToLower(fields[3]) == "password" {
-		return strings.Join(append(fields[:4], "<redacted>"), " ")
+
+	for i := 0; i < len(fields)-1; i++ {
+		token := strings.ToLower(fields[i])
+		if token == "shared_key" {
+			fields[i+1] = "<redacted>"
+		}
+		if token == "password" && i >= 3 && strings.ToLower(fields[i-1]) == "wifi" {
+			fields[i+1] = "<redacted>"
+		}
 	}
-	return strings.ReplaceAll(text, "wifi password", "wifi password <redacted>")
+	return strings.Join(fields, " ")
 }
 
 func firstLine(v string) string {
@@ -359,4 +523,15 @@ func normalizeReason(err error, output string) string {
 		return line
 	}
 	return "CLI command failed"
+}
+
+func normalizeWifiCommandProfile(v string) wifiCommandProfile {
+	switch strings.ToLower(strings.TrimSpace(v)) {
+	case string(wifiCommandProfileLegacy):
+		return wifiCommandProfileLegacy
+	case string(wifiCommandProfilePri):
+		return wifiCommandProfilePri
+	default:
+		return ""
+	}
 }
