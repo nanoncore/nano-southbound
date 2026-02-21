@@ -16,6 +16,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Validate OMCI Wi-Fi docs contract drift
+        run: ./scripts/check-omci-wifi-docs.sh
+
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
