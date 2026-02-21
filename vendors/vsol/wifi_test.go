@@ -135,6 +135,44 @@ func TestSetWifiConfig_ProfileNotReady(t *testing.T) {
 	}
 }
 
+func TestSetWifiConfig_ProfileReadyFromProfileTable(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal":                     "ok",
+			"interface gpon 0/1":                     "ok",
+			"show running-config onu 7":              "onu 7 profile onu default\nonu 7 service INTERNET gemport 1 vlan 100",
+			"show profile onu":                       "Name: default\nWifi mgmt via non OMCI: disable\n",
+			"onu 7 wifi ssid \"Nanoncore\"":          "ok",
+			"onu 7 wifi password \"SuperSecret123\"": "ok",
+			"onu 7 wifi enable":                      "ok",
+			"exit":                                   "ok",
+			"end":                                    "ok",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config: &types.EquipmentConfig{
+			Metadata: map[string]string{
+				"wifi_command_profile": "legacy",
+			},
+		},
+	}
+
+	result, err := adapter.SetWifiConfig(context.Background(), types.WifiTarget{PONPort: "0/1", ONUID: 7}, types.WifiConfig{
+		SSID:     "Nanoncore",
+		Password: "SuperSecret123",
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("SetWifiConfig returned error: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("expected success, got errorCode=%s reason=%s", result.ErrorCode, result.Reason)
+	}
+}
+
 func TestSetWifiConfig_PartialApply(t *testing.T) {
 	mock := &wifiMockCLI{
 		outputByCommand: map[string]string{
@@ -467,6 +505,25 @@ func TestResolveWifiTarget_SerialNotFound(t *testing.T) {
 	}
 	if result.ErrorCode != types.WifiErrorCodeOnuNotFound {
 		t.Fatalf("expected ONU_NOT_FOUND, got %s", result.ErrorCode)
+	}
+}
+
+func TestParseProfileOMCIReadiness(t *testing.T) {
+	output := `
+Name: default
+Wifi mgmt via non OMCI: disable
+
+Name: AN5506-04-F1
+Wifi mgmt via non OMCI: enable
+`
+	if !parseProfileOMCIReadiness(output, "default") {
+		t.Fatalf("expected default to be OMCI-ready")
+	}
+	if parseProfileOMCIReadiness(output, "AN5506-04-F1") {
+		t.Fatalf("expected AN5506-04-F1 to be non-OMCI-ready")
+	}
+	if parseProfileOMCIReadiness(output, "missing") {
+		t.Fatalf("expected missing profile to be non-OMCI-ready")
 	}
 }
 

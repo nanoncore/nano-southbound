@@ -29,6 +29,7 @@ const (
 var (
 	reWifiPasswordValue = regexp.MustCompile(`(?i)(wifi\s+password\s+)(".*?"|\S+)`)
 	reSharedKeyValue    = regexp.MustCompile(`(?i)(shared_key\s+)(".*?"|\S+)`)
+	reONUProfileName    = regexp.MustCompile(`(?i)onu\s+\d+\s+profile\s+onu\s+(\S+)`)
 )
 
 type priWifiDefaults struct {
@@ -348,8 +349,76 @@ func (a *Adapter) isOMCIProfileReady(ctx context.Context, ponPort string, onuID 
 	}
 
 	lower := strings.ToLower(raw)
-	return strings.Contains(lower, "wifi-mng-via-non-omci disable") ||
-		strings.Contains(lower, "wifi management omci")
+	if strings.Contains(lower, "wifi-mng-via-non-omci disable") ||
+		strings.Contains(lower, "wifi management omci") {
+		return true
+	}
+
+	profileName, ok := parseONUProfileName(raw)
+	if !ok {
+		return false
+	}
+	return a.isONUProfileOMCIReady(ctx, profileName)
+}
+
+func parseONUProfileName(raw string) (string, bool) {
+	match := reONUProfileName.FindStringSubmatch(raw)
+	if len(match) < 2 {
+		return "", false
+	}
+	profile := strings.TrimSpace(match[1])
+	if profile == "" {
+		return "", false
+	}
+	return profile, true
+}
+
+func (a *Adapter) isONUProfileOMCIReady(ctx context.Context, profileName string) bool {
+	if strings.TrimSpace(profileName) == "" {
+		return false
+	}
+	if a.cliExecutor == nil {
+		return false
+	}
+
+	outputs, err := a.cliExecutor.ExecCommands(ctx, []string{
+		"configure terminal",
+		"show profile onu",
+		"end",
+	})
+	if err != nil {
+		return false
+	}
+	if len(outputs) < 2 {
+		return false
+	}
+
+	return parseProfileOMCIReadiness(outputs[1], profileName)
+}
+
+func parseProfileOMCIReadiness(output string, profileName string) bool {
+	lines := strings.Split(output, "\n")
+	target := strings.ToLower(strings.TrimSpace(profileName))
+	inProfile := false
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		lower := strings.ToLower(trimmed)
+		if strings.HasPrefix(lower, "name:") {
+			name := strings.TrimSpace(strings.TrimPrefix(lower, "name:"))
+			inProfile = name == target
+			continue
+		}
+		if !inProfile {
+			continue
+		}
+		if strings.HasPrefix(lower, "wifi mgmt via non omci:") {
+			value := strings.TrimSpace(strings.TrimPrefix(lower, "wifi mgmt via non omci:"))
+			return strings.EqualFold(value, "disable")
+		}
+	}
+
+	return false
 }
 
 func (a *Adapter) omciWifiReadbackEnabled() bool {
