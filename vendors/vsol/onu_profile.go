@@ -95,6 +95,15 @@ func (a *Adapter) CreateONUProfile(ctx context.Context, profile *types.ONUHardwa
 	if err := validateProfileName(profile.Name); err != nil {
 		return err
 	}
+	// Pre-check existence to return deterministic errors and avoid interactive CLI edge cases
+	// where duplicate create can leave the session in a bad prompt state.
+	existing, err := a.GetONUProfile(ctx, profile.Name)
+	if err == nil && existing != nil {
+		return fmt.Errorf("profile name %s already exists", profile.Name)
+	}
+	if err != nil && !strings.Contains(err.Error(), "not found") {
+		return fmt.Errorf("failed to check existing ONU profile: %w", err)
+	}
 
 	commands := buildONUProfileCreateCommands(profile)
 	if _, err := a.cliExecutor.ExecCommands(ctx, commands); err != nil {

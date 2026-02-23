@@ -2,6 +2,7 @@ package vsol
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -252,5 +253,31 @@ func TestGetDeleteONUProfile_ValidatesProfileName(t *testing.T) {
 				t.Fatalf("expected no CLI commands for invalid profile name, got %v", exec.commands)
 			}
 		})
+	}
+}
+
+func TestCreateONUProfile_RejectsDuplicateName(t *testing.T) {
+	ctx := context.Background()
+	dupName := "dup_prof"
+	existingOutput := "Id: 77\nName: dup_prof\nMax tcont: 8\nMax gemport: 32\ncommit: Yes\n"
+	exec := &mockCLIExecutor{
+		outputs: map[string]string{
+			fmt.Sprintf("show profile onu name %s", dupName): existingOutput,
+		},
+	}
+	adapter := &Adapter{cliExecutor: exec}
+
+	profile := &types.ONUHardwareProfile{Name: dupName}
+	err := adapter.CreateONUProfile(ctx, profile)
+	if err == nil {
+		t.Fatal("expected duplicate profile error, got nil")
+	}
+	if !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("expected already exists error, got %v", err)
+	}
+	for _, cmd := range exec.commands {
+		if strings.HasPrefix(cmd, "profile onu name ") {
+			t.Fatalf("unexpected create command executed for duplicate profile: %s", cmd)
+		}
 	}
 }
