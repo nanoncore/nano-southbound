@@ -288,8 +288,8 @@ func TestSetWifiConfig_PartialApplyOnEnableStep(t *testing.T) {
 	if result.ErrorCode != types.WifiErrorCodePartialApply {
 		t.Fatalf("expected PARTIAL_APPLY, got %s", result.ErrorCode)
 	}
-	if result.FailedStep != "SET_ENABLED" {
-		t.Fatalf("expected failed step SET_ENABLED, got %s", result.FailedStep)
+	if result.FailedStep != "ENABLE_WIFI" {
+		t.Fatalf("expected failed step ENABLE_WIFI, got %s", result.FailedStep)
 	}
 }
 
@@ -390,6 +390,143 @@ func TestGetWifiConfig_ReadbackUnavailable(t *testing.T) {
 	}
 	if result.ErrorCode != types.WifiErrorCodeReadbackUnavailable {
 		t.Fatalf("expected READBACK_UNAVAILABLE, got %s", result.ErrorCode)
+	}
+}
+
+func TestGetWifiConfig_ReadbackSuccessRedactsSecrets(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal":        "ok",
+			"interface gpon 0/1":        "ok",
+			"show running-config onu 7": "onu 7 wifi ssid \"Lab SSID\"\nonu 7 wifi enabled enable\nonu 7 wifi password \"SuperSecret123\"\nonu 7 pri wifi_ssid 1 name \"Lab SSID\" shared_key \"SuperSecret123\"",
+			"exit":                      "ok",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config: &types.EquipmentConfig{
+			Metadata: map[string]string{"omci_wifi_readback": "true"},
+		},
+	}
+
+	result, err := adapter.GetWifiConfig(context.Background(), types.WifiTarget{PONPort: "0/1", ONUID: 7})
+	if err != nil {
+		t.Fatalf("GetWifiConfig returned error: %v", err)
+	}
+	if !result.OK || result.ObservedConfig == nil {
+		t.Fatalf("expected successful readback, got %+v", result)
+	}
+	if result.ObservedConfig.SSID != "Lab SSID" || !result.ObservedConfig.Enabled {
+		t.Fatalf("unexpected observed config: %+v", result.ObservedConfig)
+	}
+	if strings.Contains(result.RawOutput, "SuperSecret123") {
+		t.Fatalf("raw output must redact secrets")
+	}
+	if !strings.Contains(result.RawOutput, "<redacted>") {
+		t.Fatalf("expected redacted marker in raw output")
+	}
+}
+
+func TestGetWifiConfig_ReadbackParserUnavailableRedactsSecrets(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal":        "ok",
+			"interface gpon 0/1":        "ok",
+			"show running-config onu 7": "onu 7 service INTERNET gemport 1 vlan 100\nonu 7 wifi password \"HiddenPass123\"",
+			"exit":                      "ok",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config: &types.EquipmentConfig{
+			Metadata: map[string]string{"omci_wifi_readback": "true"},
+		},
+	}
+
+	result, err := adapter.GetWifiConfig(context.Background(), types.WifiTarget{PONPort: "0/1", ONUID: 7})
+	if err != nil {
+		t.Fatalf("GetWifiConfig returned error: %v", err)
+	}
+	if result.OK {
+		t.Fatalf("expected readback unavailable")
+	}
+	if result.ErrorCode != types.WifiErrorCodeReadbackUnavailable {
+		t.Fatalf("expected READBACK_UNAVAILABLE, got %s", result.ErrorCode)
+	}
+	if strings.Contains(result.RawOutput, "HiddenPass123") {
+		t.Fatalf("raw output must redact secrets")
+	}
+}
+
+func TestGetWifiConfig_ReadbackError(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal": "ok",
+			"interface gpon 0/1": "ok",
+		},
+		errByCommand: map[string]error{
+			"show running-config onu 7": fmt.Errorf("timeout waiting for prompt"),
+			"show running-config":       fmt.Errorf("timeout waiting for prompt"),
+		},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config: &types.EquipmentConfig{
+			Metadata: map[string]string{"omci_wifi_readback": "true"},
+		},
+	}
+
+	result, err := adapter.GetWifiConfig(context.Background(), types.WifiTarget{PONPort: "0/1", ONUID: 7})
+	if err != nil {
+		t.Fatalf("GetWifiConfig returned error: %v", err)
+	}
+	if result.OK {
+		t.Fatalf("expected readback error")
+	}
+	if result.ErrorCode != types.WifiErrorCodeCommandTimeout {
+		t.Fatalf("expected COMMAND_TIMEOUT, got %s", result.ErrorCode)
+	}
+}
+
+func TestSetWifiConfig_PasswordFailureReasonIsRedacted(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal":                     "ok",
+			"interface gpon 0/1":                     "ok",
+			"onu 7 wifi ssid \"Nanoncore\"":          "ok",
+			"onu 7 wifi password \"SuperSecret123\"": "onu 7 wifi password \"SuperSecret123\"\n% Error: invalid value",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config: &types.EquipmentConfig{
+			Metadata: map[string]string{
+				"skip_omci_profile_check": "true",
+				"wifi_command_profile":    "legacy",
+			},
+		},
+	}
+
+	result, err := adapter.SetWifiConfig(context.Background(), types.WifiTarget{PONPort: "0/1", ONUID: 7}, types.WifiConfig{
+		SSID:     "Nanoncore",
+		Password: "SuperSecret123",
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("SetWifiConfig returned error: %v", err)
+	}
+	if result.OK {
+		t.Fatalf("expected failure")
+	}
+	if strings.Contains(result.Reason, "SuperSecret123") {
+		t.Fatalf("reason must redact password, got: %s", result.Reason)
 	}
 }
 
@@ -514,6 +651,272 @@ func TestSetWifiConfig_UnresolvedProfileFailsClosed(t *testing.T) {
 	}
 	if result.ErrorCode != types.WifiErrorCodeUnsupportedOperation {
 		t.Fatalf("expected UNSUPPORTED_OPERATION, got %s", result.ErrorCode)
+	}
+}
+
+func TestSetWifiEnabled_Success(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal": "ok",
+			"interface gpon 0/1": "ok",
+			"onu 7 wifi enable":  "ok",
+			"exit":               "ok",
+			"end":                "ok",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config: &types.EquipmentConfig{
+			Metadata: map[string]string{
+				"skip_omci_profile_check": "true",
+				"wifi_command_profile":    "legacy",
+			},
+		},
+	}
+
+	result, err := adapter.SetWifiEnabled(context.Background(), types.WifiTarget{PONPort: "0/1", ONUID: 7}, true)
+	if err != nil {
+		t.Fatalf("SetWifiEnabled returned error: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("expected success, got %+v", result)
+	}
+	if result.FailedStep != "" {
+		t.Fatalf("expected no failed step, got %s", result.FailedStep)
+	}
+}
+
+func TestSetWifiEnabled_ProfileNotReady(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal":        "ok",
+			"interface gpon 0/1":        "ok",
+			"show running-config onu 7": "onu 7 service INTERNET gemport 1 vlan 100",
+			"exit":                      "ok",
+			"end":                       "ok",
+			"terminal length 0":         "ok",
+			"show running-config":       "no wifi-mng-via-non-omci disable line",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	result, err := adapter.SetWifiEnabled(context.Background(), types.WifiTarget{PONPort: "0/1", ONUID: 7}, true)
+	if err != nil {
+		t.Fatalf("SetWifiEnabled returned error: %v", err)
+	}
+	if result.OK {
+		t.Fatalf("expected failure")
+	}
+	if result.ErrorCode != types.WifiErrorCodeProfileNotOMCIReady {
+		t.Fatalf("expected PROFILE_NOT_OMCI_READY, got %s", result.ErrorCode)
+	}
+}
+
+func TestSetWifiEnabled_VerifyReadbackSuccess(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal":        "ok",
+			"interface gpon 0/1":        "ok",
+			"onu 7 wifi disable":        "ok",
+			"exit":                      "ok",
+			"end":                       "ok",
+			"show running-config onu 7": "onu 7 wifi ssid \"LabSSID\"\nonu 7 wifi enabled disable",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config: &types.EquipmentConfig{
+			Metadata: map[string]string{
+				"skip_omci_profile_check": "true",
+				"wifi_command_profile":    "legacy",
+				"omci_wifi_readback":      "true",
+			},
+		},
+	}
+
+	result, err := adapter.SetWifiEnabled(context.Background(), types.WifiTarget{PONPort: "0/1", ONUID: 7}, false)
+	if err != nil {
+		t.Fatalf("SetWifiEnabled returned error: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("expected verify success, got %+v", result)
+	}
+	if result.ObservedConfig == nil || result.ObservedConfig.Enabled {
+		t.Fatalf("expected observed disabled config, got %+v", result.ObservedConfig)
+	}
+}
+
+func TestSetWifiConfig_VerifyReadbackMismatch(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal":                     "ok",
+			"interface gpon 0/1":                     "ok",
+			"onu 7 wifi ssid \"Nanoncore\"":          "ok",
+			"onu 7 wifi password \"SuperSecret123\"": "ok",
+			"onu 7 wifi enable":                      "ok",
+			"exit":                                   "ok",
+			"end":                                    "ok",
+			"show running-config onu 7":              "onu 7 wifi ssid \"OtherSSID\"\nonu 7 wifi enabled enable",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config: &types.EquipmentConfig{
+			Metadata: map[string]string{
+				"skip_omci_profile_check": "true",
+				"wifi_command_profile":    "legacy",
+				"omci_wifi_readback":      "true",
+			},
+		},
+	}
+
+	result, err := adapter.SetWifiConfig(context.Background(), types.WifiTarget{PONPort: "0/1", ONUID: 7}, types.WifiConfig{
+		SSID:     "Nanoncore",
+		Password: "SuperSecret123",
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("SetWifiConfig returned error: %v", err)
+	}
+	if result.OK {
+		t.Fatalf("expected readback mismatch failure")
+	}
+	if result.ErrorCode != types.WifiErrorCodePartialApply {
+		t.Fatalf("expected PARTIAL_APPLY, got %s", result.ErrorCode)
+	}
+	if result.FailedStep != "READBACK_VERIFY" {
+		t.Fatalf("expected READBACK_VERIFY failed step, got %s", result.FailedStep)
+	}
+}
+
+func TestSetWifiConfig_VerifyReadbackUnavailable(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal":                     "ok",
+			"interface gpon 0/1":                     "ok",
+			"onu 7 wifi ssid \"Nanoncore\"":          "ok",
+			"onu 7 wifi password \"SuperSecret123\"": "ok",
+			"onu 7 wifi enable":                      "ok",
+			"exit":                                   "ok",
+			"end":                                    "ok",
+			"show running-config onu 7":              "onu 7 service INTERNET gemport 1 vlan 100",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config: &types.EquipmentConfig{
+			Metadata: map[string]string{
+				"skip_omci_profile_check": "true",
+				"wifi_command_profile":    "legacy",
+				"omci_wifi_readback":      "true",
+			},
+		},
+	}
+
+	result, err := adapter.SetWifiConfig(context.Background(), types.WifiTarget{PONPort: "0/1", ONUID: 7}, types.WifiConfig{
+		SSID:     "Nanoncore",
+		Password: "SuperSecret123",
+		Enabled:  true,
+	})
+	if err != nil {
+		t.Fatalf("SetWifiConfig returned error: %v", err)
+	}
+	if result.OK {
+		t.Fatalf("expected readback unavailable failure")
+	}
+	if result.ErrorCode != types.WifiErrorCodeReadbackUnavailable {
+		t.Fatalf("expected READBACK_UNAVAILABLE, got %s", result.ErrorCode)
+	}
+}
+
+func TestParseWifiReadbackFromRunningConfig(t *testing.T) {
+	tests := []struct {
+		name    string
+		raw     string
+		ok      bool
+		ssid    string
+		enabled bool
+	}{
+		{
+			name:    "typical lines",
+			raw:     "onu 7 wifi ssid \"Office WiFi\"\nonu 7 wifi enabled enable",
+			ok:      true,
+			ssid:    "Office WiFi",
+			enabled: true,
+		},
+		{
+			name: "quoted special chars",
+			raw:  "onu 7 wifi ssid \"Lab-5G @ 01\"\nonu 7 wifi enabled disable",
+			ok:   true,
+			ssid: "Lab-5G @ 01",
+		},
+		{
+			name: "missing enabled line",
+			raw:  "onu 7 wifi ssid \"Office WiFi\"",
+			ok:   false,
+		},
+		{
+			name: "no wifi lines",
+			raw:  "onu 7 service INTERNET gemport 1 vlan 100",
+			ok:   false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, ok := parseWifiReadbackFromRunningConfig(tc.raw)
+			if ok != tc.ok {
+				t.Fatalf("expected ok=%v got %v", tc.ok, ok)
+			}
+			if !tc.ok {
+				return
+			}
+			if cfg == nil {
+				t.Fatalf("expected parsed config")
+			}
+			if cfg.SSID != tc.ssid || cfg.Enabled != tc.enabled {
+				t.Fatalf("unexpected parsed config: %+v", cfg)
+			}
+		})
+	}
+}
+
+func TestResolveONUBySerialFromInventory_NoExactMatchReturnsNil(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal": "ok",
+			"interface gpon 0/1": "ok",
+			"show onu info all":  "GPON0/1:1 HG6143D AN5506-04-F1 sn FHTT01010001\nGPON0/1:2 HG6143D AN5506-04-F1 sn FHTT01010002",
+			"show onu state":     "1/1/1:1 enable enable working 1(GPON)\n1/1/1:2 enable enable working 1(GPON)",
+			"exit":               "ok",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{},
+	}
+
+	onu, err := adapter.resolveONUBySerialFromInventory(context.Background(), "FHTT0101000")
+	if err != nil {
+		t.Fatalf("resolveONUBySerialFromInventory returned error: %v", err)
+	}
+	if onu != nil {
+		t.Fatalf("expected nil ONU for non-exact serial, got %+v", onu)
 	}
 }
 

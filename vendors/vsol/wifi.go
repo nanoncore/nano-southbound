@@ -24,6 +24,7 @@ type wifiCommandProfile string
 const (
 	wifiCommandProfileLegacy wifiCommandProfile = "legacy"
 	wifiCommandProfilePri    wifiCommandProfile = "pri"
+	wifiStepTimeout                             = 30 * time.Second
 )
 
 var (
@@ -51,9 +52,9 @@ func (a *Adapter) GetWifiConfig(ctx context.Context, target types.WifiTarget) (*
 	// MVP: only return observed config when readback is explicitly enabled.
 	if !a.omciWifiReadbackEnabled() {
 		return &types.WifiActionResult{
-			OK:        false,
-			ErrorCode: types.WifiErrorCodeReadbackUnavailable,
-			Reason:    "OMCI readback unavailable for this ONU model or environment",
+			OK:         false,
+			ErrorCode:  types.WifiErrorCodeReadbackUnavailable,
+			Reason:     "OMCI readback unavailable for this ONU model or environment",
 			FailedStep: "READBACK",
 			Events: []types.WifiActionEvent{
 				{
@@ -71,11 +72,12 @@ func (a *Adapter) GetWifiConfig(ctx context.Context, target types.WifiTarget) (*
 		return &types.WifiActionResult{
 			OK:        false,
 			ErrorCode: classifyWifiErrCode(err, ""),
-			Reason:    err.Error(),
+			Reason:    redactPassword(err.Error()),
 		}, nil
 	}
+	sanitizedRaw := redactPassword(raw)
 
-	observed, ok := parseWifiReadbackFromRunningConfig(raw)
+	observed, ok := parseWifiReadbackFromRunningConfig(sanitizedRaw)
 	if ok {
 		source := types.WifiObservedSourceOMCIReadback
 		return &types.WifiActionResult{
@@ -83,16 +85,16 @@ func (a *Adapter) GetWifiConfig(ctx context.Context, target types.WifiTarget) (*
 			ObservedConfig: observed,
 			ObservedSource: &source,
 			ObservedAt:     ptrTime(time.Now().UTC()),
-			RawOutput:      raw,
+			RawOutput:      sanitizedRaw,
 		}, nil
 	}
 
 	// Keep semantics truthful: no observedConfig unless parser is proven.
 	return &types.WifiActionResult{
-		OK:        false,
-		ErrorCode: types.WifiErrorCodeReadbackUnavailable,
-		Reason:    "running config captured but Wi-Fi readback parser not yet enabled",
-		RawOutput: raw,
+		OK:         false,
+		ErrorCode:  types.WifiErrorCodeReadbackUnavailable,
+		Reason:     "running config captured but Wi-Fi readback parser not yet enabled",
+		RawOutput:  sanitizedRaw,
 		FailedStep: "READBACK",
 		Events: []types.WifiActionEvent{
 			{
@@ -135,9 +137,9 @@ func (a *Adapter) SetWifiConfig(ctx context.Context, target types.WifiTarget, cf
 	}
 	if !a.isOMCIProfileReady(ctx, ponPort, onuID) {
 		return &types.WifiActionResult{
-			OK:        false,
-			ErrorCode: types.WifiErrorCodeProfileNotOMCIReady,
-			Reason:    "profile not configured for OMCI Wi-Fi",
+			OK:         false,
+			ErrorCode:  types.WifiErrorCodeProfileNotOMCIReady,
+			Reason:     "profile not configured for OMCI Wi-Fi",
 			FailedStep: "PROFILE_OMCI_PRECHECK",
 			Events: []types.WifiActionEvent{
 				{
@@ -193,9 +195,9 @@ func (a *Adapter) SetWifiEnabled(ctx context.Context, target types.WifiTarget, e
 	}
 	if !a.isOMCIProfileReady(ctx, ponPort, onuID) {
 		return &types.WifiActionResult{
-			OK:        false,
-			ErrorCode: types.WifiErrorCodeProfileNotOMCIReady,
-			Reason:    "profile not configured for OMCI Wi-Fi",
+			OK:         false,
+			ErrorCode:  types.WifiErrorCodeProfileNotOMCIReady,
+			Reason:     "profile not configured for OMCI Wi-Fi",
 			FailedStep: "PROFILE_OMCI_PRECHECK",
 			Events: []types.WifiActionEvent{
 				{
@@ -219,7 +221,7 @@ func (a *Adapter) SetWifiEnabled(ctx context.Context, target types.WifiTarget, e
 	steps := []wifiStep{
 		{name: "ENTER_CONFIG", command: "configure terminal"},
 		{name: "ENTER_PON_INTERFACE", command: fmt.Sprintf("interface gpon %s", ponPort)},
-		{name: "SET_ENABLED", command: wifiEnableCommand(profile, onuID, enabled, a.priDefaults())},
+		{name: "ENABLE_WIFI", command: wifiEnableCommand(profile, onuID, enabled, a.priDefaults())},
 		{name: "EXIT_INTERFACE", command: "exit"},
 		{name: "COMMIT", command: "end"},
 	}
@@ -242,68 +244,28 @@ func (a *Adapter) verifyWifiApply(
 ) *types.WifiActionResult {
 	readback, err := a.GetWifiConfig(ctx, target)
 	if err != nil {
-		result.OK = false
-		result.ErrorCode = types.WifiErrorCodeReadbackUnavailable
-		result.FailedStep = "READBACK_VERIFY"
-		result.Reason = fmt.Sprintf("Wi-Fi apply sent but readback failed: %v", err)
-		result.Events = append(result.Events, types.WifiActionEvent{
-			Step:      "READBACK_VERIFY",
-			OK:        false,
-			Timestamp: time.Now().UTC(),
-			Detail:    err.Error(),
-		})
-		return result
+		return applyReadbackFailure(result, types.WifiErrorCodeReadbackUnavailable, fmt.Sprintf("Wi-Fi apply sent but readback failed: %v", err))
 	}
 	if readback == nil || !readback.OK || readback.ObservedConfig == nil {
-		result.OK = false
-		result.ErrorCode = types.WifiErrorCodeReadbackUnavailable
-		result.FailedStep = "READBACK_VERIFY"
+		reason := "Wi-Fi apply sent but readback unavailable"
 		if readback != nil && strings.TrimSpace(readback.Reason) != "" {
-			result.Reason = readback.Reason
-		} else {
-			result.Reason = "Wi-Fi apply sent but readback unavailable"
+			reason = readback.Reason
 		}
-		result.Events = append(result.Events, types.WifiActionEvent{
-			Step:      "READBACK_VERIFY",
-			OK:        false,
-			Timestamp: time.Now().UTC(),
-			Detail:    result.Reason,
-		})
-		return result
+		return applyReadbackFailure(result, types.WifiErrorCodeReadbackUnavailable, reason)
 	}
 	if strings.TrimSpace(expected.SSID) != "" && readback.ObservedConfig.SSID != expected.SSID {
-		result.OK = false
-		result.ErrorCode = types.WifiErrorCodePartialApply
-		result.FailedStep = "READBACK_VERIFY"
-		result.Reason = fmt.Sprintf(
+		return applyReadbackFailure(result, types.WifiErrorCodePartialApply, fmt.Sprintf(
 			"Wi-Fi readback mismatch (expected ssid=%q got=%q)",
 			expected.SSID,
 			readback.ObservedConfig.SSID,
-		)
-		result.Events = append(result.Events, types.WifiActionEvent{
-			Step:      "READBACK_VERIFY",
-			OK:        false,
-			Timestamp: time.Now().UTC(),
-			Detail:    result.Reason,
-		})
-		return result
+		))
 	}
 	if readback.ObservedConfig.Enabled != expected.Enabled {
-		result.OK = false
-		result.ErrorCode = types.WifiErrorCodePartialApply
-		result.FailedStep = "READBACK_VERIFY"
-		result.Reason = fmt.Sprintf(
+		return applyReadbackFailure(result, types.WifiErrorCodePartialApply, fmt.Sprintf(
 			"Wi-Fi readback mismatch (expected enabled=%v got=%v)",
 			expected.Enabled,
 			readback.ObservedConfig.Enabled,
-		)
-		result.Events = append(result.Events, types.WifiActionEvent{
-			Step:      "READBACK_VERIFY",
-			OK:        false,
-			Timestamp: time.Now().UTC(),
-			Detail:    result.Reason,
-		})
-		return result
+		))
 	}
 
 	result.ObservedConfig = readback.ObservedConfig
@@ -313,6 +275,25 @@ func (a *Adapter) verifyWifiApply(
 		Step:      "READBACK_VERIFY",
 		OK:        true,
 		Timestamp: time.Now().UTC(),
+	})
+	return result
+}
+
+func applyReadbackFailure(
+	result *types.WifiActionResult,
+	errorCode types.WifiErrorCode,
+	reason string,
+) *types.WifiActionResult {
+	safeReason := redactPassword(reason)
+	result.OK = false
+	result.ErrorCode = errorCode
+	result.FailedStep = "READBACK_VERIFY"
+	result.Reason = safeReason
+	result.Events = append(result.Events, types.WifiActionEvent{
+		Step:      "READBACK_VERIFY",
+		OK:        false,
+		Timestamp: time.Now().UTC(),
+		Detail:    safeReason,
 	})
 	return result
 }
@@ -334,7 +315,9 @@ func (a *Adapter) runWifiSteps(ctx context.Context, steps []wifiStep, includePre
 	successfulSteps := 0
 
 	for _, step := range steps {
-		output, err := a.cliExecutor.ExecCommand(ctx, step.command)
+		stepCtx, cancel := context.WithTimeout(ctx, wifiStepTimeout)
+		output, err := a.cliExecutor.ExecCommand(stepCtx, step.command)
+		cancel()
 		sanitizedOutput := sanitizeOutput(step, output)
 		if sanitizedOutput != "" {
 			if rawBuilder.Len() > 0 {
@@ -357,7 +340,7 @@ func (a *Adapter) runWifiSteps(ctx context.Context, steps []wifiStep, includePre
 			result.OK = false
 			result.FailedStep = step.name
 			result.RawOutput = rawBuilder.String()
-			result.Reason = normalizeReason(err, output)
+			result.Reason = normalizeReason(err, sanitizedOutput)
 			if classifyWifiErrCode(err, output) == types.WifiErrorCodeCommandTimeout {
 				result.ErrorCode = types.WifiErrorCodeCommandTimeout
 			} else if successfulSteps > 0 {
@@ -435,14 +418,14 @@ func (a *Adapter) resolveONUBySerialFromInventory(ctx context.Context, serial st
 		return nil, nil
 	}
 
-	serialLower := strings.ToLower(strings.TrimSpace(serial))
+	serialTrimmed := strings.TrimSpace(serial)
 	for i := range onus {
-		if strings.EqualFold(strings.TrimSpace(onus[i].Serial), serialLower) {
+		if strings.EqualFold(strings.TrimSpace(onus[i].Serial), serialTrimmed) {
 			return &onus[i], nil
 		}
 	}
 
-	return &onus[0], nil
+	return nil, nil
 }
 
 func (a *Adapter) isOMCIProfileReady(ctx context.Context, ponPort string, onuID int) bool {
@@ -620,7 +603,7 @@ func wifiConfigSteps(profile wifiCommandProfile, onuID int, cfg types.WifiConfig
 	case wifiCommandProfilePri:
 		return []wifiStep{
 			{name: "SET_SSID", command: priSSIDCommand(onuID, cfg), sensitive: len(strings.TrimSpace(cfg.Password)) > 0},
-			{name: "SET_ENABLED", command: wifiEnableCommand(profile, onuID, cfg.Enabled, priDefaults)},
+			{name: "ENABLE_WIFI", command: wifiEnableCommand(profile, onuID, cfg.Enabled, priDefaults)},
 		}
 	default:
 		steps := []wifiStep{
@@ -633,7 +616,7 @@ func wifiConfigSteps(profile wifiCommandProfile, onuID int, cfg types.WifiConfig
 				sensitive: true,
 			})
 		}
-		steps = append(steps, wifiStep{name: "SET_ENABLED", command: wifiEnableCommand(profile, onuID, cfg.Enabled, priDefaults)})
+		steps = append(steps, wifiStep{name: "ENABLE_WIFI", command: wifiEnableCommand(profile, onuID, cfg.Enabled, priDefaults)})
 		return steps
 	}
 }
@@ -788,10 +771,10 @@ func (a *Adapter) hintWifiCommandProfile(ctx context.Context, serial string) wif
 	return ""
 }
 
-func (a *Adapter) wifiCommandProfileCacheKey(ctx context.Context, serial, ponPort string, onuID int) string {
+func (a *Adapter) wifiCommandProfileCacheKey(_ context.Context, serial, ponPort string, onuID int) string {
 	model := ""
 	firmware := ""
-	onuModel := ""
+	onuKey := strings.ToLower(strings.TrimSpace(serial))
 	if a.config != nil && a.config.Metadata != nil {
 		model = strings.ToLower(strings.TrimSpace(a.config.Metadata["model"]))
 		firmware = strings.ToLower(strings.TrimSpace(a.config.Metadata["firmware"]))
@@ -799,15 +782,10 @@ func (a *Adapter) wifiCommandProfileCacheKey(ctx context.Context, serial, ponPor
 	if model == "" {
 		model = strings.ToLower(strings.TrimSpace(a.detectModel()))
 	}
-	if strings.TrimSpace(serial) != "" {
-		if onu, err := a.GetONUBySerial(ctx, serial); err == nil && onu != nil {
-			onuModel = strings.ToLower(strings.TrimSpace(onu.Model))
-		}
+	if onuKey == "" {
+		onuKey = fmt.Sprintf("%s:%d", ponPort, onuID)
 	}
-	if onuModel == "" {
-		onuModel = fmt.Sprintf("%s:%d", ponPort, onuID)
-	}
-	return strings.Join([]string{string(types.VendorVSOL), model, firmware, onuModel}, "|")
+	return strings.Join([]string{string(types.VendorVSOL), model, firmware, onuKey}, "|")
 }
 
 func (a *Adapter) getCachedWifiCommandProfile(key string) (wifiCommandProfile, bool) {

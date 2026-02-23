@@ -9,7 +9,11 @@ if [[ ! -f "$DOC" ]]; then
   exit 1
 fi
 
-ACTUAL_HASH="$(sha256sum "$DOC" | awk '{print $1}')"
+if command -v sha256sum >/dev/null 2>&1; then
+  ACTUAL_HASH="$(sha256sum "$DOC" | awk '{print $1}')"
+else
+  ACTUAL_HASH="$(shasum -a 256 "$DOC" | awk '{print $1}')"
+fi
 if [[ "$ACTUAL_HASH" != "$EXPECTED_HASH" ]]; then
   echo "OMCI docs drift: $DOC hash mismatch"
   echo "expected: $EXPECTED_HASH"
