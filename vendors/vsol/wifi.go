@@ -30,6 +30,8 @@ var (
 	reWifiPasswordValue = regexp.MustCompile(`(?i)(wifi\s+password\s+)(".*?"|\S+)`)
 	reSharedKeyValue    = regexp.MustCompile(`(?i)(shared_key\s+)(".*?"|\S+)`)
 	reONUProfileName    = regexp.MustCompile(`(?i)onu\s+\d+\s+profile\s+onu\s+(\S+)`)
+	reRunningWifiSSID   = regexp.MustCompile(`(?i)onu\s+\d+\s+wifi\s+ssid\s+"([^"]+)"`)
+	reRunningWifiEnable = regexp.MustCompile(`(?i)onu\s+\d+\s+wifi\s+enabled\s+(enable|disable)`)
 )
 
 type priWifiDefaults struct {
@@ -73,7 +75,18 @@ func (a *Adapter) GetWifiConfig(ctx context.Context, target types.WifiTarget) (*
 		}, nil
 	}
 
-	// Parser TODO: wire model-specific readback parsing once golden outputs are captured.
+	observed, ok := parseWifiReadbackFromRunningConfig(raw)
+	if ok {
+		source := types.WifiObservedSourceOMCIReadback
+		return &types.WifiActionResult{
+			OK:             true,
+			ObservedConfig: observed,
+			ObservedSource: &source,
+			ObservedAt:     ptrTime(time.Now().UTC()),
+			RawOutput:      raw,
+		}, nil
+	}
+
 	// Keep semantics truthful: no observedConfig unless parser is proven.
 	return &types.WifiActionResult{
 		OK:        false,
@@ -155,7 +168,14 @@ func (a *Adapter) SetWifiConfig(ctx context.Context, target types.WifiTarget, cf
 		wifiStep{name: "COMMIT", command: "end"},
 	)
 
-	return a.runWifiSteps(ctx, steps, true), nil
+	applyResult := a.runWifiSteps(ctx, steps, true)
+	if !applyResult.OK {
+		return applyResult, nil
+	}
+	if !a.omciWifiReadbackEnabled() {
+		return applyResult, nil
+	}
+	return a.verifyWifiApply(ctx, target, cfg, applyResult), nil
 }
 
 func (a *Adapter) SetWifiEnabled(ctx context.Context, target types.WifiTarget, enabled bool) (*types.WifiActionResult, error) {
@@ -204,7 +224,97 @@ func (a *Adapter) SetWifiEnabled(ctx context.Context, target types.WifiTarget, e
 		{name: "COMMIT", command: "end"},
 	}
 
-	return a.runWifiSteps(ctx, steps, true), nil
+	applyResult := a.runWifiSteps(ctx, steps, true)
+	if !applyResult.OK {
+		return applyResult, nil
+	}
+	if !a.omciWifiReadbackEnabled() {
+		return applyResult, nil
+	}
+	return a.verifyWifiApply(ctx, target, types.WifiConfig{Enabled: enabled}, applyResult), nil
+}
+
+func (a *Adapter) verifyWifiApply(
+	ctx context.Context,
+	target types.WifiTarget,
+	expected types.WifiConfig,
+	result *types.WifiActionResult,
+) *types.WifiActionResult {
+	readback, err := a.GetWifiConfig(ctx, target)
+	if err != nil {
+		result.OK = false
+		result.ErrorCode = types.WifiErrorCodeReadbackUnavailable
+		result.FailedStep = "READBACK_VERIFY"
+		result.Reason = fmt.Sprintf("Wi-Fi apply sent but readback failed: %v", err)
+		result.Events = append(result.Events, types.WifiActionEvent{
+			Step:      "READBACK_VERIFY",
+			OK:        false,
+			Timestamp: time.Now().UTC(),
+			Detail:    err.Error(),
+		})
+		return result
+	}
+	if readback == nil || !readback.OK || readback.ObservedConfig == nil {
+		result.OK = false
+		result.ErrorCode = types.WifiErrorCodeReadbackUnavailable
+		result.FailedStep = "READBACK_VERIFY"
+		if readback != nil && strings.TrimSpace(readback.Reason) != "" {
+			result.Reason = readback.Reason
+		} else {
+			result.Reason = "Wi-Fi apply sent but readback unavailable"
+		}
+		result.Events = append(result.Events, types.WifiActionEvent{
+			Step:      "READBACK_VERIFY",
+			OK:        false,
+			Timestamp: time.Now().UTC(),
+			Detail:    result.Reason,
+		})
+		return result
+	}
+	if strings.TrimSpace(expected.SSID) != "" && readback.ObservedConfig.SSID != expected.SSID {
+		result.OK = false
+		result.ErrorCode = types.WifiErrorCodePartialApply
+		result.FailedStep = "READBACK_VERIFY"
+		result.Reason = fmt.Sprintf(
+			"Wi-Fi readback mismatch (expected ssid=%q got=%q)",
+			expected.SSID,
+			readback.ObservedConfig.SSID,
+		)
+		result.Events = append(result.Events, types.WifiActionEvent{
+			Step:      "READBACK_VERIFY",
+			OK:        false,
+			Timestamp: time.Now().UTC(),
+			Detail:    result.Reason,
+		})
+		return result
+	}
+	if readback.ObservedConfig.Enabled != expected.Enabled {
+		result.OK = false
+		result.ErrorCode = types.WifiErrorCodePartialApply
+		result.FailedStep = "READBACK_VERIFY"
+		result.Reason = fmt.Sprintf(
+			"Wi-Fi readback mismatch (expected enabled=%v got=%v)",
+			expected.Enabled,
+			readback.ObservedConfig.Enabled,
+		)
+		result.Events = append(result.Events, types.WifiActionEvent{
+			Step:      "READBACK_VERIFY",
+			OK:        false,
+			Timestamp: time.Now().UTC(),
+			Detail:    result.Reason,
+		})
+		return result
+	}
+
+	result.ObservedConfig = readback.ObservedConfig
+	result.ObservedSource = readback.ObservedSource
+	result.ObservedAt = readback.ObservedAt
+	result.Events = append(result.Events, types.WifiActionEvent{
+		Step:      "READBACK_VERIFY",
+		OK:        true,
+		Timestamp: time.Now().UTC(),
+	})
+	return result
 }
 
 func (a *Adapter) runWifiSteps(ctx context.Context, steps []wifiStep, includePrecheckEvent bool) *types.WifiActionResult {
@@ -485,6 +595,24 @@ func isOfflineState(operState string) bool {
 
 func quoteArg(v string) string {
 	return strconv.Quote(strings.TrimSpace(v))
+}
+
+func parseWifiReadbackFromRunningConfig(raw string) (*types.WifiConfig, bool) {
+	ssidMatch := reRunningWifiSSID.FindStringSubmatch(raw)
+	enabledMatch := reRunningWifiEnable.FindStringSubmatch(raw)
+	if len(ssidMatch) < 2 || len(enabledMatch) < 2 {
+		return nil, false
+	}
+	ssid := strings.TrimSpace(ssidMatch[1])
+	if ssid == "" {
+		return nil, false
+	}
+	enabled := strings.EqualFold(strings.TrimSpace(enabledMatch[1]), "enable")
+	return &types.WifiConfig{SSID: ssid, Enabled: enabled}, true
+}
+
+func ptrTime(t time.Time) *time.Time {
+	return &t
 }
 
 func wifiConfigSteps(profile wifiCommandProfile, onuID int, cfg types.WifiConfig, priDefaults priWifiDefaults) []wifiStep {

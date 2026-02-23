@@ -182,6 +182,16 @@ func (a *Adapter) createCLIDriver() {
 }
 
 func (a *Adapter) Connect(ctx context.Context, config *types.EquipmentConfig) error {
+	// Refresh adapter runtime config from connect-time options so metadata
+	// injected by callers (e.g. wifi_command_profile/model hints) is visible
+	// to V-SOL command resolution paths.
+	if config != nil {
+		a.config = config
+		if a.config.Metadata == nil {
+			a.config.Metadata = make(map[string]string)
+		}
+	}
+
 	// Connect primary driver
 	if err := a.baseDriver.Connect(ctx, config); err != nil {
 		return fmt.Errorf("primary driver connect failed: %w", err)
