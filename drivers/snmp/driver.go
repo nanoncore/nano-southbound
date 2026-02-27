@@ -311,7 +311,7 @@ func (d *Driver) WalkSNMP(ctx context.Context, oid string) (map[string]interface
 	err := d.snmp.Walk(oid, func(pdu gosnmp.SnmpPDU) error {
 		// Extract the index from the OID (last part after base OID)
 		if len(pdu.Name) <= len(oid)+1 {
-			slog.Warn("SNMP Walk: PDU OID too short to extract index",
+			slog.Debug("SNMP Walk: PDU OID too short to extract index",
 				"oid", oid, "pdu_name", pdu.Name)
 			return nil
 		}

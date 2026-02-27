@@ -80,7 +80,7 @@ func (d *Driver) Connect(ctx context.Context, config *types.EquipmentConfig) err
 	// infrastructure which is tracked as a future improvement.
 	hostKeyCallback := ssh.InsecureIgnoreHostKey() //nolint:gosec // see comment below
 	if !d.config.TLSSkipVerify {
-		slog.Warn("SSH host key verification disabled: TLSSkipVerify not explicitly set, using insecure callback",
+		slog.Debug("SSH host key verification disabled: TLSSkipVerify not explicitly set, using insecure callback",
 			"address", d.config.Address, "port", d.config.Port)
 	}
 
