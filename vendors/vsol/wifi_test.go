@@ -1064,6 +1064,196 @@ func TestClassifyWifiErrCode_OnuNotFoundPonMarker(t *testing.T) {
 	}
 }
 
+func TestProbeWifiCapabilities_PRISupported(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal":                "ok",
+			"interface gpon 0/2":                "ok",
+			"onu 3 pri wifi_switch 1 disable":   "",
+			"show running-config onu 3":         "onu 3 profile onu default\nwifi-mng-via-non-omci disable",
+			"show profile onu":                  "Name: default\nWifi mgmt via non OMCI: disable\n",
+			"exit":                              "ok",
+			"end":                               "ok",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config: &types.EquipmentConfig{
+			Metadata: map[string]string{
+				"wifi_command_profile": "pri",
+			},
+		},
+	}
+
+	result, err := adapter.ProbeWifiCapabilities(context.Background(), types.WifiTarget{PONPort: "0/2", ONUID: 3})
+	if err != nil {
+		t.Fatalf("ProbeWifiCapabilities returned error: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("expected OK, got errorCode=%s reason=%s", result.ErrorCode, result.Reason)
+	}
+	if !result.SupportsOMCIWifi {
+		t.Fatalf("expected SupportsOMCIWifi=true")
+	}
+	if !result.ProfileOMCIReady {
+		t.Fatalf("expected ProfileOMCIReady=true")
+	}
+	if result.CommandProfile != "pri" {
+		t.Fatalf("expected CommandProfile=pri, got %s", result.CommandProfile)
+	}
+	if result.ProbeMethod != "pri_cli_probe" {
+		t.Fatalf("expected ProbeMethod=pri_cli_probe, got %s", result.ProbeMethod)
+	}
+}
+
+func TestProbeWifiCapabilities_PRIUnsupported(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal":                "ok",
+			"interface gpon 0/1":                "ok",
+			"onu 2 pri wifi_switch 1 disable":   "Unsupport private protocol",
+			"show running-config onu 2":         "onu 2 profile onu HG326UG\nwifi-mng-via-non-omci disable",
+			"show profile onu":                  "Name: HG326UG\nWifi mgmt via non OMCI: disable\n",
+			"exit":                              "ok",
+			"end":                               "ok",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config: &types.EquipmentConfig{
+			Metadata: map[string]string{
+				"wifi_command_profile": "pri",
+			},
+		},
+	}
+
+	result, err := adapter.ProbeWifiCapabilities(context.Background(), types.WifiTarget{PONPort: "0/1", ONUID: 2})
+	if err != nil {
+		t.Fatalf("ProbeWifiCapabilities returned error: %v", err)
+	}
+	if result.OK {
+		t.Fatalf("expected failure for unsupported PRI")
+	}
+	if result.SupportsOMCIWifi {
+		t.Fatalf("expected SupportsOMCIWifi=false")
+	}
+	if result.ErrorCode != types.WifiErrorCodePRIUnsupported {
+		t.Fatalf("expected PRI_UNSUPPORTED, got %s", result.ErrorCode)
+	}
+	if result.ProbeMethod != "pri_cli_probe" {
+		t.Fatalf("expected ProbeMethod=pri_cli_probe, got %s", result.ProbeMethod)
+	}
+}
+
+func TestProbeWifiCapabilities_ProfileNotReady(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal":                "ok",
+			"interface gpon 0/1":                "ok",
+			"onu 5 pri wifi_switch 1 disable":   "",
+			"show running-config onu 5":         "onu 5 profile onu AN5506-04-F1\nonu 5 service INTERNET gemport 1 vlan 100",
+			"show profile onu":                  "Name: AN5506-04-F1\nWifi mgmt via non OMCI: enable\n",
+			"exit":                              "ok",
+			"end":                               "ok",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config: &types.EquipmentConfig{
+			Metadata: map[string]string{
+				"wifi_command_profile": "pri",
+			},
+		},
+	}
+
+	result, err := adapter.ProbeWifiCapabilities(context.Background(), types.WifiTarget{PONPort: "0/1", ONUID: 5})
+	if err != nil {
+		t.Fatalf("ProbeWifiCapabilities returned error: %v", err)
+	}
+	if result.OK {
+		t.Fatalf("expected failure when profile is not OMCI-ready")
+	}
+	if result.SupportsOMCIWifi {
+		t.Fatalf("expected SupportsOMCIWifi=false when profile not ready")
+	}
+	if result.ProfileOMCIReady {
+		t.Fatalf("expected ProfileOMCIReady=false")
+	}
+	if result.CommandProfile != "pri" {
+		t.Fatalf("expected CommandProfile=pri, got %s", result.CommandProfile)
+	}
+}
+
+func TestProbeWifiCapabilities_NoCLIExecutor(t *testing.T) {
+	adapter := &Adapter{
+		config: &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	result, err := adapter.ProbeWifiCapabilities(context.Background(), types.WifiTarget{PONPort: "0/1", ONUID: 1})
+	if err != nil {
+		t.Fatalf("ProbeWifiCapabilities returned error: %v", err)
+	}
+	if result.OK {
+		t.Fatalf("expected failure without CLI executor")
+	}
+	if result.ErrorCode != types.WifiErrorCodeInternalError {
+		t.Fatalf("expected INTERNAL_ERROR, got %s", result.ErrorCode)
+	}
+}
+
+func TestProbeWifiCapabilities_LegacyProfile(t *testing.T) {
+	mock := &wifiMockCLI{
+		outputByCommand: map[string]string{
+			"configure terminal":                "ok",
+			"interface gpon 0/1":                "ok",
+			"show running-config onu 7":         "onu 7 profile onu default\nwifi-mng-via-non-omci disable",
+			"show profile onu":                  "Name: default\nWifi mgmt via non OMCI: disable\n",
+			"exit":                              "ok",
+			"end":                               "ok",
+		},
+		errByCommand: map[string]error{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config: &types.EquipmentConfig{
+			Metadata: map[string]string{
+				"wifi_command_profile": "legacy",
+			},
+		},
+	}
+
+	result, err := adapter.ProbeWifiCapabilities(context.Background(), types.WifiTarget{PONPort: "0/1", ONUID: 7})
+	if err != nil {
+		t.Fatalf("ProbeWifiCapabilities returned error: %v", err)
+	}
+	if !result.OK {
+		t.Fatalf("expected OK for legacy profile with OMCI-ready profile, got errorCode=%s", result.ErrorCode)
+	}
+	if !result.SupportsOMCIWifi {
+		t.Fatalf("expected SupportsOMCIWifi=true for legacy+profile-ready")
+	}
+	if result.CommandProfile != "legacy" {
+		t.Fatalf("expected CommandProfile=legacy, got %s", result.CommandProfile)
+	}
+	if result.ProbeMethod != "profile_check" {
+		t.Fatalf("expected ProbeMethod=profile_check, got %s", result.ProbeMethod)
+	}
+}
+
+func TestClassifyWifiErrCode_PRIUnsupported(t *testing.T) {
+	errCode := classifyWifiErrCode(nil, "Unsupport private protocol")
+	if errCode != types.WifiErrorCodePRIUnsupported {
+		t.Fatalf("expected PRI_UNSUPPORTED, got %s", errCode)
+	}
+}
+
 func containsString(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {

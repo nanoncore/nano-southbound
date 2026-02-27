@@ -15,6 +15,11 @@ type WifiManager interface {
 
 	// SetWifiEnabled toggles ONU Wi-Fi state.
 	SetWifiEnabled(ctx context.Context, target WifiTarget, enabled bool) (*WifiActionResult, error)
+
+	// ProbeWifiCapabilities checks whether an ONU supports OMCI Wi-Fi management
+	// without changing any configuration. Returns capability information including
+	// profile readiness, command profile type, and ONU firmware PRI support.
+	ProbeWifiCapabilities(ctx context.Context, target WifiTarget) (*WifiProbeResult, error)
 }
 
 // WifiTarget identifies the ONU that Wi-Fi actions apply to.
@@ -58,6 +63,7 @@ const (
 	WifiErrorCodeInvalidValue         WifiErrorCode = "INVALID_VALUE"
 	WifiErrorCodePermissionDenied     WifiErrorCode = "PERMISSION_DENIED"
 	WifiErrorCodeInternalError        WifiErrorCode = "INTERNAL_ERROR"
+	WifiErrorCodePRIUnsupported       WifiErrorCode = "PRI_UNSUPPORTED"
 )
 
 // WifiActionEvent captures per-step execution results.
@@ -83,4 +89,27 @@ type WifiActionResult struct {
 
 	FailedStep string            `json:"failedStep,omitempty"`
 	Events     []WifiActionEvent `json:"events,omitempty"`
+}
+
+// WifiProbeResult describes ONU Wi-Fi management capabilities.
+type WifiProbeResult struct {
+	// OK is true when the probe completed and the ONU supports OMCI Wi-Fi.
+	OK bool `json:"ok"`
+
+	// SupportsOMCIWifi is true when both profile and ONU firmware support OMCI Wi-Fi.
+	SupportsOMCIWifi bool `json:"supportsOmciWifi"`
+
+	// ProfileOMCIReady is true when the ONU profile has wifi-mng-via-non-omci in OMCI mode.
+	ProfileOMCIReady bool `json:"profileOmciReady"`
+
+	// CommandProfile is the resolved command path ("legacy" or "pri").
+	CommandProfile string `json:"commandProfile,omitempty"`
+
+	// ProbeMethod describes how the capability was determined
+	// (e.g., "profile_check", "pri_cli_probe", "profile_resolve").
+	ProbeMethod string `json:"probeMethod,omitempty"`
+
+	ErrorCode WifiErrorCode `json:"errorCode,omitempty"`
+	Reason    string        `json:"reason,omitempty"`
+	RawOutput string        `json:"rawOutput,omitempty"`
 }
