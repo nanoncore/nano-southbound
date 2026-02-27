@@ -236,6 +236,114 @@ func (a *Adapter) SetWifiEnabled(ctx context.Context, target types.WifiTarget, e
 	return a.verifyWifiApply(ctx, target, types.WifiConfig{Enabled: enabled}, applyResult), nil
 }
 
+func (a *Adapter) ProbeWifiCapabilities(ctx context.Context, target types.WifiTarget) (*types.WifiProbeResult, error) {
+	if a.cliExecutor == nil {
+		return &types.WifiProbeResult{
+			OK:        false,
+			ErrorCode: types.WifiErrorCodeInternalError,
+			Reason:    "CLI executor not available",
+		}, nil
+	}
+
+	ponPort, onuID, errResult := a.resolveWifiTarget(ctx, target)
+	if errResult != nil {
+		return &types.WifiProbeResult{
+			OK:        false,
+			ErrorCode: errResult.ErrorCode,
+			Reason:    errResult.Reason,
+		}, nil
+	}
+
+	profileReady := a.isOMCIProfileReady(ctx, ponPort, onuID)
+
+	cmdProfile, err := a.resolveWifiCommandProfile(ctx, ponPort, onuID, target.OnuSerial)
+	if err != nil {
+		return &types.WifiProbeResult{
+			OK:               false,
+			ProfileOMCIReady: profileReady,
+			ErrorCode:        classifyWifiErrCode(err, ""),
+			Reason:           err.Error(),
+			ProbeMethod:      "profile_resolve",
+		}, nil
+	}
+
+	// For PRI profile, probe ONU firmware support via non-destructive command.
+	if cmdProfile == wifiCommandProfilePri {
+		supported, raw, probeErr := a.probePRIWifiONUSupport(ctx, ponPort, onuID)
+		if probeErr != nil {
+			return &types.WifiProbeResult{
+				OK:               false,
+				ProfileOMCIReady: profileReady,
+				CommandProfile:   string(cmdProfile),
+				ErrorCode:        classifyWifiErrCode(probeErr, raw),
+				Reason:           probeErr.Error(),
+				RawOutput:        raw,
+				ProbeMethod:      "pri_cli_probe",
+			}, nil
+		}
+		if !supported {
+			return &types.WifiProbeResult{
+				OK:               false,
+				SupportsOMCIWifi: false,
+				ProfileOMCIReady: profileReady,
+				CommandProfile:   string(cmdProfile),
+				ErrorCode:        types.WifiErrorCodePRIUnsupported,
+				Reason:           "ONU firmware does not support PRI private protocol",
+				RawOutput:        raw,
+				ProbeMethod:      "pri_cli_probe",
+			}, nil
+		}
+		return &types.WifiProbeResult{
+			OK:               profileReady,
+			SupportsOMCIWifi: profileReady,
+			ProfileOMCIReady: profileReady,
+			CommandProfile:   string(cmdProfile),
+			ProbeMethod:      "pri_cli_probe",
+			RawOutput:        raw,
+		}, nil
+	}
+
+	// Legacy profile — assume supported if profile is OMCI-ready.
+	return &types.WifiProbeResult{
+		OK:               profileReady,
+		SupportsOMCIWifi: profileReady,
+		ProfileOMCIReady: profileReady,
+		CommandProfile:   string(cmdProfile),
+		ProbeMethod:      "profile_check",
+	}, nil
+}
+
+// probePRIWifiONUSupport sends a non-destructive PRI probe to determine
+// whether the ONU firmware supports the private protocol.
+// Uses `onu <id> pri wifi_switch 1 disable` which is a no-op when Wi-Fi is already off.
+func (a *Adapter) probePRIWifiONUSupport(ctx context.Context, ponPort string, onuID int) (bool, string, error) {
+	steps := []string{
+		"configure terminal",
+		fmt.Sprintf("interface gpon %s", ponPort),
+		fmt.Sprintf("onu %d pri wifi_switch 1 disable", onuID),
+		"exit",
+		"end",
+	}
+
+	outputs, err := a.cliExecutor.ExecCommands(ctx, steps)
+	if err != nil {
+		return false, strings.Join(outputs, "\n"), err
+	}
+
+	joined := strings.Join(outputs, "\n")
+	lower := strings.ToLower(joined)
+
+	if strings.Contains(lower, "unsupport private protocol") {
+		return false, joined, nil
+	}
+	if strings.Contains(lower, "not found") {
+		return false, joined, fmt.Errorf("ONU not found on OLT")
+	}
+
+	// Silent response = ONU firmware supports PRI Wi-Fi.
+	return true, joined, nil
+}
+
 func (a *Adapter) verifyWifiApply(
 	ctx context.Context,
 	target types.WifiTarget,
@@ -531,6 +639,8 @@ func classifyWifiErrCode(err error, output string) types.WifiErrorCode {
 	}
 
 	switch {
+	case strings.Contains(combined, "unsupport private protocol"):
+		return types.WifiErrorCodePRIUnsupported
 	case strings.Contains(combined, "unsupported operation"):
 		return types.WifiErrorCodeUnsupportedOperation
 	case strings.Contains(combined, "timeout"):
@@ -558,6 +668,7 @@ func hasCLIErrorMarker(output string) bool {
 		"invalid input",
 		"failed",
 		"permission denied",
+		"unsupport private protocol",
 	}
 	for _, marker := range markers {
 		if strings.Contains(lower, marker) {
