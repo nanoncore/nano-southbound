@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -200,10 +201,12 @@ func (d *Driver) Connect(ctx context.Context, config *types.EquipmentConfig) err
 	d.conn = conn
 	d.gnmiClient = gnmipb.NewGNMIClient(conn)
 
-	// Fetch capabilities
-	caps, err := d.Capabilities(ctx)
+	// Fetch capabilities using private method to avoid potential lock issues
+	caps, err := d.fetchCapabilities(ctx)
 	if err != nil {
 		_ = conn.Close()
+		d.conn = nil
+		d.gnmiClient = nil
 		return fmt.Errorf("capabilities check failed: %w", err)
 	}
 	d.capabilities = caps
@@ -241,13 +244,13 @@ func (d *Driver) IsConnected() bool {
 	return d.conn != nil
 }
 
-// Capabilities returns the device's gNMI capabilities
-func (d *Driver) Capabilities(ctx context.Context) (*DeviceCapabilities, error) {
+// fetchCapabilities is the internal implementation that does not acquire d.mu.
+// Safe to call from Connect (which already holds d.mu).
+func (d *Driver) fetchCapabilities(ctx context.Context) (*DeviceCapabilities, error) {
 	if d.gnmiClient == nil {
 		return nil, fmt.Errorf("not connected to device")
 	}
 
-	// Add authentication if configured
 	ctx = d.addAuthMetadata(ctx)
 
 	capReq := &gnmipb.CapabilityRequest{}
@@ -263,21 +266,24 @@ func (d *Driver) Capabilities(ctx context.Context) (*DeviceCapabilities, error) 
 		GNMIVersion: resp.GNMIVersion,
 	}
 
-	// Parse supported models
-	for _, model := range resp.SupportedModels {
+	for _, m := range resp.SupportedModels {
 		caps.SupportedModels = append(caps.SupportedModels, ModelInfo{
-			Name:         model.Name,
-			Organization: model.Organization,
-			Version:      model.Version,
+			Name:         m.Name,
+			Organization: m.Organization,
+			Version:      m.Version,
 		})
 	}
 
-	// Parse supported encodings
 	for _, enc := range resp.SupportedEncodings {
 		caps.SupportedEncodings = append(caps.SupportedEncodings, enc.String())
 	}
 
 	return caps, nil
+}
+
+// Capabilities returns the device's gNMI capabilities.
+func (d *Driver) Capabilities(ctx context.Context) (*DeviceCapabilities, error) {
+	return d.fetchCapabilities(ctx)
 }
 
 // Get retrieves values at the specified paths
@@ -436,19 +442,15 @@ func (d *Driver) Subscribe(ctx context.Context, config *SubscriptionConfig) (Sub
 	return state, nil
 }
 
-// processSubscriptionUpdates handles incoming subscription updates
+// processSubscriptionUpdates handles incoming subscription updates.
+// Safely checks state.stopped before sending to channels to prevent
+// panics on closed channels during Disconnect.
 func (d *Driver) processSubscriptionUpdates(
 	ctx context.Context,
 	stream gnmipb.GNMI_SubscribeClient,
 	state *subscriptionState,
 	handler TelemetryHandler,
 ) {
-	defer func() {
-		if r := recover(); r != nil {
-			state.errors <- fmt.Errorf("subscription panic: %v", r)
-		}
-	}()
-
 	for {
 		select {
 		case <-ctx.Done():
@@ -461,9 +463,18 @@ func (d *Driver) processSubscriptionUpdates(
 			if err == io.EOF || ctx.Err() != nil {
 				return
 			}
+			// Non-blocking send; skip if stopped or channel full
 			if !state.stopped {
-				state.errors <- fmt.Errorf("subscription error: %w", err)
+				select {
+				case state.errors <- fmt.Errorf("subscription error: %w", err):
+				default:
+				}
 			}
+			return
+		}
+
+		// Check stopped before processing to avoid writing to closed channels
+		if state.stopped {
 			return
 		}
 
@@ -472,11 +483,11 @@ func (d *Driver) processSubscriptionUpdates(
 		case *gnmipb.SubscribeResponse_Update:
 			updates := d.parseNotification(r.Update)
 			if len(updates) > 0 {
-				// Send to channel
+				// Non-blocking send to updates channel
 				select {
 				case state.updates <- updates:
 				default:
-					// Channel full, drop oldest
+					// Channel full, drop update
 				}
 
 				// Call handler if provided
@@ -490,7 +501,12 @@ func (d *Driver) processSubscriptionUpdates(
 			continue
 
 		case *gnmipb.SubscribeResponse_Error:
-			state.errors <- fmt.Errorf("subscription error from device: %s", r.Error.Message) //nolint:staticcheck // deprecated but needed for backwards compat
+			if !state.stopped {
+				select {
+				case state.errors <- fmt.Errorf("subscription error from device: %s", r.Error.Message): //nolint:staticcheck // deprecated but needed for backwards compat
+				default:
+				}
+			}
 		}
 	}
 }
@@ -626,7 +642,8 @@ func ParsePath(path string) *gnmipb.Path {
 	return gnmiPath
 }
 
-// PathToString converts a gNMI Path to string format
+// PathToString converts a gNMI Path to a deterministic string format.
+// Keys are sorted alphabetically to ensure consistent output.
 func PathToString(path *gnmipb.Path) string {
 	if path == nil {
 		return ""
@@ -636,8 +653,14 @@ func PathToString(path *gnmipb.Path) string {
 	for _, elem := range path.Elem {
 		part := elem.Name
 		if len(elem.Key) > 0 {
-			for k, v := range elem.Key {
-				part += fmt.Sprintf("[%s=%s]", k, v)
+			// Sort keys for deterministic output
+			keys := make([]string, 0, len(elem.Key))
+			for k := range elem.Key {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				part += fmt.Sprintf("[%s=%s]", k, elem.Key[k])
 			}
 		}
 		parts = append(parts, part)
@@ -664,11 +687,11 @@ func decodeTypedValue(tv *gnmipb.TypedValue) interface{} {
 	case *gnmipb.TypedValue_BytesVal:
 		return v.BytesVal
 	case *gnmipb.TypedValue_FloatVal:
-		return v.FloatVal //nolint:staticcheck // deprecated but needed for backwards compat
+		return v.FloatVal //nolint:staticcheck // FloatVal deprecated in gNMI proto; remove when minimum gNMI version drops it
 	case *gnmipb.TypedValue_DoubleVal:
 		return v.DoubleVal
 	case *gnmipb.TypedValue_DecimalVal:
-		return float64(v.DecimalVal.Digits) / float64(int64(1)<<v.DecimalVal.Precision) //nolint:staticcheck // deprecated but needed for backwards compat
+		return float64(v.DecimalVal.Digits) / float64(int64(1)<<v.DecimalVal.Precision) //nolint:staticcheck // DecimalVal deprecated in gNMI proto; remove when minimum gNMI version drops it
 	case *gnmipb.TypedValue_LeaflistVal:
 		var result []interface{}
 		for _, elem := range v.LeaflistVal.Element {

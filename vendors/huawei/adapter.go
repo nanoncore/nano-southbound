@@ -21,6 +21,24 @@ var (
 	_ types.DriverV2 = (*Adapter)(nil)
 )
 
+// Package-level compiled regexes for parsing Huawei CLI output.
+var (
+	reHWUptimeDuration  = regexp.MustCompile(`online\s+duration[:\s]+(\d+)\s*day[s]?\s*(\d+):(\d+):(\d+)`)
+	reHWIPAddress       = regexp.MustCompile(`ip\s+address[:\s]+(\d+\.\d+\.\d+\.\d+)`)
+	reHWRxPower         = regexp.MustCompile(`rx\s*optical\s*power[:\s]+(-?\d+\.?\d*)\s*(?:dbm)?`)
+	reHWTxPower         = regexp.MustCompile(`tx\s*optical\s*power[:\s]+(-?\d+\.?\d*)\s*(?:dbm)?`)
+	reHWOLTRxPower      = regexp.MustCompile(`olt\s*rx\s*ont\s*optical\s*power[:\s]+(-?\d+\.?\d*)\s*(?:dbm)?`)
+	reHWTemperature     = regexp.MustCompile(`temperature[:\s]+(-?\d+\.?\d*)\s*(?:c)?`)
+	reHWDnBytes         = regexp.MustCompile(`downstream\s*(?:traffic)?[:\s]+(\d+)\s*bytes`)
+	reHWUpBytes         = regexp.MustCompile(`upstream\s*(?:traffic)?[:\s]+(\d+)\s*bytes`)
+	reHWDnPackets       = regexp.MustCompile(`downstream\s*packets[:\s]+(\d+)`)
+	reHWUpPackets       = regexp.MustCompile(`upstream\s*packets[:\s]+(\d+)`)
+	reHWErrors          = regexp.MustCompile(`(?:error|discard)[s]?[:\s]+(\d+)`)
+	reHWONTSubscriberID = regexp.MustCompile(`ont-(\d+)/(\d+)/(\d+)-(\d+)`)
+	reHWVersionString   = regexp.MustCompile(`V(\d+R\d+C\d+)`)
+	reHWPortFromDescr   = regexp.MustCompile(`(\d+)/(\d+)/(\d+)`)
+)
+
 // Adapter wraps a base driver with Huawei-specific logic
 // Huawei OLTs (MA5600T/MA5800-X series) require BOTH protocols:
 // - CLI for configuration (provisioning, deletion, updates)
@@ -204,7 +222,7 @@ func (a *Adapter) buildProvisioningCommands(frame, slot, port, ontID int, serial
 		// Add ONT with serial number authentication
 		// ont add <port> <ont-id> sn-auth <serial> omci ont-lineprofile-id <id> ont-srvprofile-id <id> desc <description>
 		fmt.Sprintf("ont add %d %d sn-auth %s omci ont-lineprofile-id %d ont-srvprofile-id %d desc nanoncore",
-			port, ontID, serial, lineProfileID, srvProfileID),
+			port, ontID, common.SanitizeCLIParam(serial), lineProfileID, srvProfileID),
 
 		// Configure native VLAN on ONT ETH port
 		// ont port native-vlan <port> <ont-id> eth <eth-port> vlan <vlan> priority <0-7>
@@ -800,7 +818,7 @@ func (a *Adapter) parseONTStatus(output string, subscriberID string) *types.Subs
 	}
 
 	// Parse uptime
-	uptimeRe := regexp.MustCompile(`online\s+duration[:\s]+(\d+)\s*day[s]?\s*(\d+):(\d+):(\d+)`)
+	uptimeRe := reHWUptimeDuration
 	if match := uptimeRe.FindStringSubmatch(outputLower); len(match) == 5 {
 		days, _ := strconv.ParseInt(match[1], 10, 64)
 		hours, _ := strconv.ParseInt(match[2], 10, 64)
@@ -810,7 +828,7 @@ func (a *Adapter) parseONTStatus(output string, subscriberID string) *types.Subs
 	}
 
 	// Parse IP if assigned
-	ipRe := regexp.MustCompile(`ip\s+address[:\s]+(\d+\.\d+\.\d+\.\d+)`)
+	ipRe := reHWIPAddress
 	if match := ipRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		status.IPv4Address = match[1]
 	}
@@ -825,25 +843,25 @@ func (a *Adapter) parseOpticalInfo(output string, status *types.SubscriberStatus
 	outputLower := strings.ToLower(output)
 
 	// Parse Rx power
-	rxPowerRe := regexp.MustCompile(`rx\s*optical\s*power[:\s]+(-?\d+\.?\d*)\s*(?:dbm)?`)
+	rxPowerRe := reHWRxPower
 	if match := rxPowerRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		status.Metadata["rx_power_dbm"] = match[1]
 	}
 
 	// Parse Tx power
-	txPowerRe := regexp.MustCompile(`tx\s*optical\s*power[:\s]+(-?\d+\.?\d*)\s*(?:dbm)?`)
+	txPowerRe := reHWTxPower
 	if match := txPowerRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		status.Metadata["tx_power_dbm"] = match[1]
 	}
 
 	// Parse OLT Rx power (from ONT)
-	oltRxRe := regexp.MustCompile(`olt\s*rx\s*ont\s*optical\s*power[:\s]+(-?\d+\.?\d*)\s*(?:dbm)?`)
+	oltRxRe := reHWOLTRxPower
 	if match := oltRxRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		status.Metadata["olt_rx_power_dbm"] = match[1]
 	}
 
 	// Parse temperature
-	tempRe := regexp.MustCompile(`temperature[:\s]+(-?\d+\.?\d*)\s*(?:c)?`)
+	tempRe := reHWTemperature
 	if match := tempRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		status.Metadata["temperature_c"] = match[1]
 	}
@@ -861,14 +879,14 @@ func (a *Adapter) parseONTStats(output string) *types.SubscriberStats {
 	// Upstream traffic   : xxxx bytes
 	// Downstream traffic : yyyy bytes
 
-	rxBytesRe := regexp.MustCompile(`downstream\s*(?:traffic)?[:\s]+(\d+)\s*bytes`)
+	rxBytesRe := reHWDnBytes
 	if match := rxBytesRe.FindStringSubmatch(strings.ToLower(output)); len(match) > 1 {
 		if val, err := strconv.ParseUint(match[1], 10, 64); err == nil {
 			stats.BytesDown = val
 		}
 	}
 
-	txBytesRe := regexp.MustCompile(`upstream\s*(?:traffic)?[:\s]+(\d+)\s*bytes`)
+	txBytesRe := reHWUpBytes
 	if match := txBytesRe.FindStringSubmatch(strings.ToLower(output)); len(match) > 1 {
 		if val, err := strconv.ParseUint(match[1], 10, 64); err == nil {
 			stats.BytesUp = val
@@ -876,14 +894,14 @@ func (a *Adapter) parseONTStats(output string) *types.SubscriberStats {
 	}
 
 	// Parse packet counters if available
-	rxPacketsRe := regexp.MustCompile(`downstream\s*packets[:\s]+(\d+)`)
+	rxPacketsRe := reHWDnPackets
 	if match := rxPacketsRe.FindStringSubmatch(strings.ToLower(output)); len(match) > 1 {
 		if val, err := strconv.ParseUint(match[1], 10, 64); err == nil {
 			stats.PacketsDown = val
 		}
 	}
 
-	txPacketsRe := regexp.MustCompile(`upstream\s*packets[:\s]+(\d+)`)
+	txPacketsRe := reHWUpPackets
 	if match := txPacketsRe.FindStringSubmatch(strings.ToLower(output)); len(match) > 1 {
 		if val, err := strconv.ParseUint(match[1], 10, 64); err == nil {
 			stats.PacketsUp = val
@@ -891,7 +909,7 @@ func (a *Adapter) parseONTStats(output string) *types.SubscriberStats {
 	}
 
 	// Parse errors
-	errorsRe := regexp.MustCompile(`(?:error|discard)[s]?[:\s]+(\d+)`)
+	errorsRe := reHWErrors
 	if match := errorsRe.FindStringSubmatch(strings.ToLower(output)); len(match) > 1 {
 		if val, err := strconv.ParseUint(match[1], 10, 64); err == nil {
 			stats.ErrorsDown = val
@@ -973,8 +991,7 @@ func (a *Adapter) getTrafficTableID(tier *model.ServiceTier) int {
 // parseSubscriberID parses a subscriber ID to extract Frame/Slot/Port and ONT ID
 func (a *Adapter) parseSubscriberID(subscriberID string) (frame, slot, port, ontID int) {
 	// Expected format: "ont-0/1/0-5" or just subscriber name
-	re := regexp.MustCompile(`ont-(\d+)/(\d+)/(\d+)-(\d+)`)
-	if match := re.FindStringSubmatch(subscriberID); len(match) == 5 {
+	if match := reHWONTSubscriberID.FindStringSubmatch(subscriberID); len(match) == 5 {
 		frame, _ = strconv.Atoi(match[1])
 		slot, _ = strconv.Atoi(match[2])
 		port, _ = strconv.Atoi(match[3])
@@ -1261,7 +1278,7 @@ func (a *Adapter) GetOLTStatus(ctx context.Context) (*types.OLTStatus, error) {
 				if descrStr, ok := descr.(string); ok {
 					status.Metadata["sys_descr"] = descrStr
 					// Try to extract version from description
-					versionRe := regexp.MustCompile(`V(\d+R\d+C\d+)`)
+					versionRe := reHWVersionString
 					if match := versionRe.FindStringSubmatch(descrStr); len(match) > 1 {
 						status.Firmware = match[1]
 					}
@@ -1542,13 +1559,13 @@ func (a *Adapter) ApplyProfile(ctx context.Context, ponPort string, onuID int, p
 	if profile.LineProfile != "" {
 		// Try to use profile name directly (ont modify supports both name and ID)
 		commands = append(commands,
-			fmt.Sprintf("ont modify %d %d ont-lineprofile-name %s", port, onuID, profile.LineProfile))
+			fmt.Sprintf("ont modify %d %d ont-lineprofile-name %s", port, onuID, common.SanitizeCLIParam(profile.LineProfile)))
 	}
 
 	// Update service profile if specified
 	if profile.ServiceProfile != "" {
 		commands = append(commands,
-			fmt.Sprintf("ont modify %d %d ont-srvprofile-name %s", port, onuID, profile.ServiceProfile))
+			fmt.Sprintf("ont modify %d %d ont-srvprofile-name %s", port, onuID, common.SanitizeCLIParam(profile.ServiceProfile)))
 	}
 
 	// Update VLAN if specified
@@ -1990,8 +2007,7 @@ func (a *Adapter) ListPorts(ctx context.Context) ([]*types.PONPortStatus, error)
 // Example: "GPON 0/0/1" -> "0/0/1"
 func (a *Adapter) parsePortFromDescr(descr string) string {
 	// Try to extract frame/slot/port pattern
-	re := regexp.MustCompile(`(\d+)/(\d+)/(\d+)`)
-	if match := re.FindStringSubmatch(descr); len(match) == 4 {
+	if match := reHWPortFromDescr.FindStringSubmatch(descr); len(match) == 4 {
 		return fmt.Sprintf("%s/%s/%s", match[1], match[2], match[3])
 	}
 	return ""
@@ -2220,10 +2236,10 @@ func (a *Adapter) CreateVLAN(ctx context.Context, req *types.CreateVLANRequest) 
 	}
 
 	if req.Name != "" {
-		commands = append(commands, fmt.Sprintf("name %s", req.Name))
+		commands = append(commands, fmt.Sprintf("name %s", common.SanitizeCLIParam(req.Name)))
 	}
 	if req.Description != "" {
-		commands = append(commands, fmt.Sprintf("description %s", req.Description))
+		commands = append(commands, fmt.Sprintf("description %s", common.SanitizeCLIParam(req.Description)))
 	}
 
 	commands = append(commands, "quit", "quit")

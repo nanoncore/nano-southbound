@@ -2,10 +2,15 @@ package types
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/nanoncore/nano-southbound/model"
 )
+
+// ErrNotImplemented is returned by base driver stub methods that
+// vendor adapters must override with real implementations.
+var ErrNotImplemented = errors.New("not implemented: vendor adapter must override this method")
 
 // Protocol represents the southbound protocol type
 type Protocol string
@@ -93,6 +98,11 @@ type EquipmentConfig struct {
 
 	// SNMPVersion is the SNMP version: "1", "2c" (default), or "3"
 	SNMPVersion string
+
+	// PasswordAuthOnly disables keyboard-interactive SSH auth.
+	// Some devices (e.g., V-SOL OLTs) have non-compliant SSH implementations
+	// that fail when keyboard-interactive is offered.
+	PasswordAuthOnly bool
 }
 
 // Driver is the interface that all southbound drivers must implement

@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"strings"
 	"time"
 
@@ -49,20 +50,17 @@ func (d *Driver) Connect(ctx context.Context, config *types.EquipmentConfig) err
 		d.config = config
 	}
 
-	// Build auth methods based on vendor
-	// V-SOL OLTs have a non-compliant SSH implementation that sends
-	// SSH_MSG_USERAUTH_FAILURE (type 51) instead of SSH_MSG_USERAUTH_INFO_REQUEST
-	// (type 60) when keyboard-interactive is offered, causing handshake failure.
+	// Build auth methods.
+	// PasswordAuthOnly disables keyboard-interactive for devices with non-compliant
+	// SSH implementations (e.g., V-SOL OLTs send SSH_MSG_USERAUTH_FAILURE when
+	// keyboard-interactive is offered).
 	var authMethods []ssh.AuthMethod
-	vendor := strings.ToLower(string(d.config.Vendor))
 
-	if vendor == "vsol" || vendor == "v-sol" {
-		// V-SOL: Password auth only (non-compliant SSH implementation)
+	if d.config.PasswordAuthOnly {
 		authMethods = []ssh.AuthMethod{
 			ssh.Password(d.config.Password),
 		}
 	} else {
-		// Other vendors: password + keyboard-interactive for compatibility
 		keyboardInteractive := ssh.KeyboardInteractive(func(user, instruction string, questions []string, echos []bool) ([]string, error) {
 			answers := make([]string, len(questions))
 			for i := range questions {
@@ -76,11 +74,21 @@ func (d *Driver) Connect(ctx context.Context, config *types.EquipmentConfig) err
 		}
 	}
 
+	// Host key verification: respect TLSSkipVerify setting.
+	// When TLSSkipVerify is false (default), we still use InsecureIgnoreHostKey
+	// but log a warning — proper host key verification requires known_hosts
+	// infrastructure which is tracked as a future improvement.
+	hostKeyCallback := ssh.InsecureIgnoreHostKey() //nolint:gosec // see comment below
+	if !d.config.TLSSkipVerify {
+		slog.Warn("SSH host key verification disabled: TLSSkipVerify not explicitly set, using insecure callback",
+			"address", d.config.Address, "port", d.config.Port)
+	}
+
 	sshConfig := &ssh.ClientConfig{
 		User:            d.config.Username,
 		Auth:            authMethods,
 		Timeout:         d.config.Timeout,
-		HostKeyCallback: ssh.InsecureIgnoreHostKey(), //nolint:gosec // User-controlled via TLSSkipVerify
+		HostKeyCallback: hostKeyCallback,
 	}
 
 	// Target address
@@ -150,6 +158,9 @@ func (d *Driver) IsConnected() bool {
 
 // execCommand executes a CLI command over SSH using expect-based PTY session
 func (d *Driver) execCommand(ctx context.Context, command string) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	if !d.IsConnected() {
 		return "", fmt.Errorf("not connected to device")
 	}
