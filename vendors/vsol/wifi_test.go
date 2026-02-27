@@ -1067,13 +1067,13 @@ func TestClassifyWifiErrCode_OnuNotFoundPonMarker(t *testing.T) {
 func TestProbeWifiCapabilities_PRISupported(t *testing.T) {
 	mock := &wifiMockCLI{
 		outputByCommand: map[string]string{
-			"configure terminal":                "ok",
-			"interface gpon 0/2":                "ok",
-			"onu 3 pri wifi_switch 1 disable":   "",
-			"show running-config onu 3":         "onu 3 profile onu default\nwifi-mng-via-non-omci disable",
-			"show profile onu":                  "Name: default\nWifi mgmt via non OMCI: disable\n",
-			"exit":                              "ok",
-			"end":                               "ok",
+			"configure terminal":              "ok",
+			"interface gpon 0/2":              "ok",
+			"onu 3 pri wifi_switch 1 disable": "",
+			"show running-config onu 3":       "onu 3 profile onu default\nwifi-mng-via-non-omci disable",
+			"show profile onu":                "Name: default\nWifi mgmt via non OMCI: disable\n",
+			"exit":                            "ok",
+			"end":                             "ok",
 		},
 		errByCommand: map[string]error{},
 	}
@@ -1111,13 +1111,13 @@ func TestProbeWifiCapabilities_PRISupported(t *testing.T) {
 func TestProbeWifiCapabilities_PRIUnsupported(t *testing.T) {
 	mock := &wifiMockCLI{
 		outputByCommand: map[string]string{
-			"configure terminal":                "ok",
-			"interface gpon 0/1":                "ok",
-			"onu 2 pri wifi_switch 1 disable":   "Unsupport private protocol",
-			"show running-config onu 2":         "onu 2 profile onu HG326UG\nwifi-mng-via-non-omci disable",
-			"show profile onu":                  "Name: HG326UG\nWifi mgmt via non OMCI: disable\n",
-			"exit":                              "ok",
-			"end":                               "ok",
+			"configure terminal":              "ok",
+			"interface gpon 0/1":              "ok",
+			"onu 2 pri wifi_switch 1 disable": "Unsupport private protocol",
+			"show running-config onu 2":       "onu 2 profile onu HG326UG\nwifi-mng-via-non-omci disable",
+			"show profile onu":                "Name: HG326UG\nWifi mgmt via non OMCI: disable\n",
+			"exit":                            "ok",
+			"end":                             "ok",
 		},
 		errByCommand: map[string]error{},
 	}
@@ -1152,13 +1152,13 @@ func TestProbeWifiCapabilities_PRIUnsupported(t *testing.T) {
 func TestProbeWifiCapabilities_ProfileNotReady(t *testing.T) {
 	mock := &wifiMockCLI{
 		outputByCommand: map[string]string{
-			"configure terminal":                "ok",
-			"interface gpon 0/1":                "ok",
-			"onu 5 pri wifi_switch 1 disable":   "",
-			"show running-config onu 5":         "onu 5 profile onu AN5506-04-F1\nonu 5 service INTERNET gemport 1 vlan 100",
-			"show profile onu":                  "Name: AN5506-04-F1\nWifi mgmt via non OMCI: enable\n",
-			"exit":                              "ok",
-			"end":                               "ok",
+			"configure terminal":              "ok",
+			"interface gpon 0/1":              "ok",
+			"onu 5 pri wifi_switch 1 disable": "",
+			"show running-config onu 5":       "onu 5 profile onu AN5506-04-F1\nonu 5 service INTERNET gemport 1 vlan 100",
+			"show profile onu":                "Name: AN5506-04-F1\nWifi mgmt via non OMCI: enable\n",
+			"exit":                            "ok",
+			"end":                             "ok",
 		},
 		errByCommand: map[string]error{},
 	}
@@ -1210,12 +1210,12 @@ func TestProbeWifiCapabilities_NoCLIExecutor(t *testing.T) {
 func TestProbeWifiCapabilities_LegacyProfile(t *testing.T) {
 	mock := &wifiMockCLI{
 		outputByCommand: map[string]string{
-			"configure terminal":                "ok",
-			"interface gpon 0/1":                "ok",
-			"show running-config onu 7":         "onu 7 profile onu default\nwifi-mng-via-non-omci disable",
-			"show profile onu":                  "Name: default\nWifi mgmt via non OMCI: disable\n",
-			"exit":                              "ok",
-			"end":                               "ok",
+			"configure terminal":        "ok",
+			"interface gpon 0/1":        "ok",
+			"show running-config onu 7": "onu 7 profile onu default\nwifi-mng-via-non-omci disable",
+			"show profile onu":          "Name: default\nWifi mgmt via non OMCI: disable\n",
+			"exit":                      "ok",
+			"end":                       "ok",
 		},
 		errByCommand: map[string]error{},
 	}
