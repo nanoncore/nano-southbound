@@ -1337,12 +1337,18 @@ func (a *Adapter) parseONUState(output string) []ONUStateInfo {
 			var onuID int
 
 			// Try to parse format like "1/1/1:1" (slot/frame/port:onuid)
-			re := reONUIndexSlotFrame
-			if matches := re.FindStringSubmatch(onuIndex); len(matches) == 4 {
+			if matches := reONUIndexSlotFrame.FindStringSubmatch(onuIndex); len(matches) == 4 {
 				// Convert "1/1/1:1" to PON port "0/1" format
 				portNum := matches[2]
 				ponPort = "0/" + portNum
 				onuID, _ = strconv.Atoi(matches[3])
+			} else if matches := reONUIndexGPON.FindStringSubmatch(onuIndex); len(matches) == 3 {
+				// Fallback: some firmware uses "GPON0/1:1" format in show onu state
+				ponPort = matches[1]
+				onuID, _ = strconv.Atoi(matches[2])
+			} else {
+				// Can't parse ONU index — skip this line
+				continue
 			}
 
 			adminState := strings.ToLower(fields[1])
