@@ -968,15 +968,26 @@ func (a *Adapter) GetONUList(ctx context.Context, filter *types.ONUFilter) ([]ty
 			}
 
 			// Parse the "show onu info" output (index 2: config=0, interface=1, info=2)
+			// Note: some V-SOL firmware returns ONUs from ALL ports regardless of
+			// the interface context, so we filter to only keep ONUs matching the
+			// current PON port to avoid duplicates across iterations.
 			if len(outputs) > 2 {
 				onus := a.parseV1600ONUList(outputs[2], ponPort)
-				allOnus = append(allOnus, onus...)
+				for _, onu := range onus {
+					if onu.PONPort == ponPort {
+						allOnus = append(allOnus, onu)
+					}
+				}
 			}
 
 			// Parse the "show onu state" output (index 3)
 			if len(outputs) > 3 {
 				states := a.parseONUState(outputs[3])
-				allStates = append(allStates, states...)
+				for _, s := range states {
+					if s.PONPort == ponPort {
+						allStates = append(allStates, s)
+					}
+				}
 			}
 		}
 
@@ -3072,9 +3083,14 @@ func (a *Adapter) getONUProfilesCLI(ctx context.Context) ([]types.ONUInfo, error
 		}
 
 		// Parse "show onu info all" (index 2) → get serial, onuId, ONUProfile
+		// Filter to current PON port to avoid duplicates (some firmware returns all ports)
 		var portONUs []types.ONUInfo
 		if len(outputs) > 2 {
-			portONUs = a.parseV1600ONUList(outputs[2], ponPort)
+			for _, onu := range a.parseV1600ONUList(outputs[2], ponPort) {
+				if onu.PONPort == ponPort {
+					portONUs = append(portONUs, onu)
+				}
+			}
 		}
 		if len(portONUs) == 0 {
 			continue
