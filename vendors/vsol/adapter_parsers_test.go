@@ -939,8 +939,8 @@ func TestDetectONUVendor(t *testing.T) {
 		{"FHTT59CB8310", "FiberHome"},
 		{"HWTC12345678", "Huawei"},
 		{"GPON00929978", "Generic"}, // GPON prefix maps to Generic
-		{"FH", ""},                // too short
-		{"", ""},                  // empty
+		{"FH", ""},                  // too short
+		{"", ""},                    // empty
 	}
 
 	for _, tt := range tests {
