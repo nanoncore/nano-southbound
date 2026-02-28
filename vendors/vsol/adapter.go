@@ -61,7 +61,7 @@ var (
 	reOpticalONUTxPower = regexp.MustCompile(`(?:onu[_\s]*)?tx[_\s]*power[:\s]+(-?\d+\.?\d*)`)
 	reOpticalONURxPower = regexp.MustCompile(`(?:onu[_\s]*)?rx[_\s]*power[:\s]+(-?\d+\.?\d*)`)
 	reOpticalOLTRx      = regexp.MustCompile(`olt[_\s]*rx[:\s]+(-?\d+\.?\d*)`)
-	reOpticalDistance    = regexp.MustCompile(`distance[:\s]+(\d+)`)
+	reOpticalDistance   = regexp.MustCompile(`distance[:\s]+(\d+)`)
 	reOpticalRxDBm      = regexp.MustCompile(`rx[:\s]+(-?\d+\.?\d*).*dbm`)
 	reOpticalTxDBm      = regexp.MustCompile(`tx[:\s]+(-?\d+\.?\d*).*dbm`)
 
