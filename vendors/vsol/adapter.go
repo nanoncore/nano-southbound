@@ -5192,11 +5192,15 @@ func (a *Adapter) CheckONUCompatibility(ctx context.Context, subscriberID string
 	}
 
 	// Derive model type from serial prefix for both current and new ONU
-	currentType := classifyONUFromSerial(snapshot.Serial)
+	var currentSerial string
+	if snapshot != nil {
+		currentSerial = snapshot.Serial
+	}
+	currentType := classifyONUFromSerial(currentSerial)
 	newType := classifyONUFromSerial(newSerial)
 
 	// Check PON technology compatibility (GPON vs EPON)
-	currentTech := ponTechFromSerial(snapshot.Serial)
+	currentTech := ponTechFromSerial(currentSerial)
 	newTech := ponTechFromSerial(newSerial)
 	if currentTech != "" && newTech != "" && currentTech != newTech {
 		report.Compatible = false
