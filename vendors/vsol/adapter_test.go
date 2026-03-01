@@ -1150,6 +1150,68 @@ func TestMoveSubscriber_NoCLI(t *testing.T) {
 	}
 }
 
+func TestCheckONUCompatibility_SameModel(t *testing.T) {
+	mock := &mockCLIExecutor{
+		outputs: map[string]string{
+			"show onu info all": `Onuindex         Model            Profile          Mode  AuthInfo
+---------------------------------------------------------------------------
+GPON0/1:5        AN5506-04-F1     AN5506-04-F1     sn    VSOL12345678`,
+			"show running-config onu 5": `onu 5 profile AN5506-04-F1 sn VSOL12345678`,
+			"show service-port all":     "",
+		},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	report, err := adapter.CheckONUCompatibility(context.Background(), "onu-0/1-5", "VSOL99999999")
+	if err != nil {
+		t.Fatalf("CheckONUCompatibility() error: %v", err)
+	}
+	if !report.Compatible {
+		t.Errorf("expected compatible for same-model swap, got incompatible: %v", report.Warnings)
+	}
+}
+
+func TestCheckONUCompatibility_TypeMismatch(t *testing.T) {
+	mock := &mockCLIExecutor{
+		outputs: map[string]string{
+			"show onu info all": `Onuindex         Model            Profile          Mode  AuthInfo
+---------------------------------------------------------------------------
+GPON0/1:5        AN5506-04-F1     AN5506-04-F1     sn    VSOL12345678`,
+			"show running-config onu 5": `onu 5 profile AN5506-04-F1 sn VSOL12345678`,
+			"show service-port all":     "",
+		},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	report, err := adapter.CheckONUCompatibility(context.Background(), "onu-0/1-5", "HG260ROUTER")
+	if err != nil {
+		t.Fatalf("CheckONUCompatibility() error: %v", err)
+	}
+	if len(report.Warnings) == 0 {
+		t.Error("expected warnings for bridge->router swap")
+	}
+}
+
+func TestCheckONUCompatibility_EmptySerial(t *testing.T) {
+	adapter := &Adapter{
+		cliExecutor: &mockCLIExecutor{outputs: map[string]string{}},
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	_, err := adapter.CheckONUCompatibility(context.Background(), "onu-0/1-5", "")
+	if err == nil {
+		t.Fatal("expected error for empty serial")
+	}
+}
+
 // Ensure unused imports are used
 var _ = types.DBAProfile{}
 var _ = strings.Contains

@@ -5168,3 +5168,109 @@ func (a *Adapter) MoveSubscriber(ctx context.Context, subscriberID string, targe
 
 	return result, nil
 }
+
+// CheckONUCompatibility checks whether a new ONU is compatible with the
+// current subscriber's profile requirements by comparing model capabilities
+// derived from serial prefixes and current ONU profile.
+func (a *Adapter) CheckONUCompatibility(ctx context.Context, subscriberID string, newSerial string) (*types.CompatibilityReport, error) {
+	if newSerial == "" {
+		return nil, fmt.Errorf("new serial is required")
+	}
+
+	report := &types.CompatibilityReport{
+		Compatible: true,
+	}
+
+	// Get current subscriber config to determine profile
+	snapshot, err := a.CaptureSubscriberConfig(ctx, subscriberID)
+	if err != nil {
+		// If we can't capture config, we can still do basic serial-prefix checks
+		slog.Warn("compatibility check: could not capture current config",
+			"subscriber_id", subscriberID, "error", err)
+	} else {
+		report.CurrentProfile = snapshot.ONUProfile
+	}
+
+	// Derive model type from serial prefix for both current and new ONU
+	currentType := classifyONUFromSerial(snapshot.Serial)
+	newType := classifyONUFromSerial(newSerial)
+
+	// Check PON technology compatibility (GPON vs EPON)
+	currentTech := ponTechFromSerial(snapshot.Serial)
+	newTech := ponTechFromSerial(newSerial)
+	if currentTech != "" && newTech != "" && currentTech != newTech {
+		report.Compatible = false
+		report.Warnings = append(report.Warnings,
+			fmt.Sprintf("PON technology mismatch: current is %s, new is %s", currentTech, newTech))
+		report.RequiredProfileChanges = append(report.RequiredProfileChanges,
+			fmt.Sprintf("line profile must support %s", newTech))
+	}
+
+	// Check model type compatibility (bridge vs router)
+	if currentType != "" && newType != "" && currentType != newType {
+		report.Warnings = append(report.Warnings,
+			fmt.Sprintf("ONU type change: current is %s, new is %s", currentType, newType))
+		if snapshot != nil && snapshot.ONUProfile != "" {
+			report.SuggestedProfile = suggestProfileForType(newType, snapshot.ONUProfile)
+			if report.SuggestedProfile != snapshot.ONUProfile {
+				report.RequiredProfileChanges = append(report.RequiredProfileChanges,
+					fmt.Sprintf("ONU profile should change from %s to %s", snapshot.ONUProfile, report.SuggestedProfile))
+			}
+		}
+	}
+
+	return report, nil
+}
+
+// classifyONUFromSerial derives the ONU model type from serial prefix.
+// V-SOL convention: AN5506-04 = bridge (4 ETH), HG = router, etc.
+func classifyONUFromSerial(serial string) string {
+	if serial == "" {
+		return ""
+	}
+	upper := strings.ToUpper(serial)
+	switch {
+	case strings.HasPrefix(upper, "VSOL"), strings.Contains(upper, "AN5506"):
+		return "bridge"
+	case strings.HasPrefix(upper, "HG"), strings.Contains(upper, "ROUTER"):
+		return "router"
+	default:
+		return "unknown"
+	}
+}
+
+// ponTechFromSerial infers PON technology from serial prefix patterns.
+func ponTechFromSerial(serial string) string {
+	if serial == "" {
+		return ""
+	}
+	upper := strings.ToUpper(serial)
+	switch {
+	case strings.HasPrefix(upper, "GPON"), strings.HasPrefix(upper, "VSOL"):
+		return "gpon"
+	case strings.HasPrefix(upper, "EPON"):
+		return "epon"
+	case strings.HasPrefix(upper, "XGS"):
+		return "xgs-pon"
+	default:
+		return ""
+	}
+}
+
+// suggestProfileForType returns a suggested ONU profile based on the model type.
+func suggestProfileForType(modelType, currentProfile string) string {
+	// Simple heuristic: if switching from bridge to router or vice versa,
+	// suggest a profile adjustment. In production, this would query the OLT's
+	// available profiles.
+	switch modelType {
+	case "router":
+		if strings.Contains(currentProfile, "bridge") || strings.Contains(currentProfile, "04-F1") {
+			return strings.Replace(currentProfile, "04-F1", "04-F2", 1)
+		}
+	case "bridge":
+		if strings.Contains(currentProfile, "router") || strings.Contains(currentProfile, "04-F2") {
+			return strings.Replace(currentProfile, "04-F2", "04-F1", 1)
+		}
+	}
+	return currentProfile
+}

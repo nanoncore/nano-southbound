@@ -162,6 +162,13 @@ type DriverV2 interface {
 	// PON port/ONU ID, (3) verify new ONU online, (4) DeleteSubscriber on old port.
 	// If step 2 fails, old ONU remains untouched.
 	MoveSubscriber(ctx context.Context, subscriberID string, targetPONPort string, targetONUID int) (*MoveResult, error)
+
+	// === ONU Compatibility Check (for Swap) ===
+
+	// CheckONUCompatibility checks whether a new ONU is compatible with the
+	// current subscriber's profile requirements (ETH ports, POTS ports,
+	// T-CONT support, GPON vs XGS-PON). Used as a pre-flight check before swap.
+	CheckONUCompatibility(ctx context.Context, subscriberID string, newSerial string) (*CompatibilityReport, error)
 }
 
 // ONUDiscovery represents an unprovisioned ONU found during discovery.
@@ -860,6 +867,24 @@ type MoveResult struct {
 
 	// Warnings contains non-fatal issues
 	Warnings []string `json:"warnings,omitempty"`
+}
+
+// CompatibilityReport is the result of an ONU compatibility check.
+type CompatibilityReport struct {
+	// Compatible is true if the new ONU can replace the current one
+	Compatible bool `json:"compatible"`
+
+	// Warnings contains non-fatal compatibility notes
+	Warnings []string `json:"warnings,omitempty"`
+
+	// RequiredProfileChanges lists profile adjustments needed for the swap
+	RequiredProfileChanges []string `json:"required_profile_changes,omitempty"`
+
+	// CurrentProfile is the ONU profile currently in use
+	CurrentProfile string `json:"current_profile,omitempty"`
+
+	// SuggestedProfile is the recommended profile for the new ONU
+	SuggestedProfile string `json:"suggested_profile,omitempty"`
 }
 
 // Common error codes for lifecycle operations

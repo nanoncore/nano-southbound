@@ -2533,3 +2533,8 @@ func (a *Adapter) GetSuspensionState(ctx context.Context, subscriberID string) (
 func (a *Adapter) MoveSubscriber(ctx context.Context, subscriberID string, targetPONPort string, targetONUID int) (*types.MoveResult, error) {
 	return nil, types.ErrNotImplemented
 }
+
+// CheckONUCompatibility checks ONU compatibility for swap operations.
+func (a *Adapter) CheckONUCompatibility(ctx context.Context, subscriberID string, newSerial string) (*types.CompatibilityReport, error) {
+	return nil, types.ErrNotImplemented
+}
