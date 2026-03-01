@@ -141,6 +141,19 @@ type DriverV2 interface {
 	// new serial on same PON port, (3) verify new ONU online, (4) DeleteSubscriber
 	// on old ONU. If step 2 fails, old ONU remains untouched.
 	ReplaceONU(ctx context.Context, subscriberID string, newSerial string) (*ReplaceResult, error)
+
+	// === Soft Suspension ===
+
+	// SoftSuspendSubscriber applies a soft suspension mode without fully
+	// deactivating the ONU. Captures original config in SuspensionState
+	// for later restoration by ResumeSubscriber. Modes: throttle reduces
+	// bandwidth, walled-garden redirects to a captive VLAN, quarantine
+	// applies both. Existing SuspendSubscriber (hard suspend) is unchanged.
+	SoftSuspendSubscriber(ctx context.Context, subscriberID string, opts *SuspendOptions) (*SuspensionState, error)
+
+	// GetSuspensionState returns the current soft suspension state for a
+	// subscriber, or nil if the subscriber is not soft-suspended.
+	GetSuspensionState(ctx context.Context, subscriberID string) (*SuspensionState, error)
 }
 
 // ONUDiscovery represents an unprovisioned ONU found during discovery.
@@ -765,6 +778,56 @@ type ReplaceResult struct {
 
 	// Warnings contains non-fatal issues (e.g., "old ONU still present")
 	Warnings []string `json:"warnings,omitempty"`
+}
+
+// SuspensionMode defines how an ONU is soft-suspended.
+type SuspensionMode string
+
+const (
+	// SuspensionModeHard is the traditional full deactivation (existing behavior).
+	SuspensionModeHard SuspensionMode = "hard"
+
+	// SuspensionModeThrottle reduces bandwidth to near-zero (e.g., 64kbps).
+	SuspensionModeThrottle SuspensionMode = "throttle"
+
+	// SuspensionModeWalledGarden redirects traffic to a captive portal VLAN.
+	SuspensionModeWalledGarden SuspensionMode = "walled-garden"
+
+	// SuspensionModeQuarantine applies both throttle and walled-garden.
+	SuspensionModeQuarantine SuspensionMode = "quarantine"
+)
+
+// SuspendOptions configures a soft suspension operation.
+type SuspendOptions struct {
+	// Mode is the suspension type to apply
+	Mode SuspensionMode `json:"mode"`
+
+	// WalledGardenVLAN is the VLAN to redirect traffic to (for walled-garden/quarantine)
+	WalledGardenVLAN int `json:"walled_garden_vlan,omitempty"`
+
+	// ThrottleBandwidthKbps is the bandwidth limit in kbps (for throttle/quarantine).
+	// Defaults to 64 kbps if zero.
+	ThrottleBandwidthKbps int `json:"throttle_bandwidth_kbps,omitempty"`
+}
+
+// SuspensionState captures the state of a soft suspension, including the
+// original config snapshot for restoration on resume.
+type SuspensionState struct {
+	// Mode is the active suspension mode
+	Mode SuspensionMode `json:"mode"`
+
+	// OriginalSnapshot is the subscriber config before suspension, used to
+	// restore original VLAN/bandwidth on resume
+	OriginalSnapshot *SubscriberSnapshot `json:"original_snapshot,omitempty"`
+
+	// SuspendedAt is when the suspension was applied
+	SuspendedAt time.Time `json:"suspended_at"`
+
+	// AppliedBandwidthKbps is the actual throttle bandwidth applied
+	AppliedBandwidthKbps int `json:"applied_bandwidth_kbps,omitempty"`
+
+	// AppliedVLAN is the walled-garden VLAN that was applied
+	AppliedVLAN int `json:"applied_vlan,omitempty"`
 }
 
 // Common error codes for lifecycle operations

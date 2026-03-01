@@ -2518,3 +2518,13 @@ func (a *Adapter) RestoreSubscriberConfig(ctx context.Context, snapshot *types.S
 func (a *Adapter) ReplaceONU(ctx context.Context, subscriberID string, newSerial string) (*types.ReplaceResult, error) {
 	return nil, types.ErrNotImplemented
 }
+
+// SoftSuspendSubscriber applies a soft suspension mode.
+func (a *Adapter) SoftSuspendSubscriber(ctx context.Context, subscriberID string, opts *types.SuspendOptions) (*types.SuspensionState, error) {
+	return nil, types.ErrNotImplemented
+}
+
+// GetSuspensionState returns the current soft suspension state.
+func (a *Adapter) GetSuspensionState(ctx context.Context, subscriberID string) (*types.SuspensionState, error) {
+	return nil, types.ErrNotImplemented
+}

@@ -34,6 +34,8 @@ type Adapter struct {
 	config           *types.EquipmentConfig
 	wifiProfileMu    sync.RWMutex
 	wifiProfileCache map[string]string
+	suspensionMu     sync.RWMutex
+	suspensionStates map[string]*types.SuspensionState // subscriberID -> state
 }
 
 var (
@@ -5005,4 +5007,108 @@ func (a *Adapter) ReplaceONU(ctx context.Context, subscriberID string, newSerial
 		"verification", result.VerificationStatus)
 
 	return result, nil
+}
+
+// SoftSuspendSubscriber applies a soft suspension mode without fully deactivating
+// the ONU. Captures original config for later restoration.
+func (a *Adapter) SoftSuspendSubscriber(ctx context.Context, subscriberID string, opts *types.SuspendOptions) (*types.SuspensionState, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+	if opts == nil {
+		return nil, fmt.Errorf("suspend options are required")
+	}
+
+	switch opts.Mode {
+	case types.SuspensionModeThrottle, types.SuspensionModeWalledGarden, types.SuspensionModeQuarantine:
+		// valid
+	default:
+		return nil, fmt.Errorf("unsupported suspension mode: %q", opts.Mode)
+	}
+
+	ponPort, onuID := a.parseSubscriberID(subscriberID)
+
+	// Step 1: Capture current config for restoration
+	snapshot, err := a.CaptureSubscriberConfig(ctx, subscriberID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to capture config before soft suspend: %w", err)
+	}
+
+	state := &types.SuspensionState{
+		Mode:             opts.Mode,
+		OriginalSnapshot: snapshot,
+		SuspendedAt:      time.Now(),
+	}
+
+	// Step 2: Apply suspension mode
+	if opts.Mode == types.SuspensionModeThrottle || opts.Mode == types.SuspensionModeQuarantine {
+		throttleBw := opts.ThrottleBandwidthKbps
+		if throttleBw <= 0 {
+			throttleBw = 64 // default 64kbps
+		}
+		state.AppliedBandwidthKbps = throttleBw
+
+		// Apply near-zero bandwidth profile
+		bwProfiles, bwErr := a.findOrCreateBandwidthProfiles(ctx, throttleBw, throttleBw)
+		if bwErr != nil {
+			return nil, fmt.Errorf("failed to create throttle bandwidth profiles: %w", bwErr)
+		}
+		if bwProfiles != nil {
+			bwCmds := buildBandwidthCommands(ponPort, onuID, bwProfiles)
+			if _, err := a.cliExecutor.ExecCommands(ctx, bwCmds); err != nil {
+				return nil, fmt.Errorf("failed to apply throttle bandwidth: %w", err)
+			}
+		}
+	}
+
+	if opts.Mode == types.SuspensionModeWalledGarden || opts.Mode == types.SuspensionModeQuarantine {
+		walledVLAN := opts.WalledGardenVLAN
+		if walledVLAN <= 0 {
+			return nil, fmt.Errorf("walled_garden_vlan is required for mode %q", opts.Mode)
+		}
+		state.AppliedVLAN = walledVLAN
+
+		// Delete current service port and re-create with walled-garden VLAN
+		if err := a.DeleteServicePort(ctx, ponPort, onuID); err != nil {
+			slog.Warn("soft_suspend: failed to delete existing service port, may not exist",
+				"subscriber_id", subscriberID, "error", err)
+		}
+
+		if err := a.AddServicePort(ctx, &types.AddServicePortRequest{
+			PONPort:  ponPort,
+			ONTID:    onuID,
+			VLAN:     walledVLAN,
+			UserVLAN: walledVLAN,
+			GemPort:  1,
+			ETHPort:  1,
+		}); err != nil {
+			return nil, fmt.Errorf("failed to redirect to walled-garden VLAN %d: %w", walledVLAN, err)
+		}
+	}
+
+	// Store suspension state
+	a.suspensionMu.Lock()
+	if a.suspensionStates == nil {
+		a.suspensionStates = make(map[string]*types.SuspensionState)
+	}
+	a.suspensionStates[subscriberID] = state
+	a.suspensionMu.Unlock()
+
+	slog.Info("soft_suspend: suspension applied",
+		"subscriber_id", subscriberID, "mode", opts.Mode,
+		"throttle_kbps", state.AppliedBandwidthKbps,
+		"walled_vlan", state.AppliedVLAN)
+
+	return state, nil
+}
+
+// GetSuspensionState returns the current soft suspension state for a subscriber.
+func (a *Adapter) GetSuspensionState(ctx context.Context, subscriberID string) (*types.SuspensionState, error) {
+	a.suspensionMu.RLock()
+	defer a.suspensionMu.RUnlock()
+
+	if a.suspensionStates == nil {
+		return nil, nil
+	}
+	return a.suspensionStates[subscriberID], nil
 }

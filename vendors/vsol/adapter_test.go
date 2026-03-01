@@ -915,6 +915,161 @@ func TestReplaceONU_NoCLI(t *testing.T) {
 	}
 }
 
+func TestSoftSuspendSubscriber_Throttle(t *testing.T) {
+	mock := &mockCLIExecutor{
+		outputs: map[string]string{
+			"show onu info all": `Onuindex         Model            Profile          Mode  AuthInfo
+---------------------------------------------------------------------------
+GPON0/1:5        AN5506-04-F1     AN5506-04-F1     sn    VSOL12345678`,
+			"show running-config onu 5": `onu 5 profile AN5506-04-F1 sn VSOL12345678
+onu 5 line-profile line_vlan_100
+onu 5 tcont 1
+onu 5 gemport 1 tcont 1
+onu 5 service INTERNET gemport 1 vlan 100 cos 0-7
+onu 5 service-port 1 gemport 1 uservlan 100 vlan 100`,
+			"show service-port all": `Index   VLAN  Interface  ONT-ID  GemPort  UserVLAN  TagTransform
+--------------------------------------------------------------
+1       100   0/1        5       1        100       translate`,
+			"show dba-profile all":     "",
+			"show traffic-profile all": "",
+		},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	opts := &types.SuspendOptions{
+		Mode:                  types.SuspensionModeThrottle,
+		ThrottleBandwidthKbps: 64,
+	}
+
+	state, err := adapter.SoftSuspendSubscriber(context.Background(), "onu-0/1-5", opts)
+	if err != nil {
+		t.Fatalf("SoftSuspendSubscriber() error: %v", err)
+	}
+
+	if state.Mode != types.SuspensionModeThrottle {
+		t.Errorf("Mode = %q, want %q", state.Mode, types.SuspensionModeThrottle)
+	}
+	if state.AppliedBandwidthKbps != 64 {
+		t.Errorf("AppliedBandwidthKbps = %d, want 64", state.AppliedBandwidthKbps)
+	}
+	if state.OriginalSnapshot == nil {
+		t.Fatal("OriginalSnapshot is nil")
+	}
+	if state.OriginalSnapshot.VLAN != 100 {
+		t.Errorf("OriginalSnapshot.VLAN = %d, want 100", state.OriginalSnapshot.VLAN)
+	}
+
+	// Verify suspension state is stored
+	stored, err := adapter.GetSuspensionState(context.Background(), "onu-0/1-5")
+	if err != nil {
+		t.Fatalf("GetSuspensionState() error: %v", err)
+	}
+	if stored == nil {
+		t.Fatal("stored suspension state is nil")
+	}
+	if stored.Mode != types.SuspensionModeThrottle {
+		t.Errorf("stored Mode = %q, want %q", stored.Mode, types.SuspensionModeThrottle)
+	}
+}
+
+func TestSoftSuspendSubscriber_WalledGarden(t *testing.T) {
+	mock := &mockCLIExecutor{
+		outputs: map[string]string{
+			"show onu info all": `Onuindex         Model            Profile          Mode  AuthInfo
+---------------------------------------------------------------------------
+GPON0/1:5        AN5506-04-F1     AN5506-04-F1     sn    VSOL12345678`,
+			"show running-config onu 5": `onu 5 profile AN5506-04-F1 sn VSOL12345678
+onu 5 service-port 1 gemport 1 uservlan 100 vlan 100`,
+			"show service-port all": `Index   VLAN  Interface  ONT-ID  GemPort  UserVLAN  TagTransform
+--------------------------------------------------------------
+1       100   0/1        5       1        100       translate`,
+		},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	opts := &types.SuspendOptions{
+		Mode:             types.SuspensionModeWalledGarden,
+		WalledGardenVLAN: 999,
+	}
+
+	state, err := adapter.SoftSuspendSubscriber(context.Background(), "onu-0/1-5", opts)
+	if err != nil {
+		t.Fatalf("SoftSuspendSubscriber() error: %v", err)
+	}
+
+	if state.Mode != types.SuspensionModeWalledGarden {
+		t.Errorf("Mode = %q, want %q", state.Mode, types.SuspensionModeWalledGarden)
+	}
+	if state.AppliedVLAN != 999 {
+		t.Errorf("AppliedVLAN = %d, want 999", state.AppliedVLAN)
+	}
+
+	// Verify AddServicePort was called with walled-garden VLAN
+	hasWalledVLAN := false
+	for _, cmd := range mock.commands {
+		if strings.Contains(cmd, "vlan 999") {
+			hasWalledVLAN = true
+			break
+		}
+	}
+	if !hasWalledVLAN {
+		t.Errorf("expected walled-garden VLAN 999 in commands, got: %v", mock.commands)
+	}
+}
+
+func TestSoftSuspendSubscriber_InvalidMode(t *testing.T) {
+	adapter := &Adapter{
+		cliExecutor: &mockCLIExecutor{outputs: map[string]string{}},
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	opts := &types.SuspendOptions{
+		Mode: types.SuspensionMode("unknown"),
+	}
+
+	_, err := adapter.SoftSuspendSubscriber(context.Background(), "onu-0/1-5", opts)
+	if err == nil {
+		t.Fatal("expected error for unsupported mode")
+	}
+	if !strings.Contains(err.Error(), "unsupported suspension mode") {
+		t.Errorf("error = %q, want to contain 'unsupported suspension mode'", err.Error())
+	}
+}
+
+func TestSoftSuspendSubscriber_NilOpts(t *testing.T) {
+	adapter := &Adapter{
+		cliExecutor: &mockCLIExecutor{outputs: map[string]string{}},
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	_, err := adapter.SoftSuspendSubscriber(context.Background(), "onu-0/1-5", nil)
+	if err == nil {
+		t.Fatal("expected error for nil opts")
+	}
+}
+
+func TestGetSuspensionState_NotSuspended(t *testing.T) {
+	adapter := &Adapter{
+		config: &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	state, err := adapter.GetSuspensionState(context.Background(), "onu-0/1-5")
+	if err != nil {
+		t.Fatalf("GetSuspensionState() error: %v", err)
+	}
+	if state != nil {
+		t.Errorf("expected nil state for non-suspended subscriber, got %+v", state)
+	}
+}
+
 // Ensure unused imports are used
 var _ = types.DBAProfile{}
 var _ = strings.Contains
