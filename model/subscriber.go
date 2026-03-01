@@ -60,6 +60,12 @@ type SubscriberSpec struct {
 
 	// Description is a human-readable description
 	Description string `json:"description,omitempty"`
+
+	// ONUBindings holds the 1:N subscriber-to-ONU associations.
+	// For new subscribers, use this field instead of ONUSerial.
+	// For backward compatibility, if ONUBindings is empty the legacy
+	// ONUSerial field is used to synthesize a primary binding.
+	ONUBindings []ONUBinding `json:"onuBindings,omitempty"`
 }
 
 // IsEnabled returns true if the subscriber is enabled (default: true)
@@ -68,4 +74,60 @@ func (s *Subscriber) IsEnabled() bool {
 		return true
 	}
 	return *s.Spec.Enabled
+}
+
+// GetPrimaryONU returns the primary ONUBinding for this subscriber.
+// If ONUBindings is populated, it returns the first binding with Role "primary".
+// If ONUBindings is empty but the legacy ONUSerial field is set, it synthesizes
+// a primary ONUBinding from that field for backward compatibility.
+// Returns nil if no ONU binding can be determined.
+func (s *Subscriber) GetPrimaryONU() *ONUBinding {
+	for i := range s.Spec.ONUBindings {
+		if s.Spec.ONUBindings[i].Role == ONUBindingRolePrimary {
+			return &s.Spec.ONUBindings[i]
+		}
+	}
+	// Backward compatibility: synthesize from legacy ONUSerial
+	if s.Spec.ONUSerial != "" {
+		return &ONUBinding{
+			Serial: s.Spec.ONUSerial,
+			Role:   ONUBindingRolePrimary,
+		}
+	}
+	return nil
+}
+
+// GetONUBySerial finds an ONUBinding by its serial number.
+// Returns nil if not found. Also checks the legacy ONUSerial field.
+func (s *Subscriber) GetONUBySerial(serial string) *ONUBinding {
+	for i := range s.Spec.ONUBindings {
+		if s.Spec.ONUBindings[i].Serial == serial {
+			return &s.Spec.ONUBindings[i]
+		}
+	}
+	// Backward compatibility: check legacy field
+	if len(s.Spec.ONUBindings) == 0 && s.Spec.ONUSerial == serial {
+		return &ONUBinding{
+			Serial: s.Spec.ONUSerial,
+			Role:   ONUBindingRolePrimary,
+		}
+	}
+	return nil
+}
+
+// AddONU appends an ONUBinding to the subscriber.
+func (s *Subscriber) AddONU(binding ONUBinding) {
+	s.Spec.ONUBindings = append(s.Spec.ONUBindings, binding)
+}
+
+// RemoveONU removes an ONUBinding by serial number.
+// Returns true if a binding was removed, false if not found.
+func (s *Subscriber) RemoveONU(serial string) bool {
+	for i, b := range s.Spec.ONUBindings {
+		if b.Serial == serial {
+			s.Spec.ONUBindings = append(s.Spec.ONUBindings[:i], s.Spec.ONUBindings[i+1:]...)
+			return true
+		}
+	}
+	return false
 }

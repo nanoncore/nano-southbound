@@ -120,6 +120,19 @@ type DriverV2 interface {
 	// fields populated (PONPort, ONUID, Serial, ONUProfile, LineProfile,
 	// ServiceProfile, VLAN).
 	GetONUProfiles(ctx context.Context) ([]ONUInfo, error)
+
+	// === Subscriber Config Snapshot (used by RMA, Move, Swap, Soft Suspend) ===
+
+	// CaptureSubscriberConfig reads the full provisioning state of an ONU.
+	// Returns a snapshot that can be used to recreate the ONU on a different
+	// port or with a different serial via RestoreSubscriberConfig.
+	CaptureSubscriberConfig(ctx context.Context, subscriberID string) (*SubscriberSnapshot, error)
+
+	// RestoreSubscriberConfig provisions a new ONU from a previously captured
+	// snapshot. Used to re-create an ONU on a different PON port or with a
+	// different ONU ID (e.g., during RMA or move). The targetPONPort and
+	// targetONUID specify where to provision the new ONU.
+	RestoreSubscriberConfig(ctx context.Context, snapshot *SubscriberSnapshot, targetPONPort string, targetONUID int) (*SubscriberResult, error)
 }
 
 // ONUDiscovery represents an unprovisioned ONU found during discovery.
@@ -659,3 +672,82 @@ func IsPowerWithinSpec(rxDBm, txDBm float64) bool {
 	txOK := txDBm >= GPONTxLowThreshold && txDBm <= GPONTxHighThreshold
 	return rxOK && txOK
 }
+
+// SubscriberSnapshot captures the full provisioning state of an ONU.
+// It is the shared primitive used by RMA, Move, Swap, and Soft Suspend
+// to capture and recreate subscriber configurations.
+type SubscriberSnapshot struct {
+	// Serial is the ONU serial number at capture time
+	Serial string `json:"serial"`
+
+	// PONPort is the PON port at capture time
+	PONPort string `json:"pon_port"`
+
+	// ONUID is the ONU ID at capture time
+	ONUID int `json:"onu_id"`
+
+	// VLAN is the C-VLAN ID
+	VLAN int `json:"vlan"`
+
+	// SVLAN is the S-VLAN ID (Q-in-Q, 0 if not used)
+	SVLAN int `json:"svlan,omitempty"`
+
+	// LineProfile is the line profile name
+	LineProfile string `json:"line_profile,omitempty"`
+
+	// ServiceProfile is the service profile name
+	ServiceProfile string `json:"service_profile,omitempty"`
+
+	// TrafficProfile is the traffic/bandwidth profile name
+	TrafficProfile string `json:"traffic_profile,omitempty"`
+
+	// ONUProfile is the ONU hardware profile name
+	ONUProfile string `json:"onu_profile,omitempty"`
+
+	// BandwidthUpKbps is the upstream bandwidth in kbps
+	BandwidthUpKbps int `json:"bandwidth_up_kbps,omitempty"`
+
+	// BandwidthDownKbps is the downstream bandwidth in kbps
+	BandwidthDownKbps int `json:"bandwidth_down_kbps,omitempty"`
+
+	// ServicePorts contains all service port configurations for this ONU
+	ServicePorts []ServicePortSnapshot `json:"service_ports,omitempty"`
+
+	// Metadata contains vendor-specific config data needed for restore
+	Metadata map[string]string `json:"metadata,omitempty"`
+
+	// CapturedAt is when the snapshot was taken
+	CapturedAt time.Time `json:"captured_at"`
+}
+
+// ServicePortSnapshot captures a single service port configuration.
+type ServicePortSnapshot struct {
+	// Index is the service port index
+	Index int `json:"index"`
+
+	// VLAN is the service VLAN
+	VLAN int `json:"vlan"`
+
+	// UserVLAN is the user-side VLAN (C-VLAN)
+	UserVLAN int `json:"user_vlan,omitempty"`
+
+	// GemPort is the GEM port ID
+	GemPort int `json:"gemport,omitempty"`
+
+	// TagTransform is the VLAN tag transformation mode
+	TagTransform string `json:"tag_transform,omitempty"`
+
+	// Metadata contains vendor-specific service port data
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+// Common error codes for lifecycle operations
+const (
+	ErrCodeNotImplemented   = "NOT_IMPLEMENTED"
+	ErrCodeOperationLocked  = "OPERATION_LOCKED"
+	ErrCodeSnapshotFailed   = "SNAPSHOT_FAILED"
+	ErrCodeRestoreFailed    = "RESTORE_FAILED"
+	ErrCodeVerifyFailed     = "VERIFY_FAILED"
+	ErrCodeIncompatibleONU  = "INCOMPATIBLE_ONU"
+	ErrCodeSubscriberExists = "SUBSCRIBER_EXISTS"
+)

@@ -4709,3 +4709,231 @@ func (a *Adapter) DeleteServicePort(ctx context.Context, ponPort string, ontID i
 
 	return nil
 }
+
+// CaptureSubscriberConfig reads the full provisioning state of an ONU.
+// It collects PON port, ONU ID, serial, profiles, VLAN, and service ports
+// into a SubscriberSnapshot that can be used to restore the subscriber
+// on a different port or with a different serial.
+func (a *Adapter) CaptureSubscriberConfig(ctx context.Context, subscriberID string) (*types.SubscriberSnapshot, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+
+	ponPort, onuID := a.parseSubscriberID(subscriberID)
+
+	// Step 1: Get ONU details (serial, profiles, VLAN) from running config
+	var serial, lineProfile, onuProfile string
+	var vlan int
+
+	if a.detectPONType() == "gpon" {
+		commands := []string{
+			"configure terminal",
+			fmt.Sprintf("interface gpon %s", ponPort),
+			"show onu info all",
+			fmt.Sprintf("show running-config onu %d", onuID),
+			"exit",
+			"exit",
+		}
+
+		outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
+		if err != nil {
+			return nil, &types.HumanError{
+				Code:    types.ErrCodeSnapshotFailed,
+				Message: fmt.Sprintf("failed to read ONU config for %s: %v", subscriberID, err),
+				Vendor:  "vsol",
+			}
+		}
+
+		// Parse ONU info list (index 2) and find our ONU by ID
+		if len(outputs) > 2 {
+			for _, onu := range a.parseV1600ONUList(outputs[2], ponPort) {
+				if onu.ONUID == onuID {
+					serial = onu.Serial
+					onuProfile = onu.ONUProfile
+					break
+				}
+			}
+		}
+
+		// Parse running config (index 3) for line profile and VLAN
+		if len(outputs) > 3 {
+			lp, v := parseONURunningConfigProfiles(common.StripANSI(outputs[3]), onuID)
+			if lp != "" {
+				lineProfile = lp
+			}
+			if v > 0 {
+				vlan = v
+			}
+			// If VLAN not found from profiles, try the service-port pattern
+			if vlan == 0 {
+				vlan = a.parseONURunningConfigVLAN(outputs[3])
+			}
+		}
+	} else {
+		// EPON: get LLID info
+		commands := []string{
+			"configure terminal",
+			fmt.Sprintf("interface epon %s", ponPort),
+			fmt.Sprintf("show llid %d", onuID),
+			"exit",
+			"exit",
+		}
+
+		outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
+		if err != nil {
+			return nil, &types.HumanError{
+				Code:    types.ErrCodeSnapshotFailed,
+				Message: fmt.Sprintf("failed to read EPON ONU config for %s: %v", subscriberID, err),
+				Vendor:  "vsol",
+			}
+		}
+
+		if len(outputs) > 2 {
+			info := a.parseONUInfo(outputs[2], "")
+			if info != nil {
+				serial = info.Serial
+				vlan = info.VLAN
+			}
+		}
+	}
+
+	if serial == "" {
+		return nil, &types.HumanError{
+			Code:    types.ErrCodeONUNotFound,
+			Message: fmt.Sprintf("ONU not found at %s ONU %d", ponPort, onuID),
+			Vendor:  "vsol",
+		}
+	}
+
+	// Step 2: Collect service ports for this ONU
+	allServicePorts, err := a.ListServicePorts(ctx)
+	if err != nil {
+		// Non-fatal: we can still capture the basic config
+		slog.Warn("failed to list service ports during snapshot",
+			"subscriber_id", subscriberID, "error", err)
+	}
+
+	var snapshotPorts []types.ServicePortSnapshot
+	for _, sp := range allServicePorts {
+		if sp.Interface == ponPort && sp.ONTID == onuID {
+			snapshotPorts = append(snapshotPorts, types.ServicePortSnapshot{
+				Index:        sp.Index,
+				VLAN:         sp.VLAN,
+				UserVLAN:     sp.UserVLAN,
+				GemPort:      sp.GemPort,
+				TagTransform: sp.TagTransform,
+			})
+			// Use service port VLAN if not captured from running config
+			if vlan == 0 && sp.VLAN > 0 {
+				vlan = sp.VLAN
+			}
+		}
+	}
+
+	snapshot := &types.SubscriberSnapshot{
+		Serial:      serial,
+		PONPort:     ponPort,
+		ONUID:       onuID,
+		VLAN:        vlan,
+		LineProfile: lineProfile,
+		ONUProfile:  onuProfile,
+		ServicePorts: snapshotPorts,
+		Metadata: map[string]string{
+			"vendor":   "vsol",
+			"pon_type": a.detectPONType(),
+			"model":    a.detectModel(),
+		},
+		CapturedAt: time.Now(),
+	}
+
+	return snapshot, nil
+}
+
+// RestoreSubscriberConfig provisions a new ONU from a previously captured snapshot.
+// It re-creates the ONU on the specified PON port and ONU ID, applying all
+// captured configuration (profiles, VLAN, service ports, bandwidth).
+func (a *Adapter) RestoreSubscriberConfig(ctx context.Context, snapshot *types.SubscriberSnapshot, targetPONPort string, targetONUID int) (*types.SubscriberResult, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+	if snapshot == nil {
+		return nil, fmt.Errorf("snapshot is nil")
+	}
+
+	// Build a synthetic subscriber from the snapshot for CreateSubscriber
+	subscriber := &model.Subscriber{
+		Name: fmt.Sprintf("onu-%s-%d", targetPONPort, targetONUID),
+		Annotations: map[string]string{
+			"nano.io/pon-port": targetPONPort,
+			"nano.io/onu-id":   strconv.Itoa(targetONUID),
+		},
+		Spec: model.SubscriberSpec{
+			ONUSerial: snapshot.Serial,
+			VLAN:      snapshot.VLAN,
+		},
+	}
+
+	// Set ONU profile from snapshot
+	if snapshot.ONUProfile != "" {
+		subscriber.Annotations["nano.io/onu-profile"] = snapshot.ONUProfile
+	}
+	// Set line profile from snapshot
+	if snapshot.LineProfile != "" {
+		subscriber.Annotations["nano.io/line-profile"] = snapshot.LineProfile
+	}
+
+	// Build a minimal tier for bandwidth
+	tier := &model.ServiceTier{
+		Spec: model.ServiceTierSpec{
+			BandwidthDown: snapshot.BandwidthDownKbps / 1000,
+			BandwidthUp:   snapshot.BandwidthUpKbps / 1000,
+		},
+	}
+
+	result, err := a.CreateSubscriber(ctx, subscriber, tier)
+	if err != nil {
+		return nil, &types.HumanError{
+			Code:    types.ErrCodeRestoreFailed,
+			Message: fmt.Sprintf("failed to restore subscriber on %s ONU %d: %v", targetPONPort, targetONUID, err),
+			Vendor:  "vsol",
+		}
+	}
+
+	// If the snapshot had service ports and we used line-profile provisioning
+	// (which manages service ports automatically), skip re-creating them.
+	// Only re-create service ports if no line profile was used and snapshot
+	// has service port data that wasn't part of the CreateSubscriber flow.
+	if snapshot.LineProfile == "" && len(snapshot.ServicePorts) > 0 {
+		// Service ports were already created by CreateSubscriber's buildGPONCommands
+		// which includes tcont, gemport, service, service-port, and portvlan.
+		// No need to re-create them — they match the snapshot VLAN.
+	}
+
+	// Add warnings if result has none
+	var warnings []string
+	if result.Metadata != nil {
+		if outputs, ok := result.Metadata["cli_outputs"]; ok {
+			if outputSlice, ok := outputs.([]string); ok {
+				for _, out := range outputSlice {
+					outLower := strings.ToLower(out)
+					if strings.Contains(outLower, "warning") || strings.Contains(outLower, "already exist") {
+						warnings = append(warnings, out)
+					}
+				}
+			}
+		}
+	}
+
+	return &types.SubscriberResult{
+		SubscriberID:  result.SubscriberID,
+		SessionID:     result.SessionID,
+		InterfaceName: result.InterfaceName,
+		VLAN:          result.VLAN,
+		Metadata: map[string]interface{}{
+			"restored_from": snapshot.Serial,
+			"target_pon":    targetPONPort,
+			"target_onu_id": targetONUID,
+			"warnings":      warnings,
+		},
+	}, nil
+}

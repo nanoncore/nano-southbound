@@ -2503,3 +2503,13 @@ func (a *Adapter) DeleteServicePort(ctx context.Context, ponPort string, ontID i
 
 	return nil
 }
+
+// CaptureSubscriberConfig reads the full provisioning state of an ONU.
+func (a *Adapter) CaptureSubscriberConfig(ctx context.Context, subscriberID string) (*types.SubscriberSnapshot, error) {
+	return nil, types.ErrNotImplemented
+}
+
+// RestoreSubscriberConfig provisions a new ONU from a previously captured snapshot.
+func (a *Adapter) RestoreSubscriberConfig(ctx context.Context, snapshot *types.SubscriberSnapshot, targetPONPort string, targetONUID int) (*types.SubscriberResult, error) {
+	return nil, types.ErrNotImplemented
+}
