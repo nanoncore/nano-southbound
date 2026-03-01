@@ -4833,12 +4833,12 @@ func (a *Adapter) CaptureSubscriberConfig(ctx context.Context, subscriberID stri
 	}
 
 	snapshot := &types.SubscriberSnapshot{
-		Serial:      serial,
-		PONPort:     ponPort,
-		ONUID:       onuID,
-		VLAN:        vlan,
-		LineProfile: lineProfile,
-		ONUProfile:  onuProfile,
+		Serial:       serial,
+		PONPort:      ponPort,
+		ONUID:        onuID,
+		VLAN:         vlan,
+		LineProfile:  lineProfile,
+		ONUProfile:   onuProfile,
 		ServicePorts: snapshotPorts,
 		Metadata: map[string]string{
 			"vendor":   "vsol",
@@ -4901,15 +4901,9 @@ func (a *Adapter) RestoreSubscriberConfig(ctx context.Context, snapshot *types.S
 		}
 	}
 
-	// If the snapshot had service ports and we used line-profile provisioning
-	// (which manages service ports automatically), skip re-creating them.
-	// Only re-create service ports if no line profile was used and snapshot
-	// has service port data that wasn't part of the CreateSubscriber flow.
-	if snapshot.LineProfile == "" && len(snapshot.ServicePorts) > 0 {
-		// Service ports were already created by CreateSubscriber's buildGPONCommands
-		// which includes tcont, gemport, service, service-port, and portvlan.
-		// No need to re-create them — they match the snapshot VLAN.
-	}
+	// Note: Service ports from the snapshot are already handled by CreateSubscriber's
+	// buildGPONCommands (tcont, gemport, service, service-port, portvlan).
+	// No need to re-create them separately — they match the snapshot VLAN.
 
 	// Add warnings if result has none
 	var warnings []string
@@ -5295,10 +5289,10 @@ func (a *Adapter) AddONUToSubscriber(ctx context.Context, subscriberID string, b
 	subscriber := &model.Subscriber{
 		Name: fmt.Sprintf("%s-onu-%s-%d", subscriberID, binding.PONPort, binding.ONUID),
 		Annotations: map[string]string{
-			"nano.io/pon-port":      binding.PONPort,
-			"nano.io/onu-id":        strconv.Itoa(binding.ONUID),
-			"nano.io/parent-sub":    subscriberID,
-			"nano.io/binding-role":  string(binding.Role),
+			"nano.io/pon-port":     binding.PONPort,
+			"nano.io/onu-id":       strconv.Itoa(binding.ONUID),
+			"nano.io/parent-sub":   subscriberID,
+			"nano.io/binding-role": string(binding.Role),
 		},
 		Spec: model.SubscriberSpec{
 			ONUSerial: binding.Serial,

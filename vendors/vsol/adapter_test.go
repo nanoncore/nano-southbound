@@ -691,7 +691,7 @@ func TestCaptureSubscriberConfig_ONUNotFound(t *testing.T) {
 	mock := &mockCLIExecutor{
 		outputs: map[string]string{
 			// No serial in output
-			"show onu 5 info":          "No such ONU",
+			"show onu 5 info":           "No such ONU",
 			"show running-config onu 5": "",
 			"show service-port all":     "",
 		},
@@ -748,7 +748,7 @@ func TestRestoreSubscriberConfig_GPON(t *testing.T) {
 		ServicePorts: []types.ServicePortSnapshot{
 			{Index: 1, VLAN: 100, UserVLAN: 100, GemPort: 1},
 		},
-		Metadata: map[string]string{"vendor": "vsol", "pon_type": "gpon"},
+		Metadata:   map[string]string{"vendor": "vsol", "pon_type": "gpon"},
 		CapturedAt: time.Now(),
 	}
 

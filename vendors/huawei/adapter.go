@@ -2654,8 +2654,8 @@ func (a *Adapter) RestoreSubscriberConfig(ctx context.Context, snapshot *types.S
 	subscriber := &model.Subscriber{
 		Name: fmt.Sprintf("ont-%s-%d", targetPONPort, targetONUID),
 		Annotations: map[string]string{
-			"nano.io/pon-port": targetPONPort,
-			"nano.io/onu-id":   strconv.Itoa(targetONUID),
+			"nano.io/pon-port":       targetPONPort,
+			"nano.io/onu-id":         strconv.Itoa(targetONUID),
 			"nanoncore.com/gpon-fsp": fmt.Sprintf("%d/%d/%d", frame, slot, port),
 			"nanoncore.com/ont-id":   strconv.Itoa(targetONUID),
 		},
@@ -3003,10 +3003,10 @@ func (a *Adapter) AddONUToSubscriber(ctx context.Context, subscriberID string, b
 	subscriber := &model.Subscriber{
 		Name: fmt.Sprintf("ont-%s-%d", binding.PONPort, binding.ONUID),
 		Annotations: map[string]string{
-			"nanoncore.com/gpon-fsp": binding.PONPort,
-			"nanoncore.com/ont-id":   strconv.Itoa(binding.ONUID),
-			"nano.io/pon-port":       binding.PONPort,
-			"nano.io/onu-id":         strconv.Itoa(binding.ONUID),
+			"nanoncore.com/gpon-fsp":          binding.PONPort,
+			"nanoncore.com/ont-id":            strconv.Itoa(binding.ONUID),
+			"nano.io/pon-port":                binding.PONPort,
+			"nano.io/onu-id":                  strconv.Itoa(binding.ONUID),
 			"nanoncore.com/parent-subscriber": subscriberID,
 		},
 		Spec: model.SubscriberSpec{
