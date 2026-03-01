@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/xml"
 	"fmt"
+	"log/slog"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nanoncore/nano-southbound/model"
@@ -13,15 +16,14 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-// NETCONF message IDs
-var messageID uint64 = 0
-var messageIDMu sync.Mutex
+// maxMessageSize is the maximum allowed NETCONF message size (10 MB).
+const maxMessageSize = 10 * 1024 * 1024
+
+// NETCONF message IDs — uses atomic for lock-free increment.
+var messageID uint64
 
 func nextMessageID() uint64 {
-	messageIDMu.Lock()
-	defer messageIDMu.Unlock()
-	messageID++
-	return messageID
+	return atomic.AddUint64(&messageID, 1)
 }
 
 // NETCONF constants
@@ -79,18 +81,37 @@ func (r *netconfReader) Read(p []byte) (int, error) {
 	return r.reader.Read(p)
 }
 
-// ReadMessage reads a complete NETCONF message
+// ReadMessage reads a complete NETCONF message.
+// Enforces maxMessageSize to prevent unbounded memory growth, and
+// respects context cancellation when a context is provided.
 func (r *netconfReader) ReadMessage() ([]byte, error) {
+	return r.ReadMessageContext(context.Background())
+}
+
+// ReadMessageContext reads a complete NETCONF message with context support.
+func (r *netconfReader) ReadMessageContext(ctx context.Context) ([]byte, error) {
 	buf := make([]byte, 64*1024)
 	var message []byte
 
 	for {
+		// Check context before each read
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		default:
+		}
+
 		n, err := r.reader.Read(buf)
 		if err != nil {
 			return nil, err
 		}
 
 		message = append(message, buf[:n]...)
+
+		// Enforce size limit to prevent OOM
+		if len(message) > maxMessageSize {
+			return nil, fmt.Errorf("NETCONF message exceeds maximum size (%d bytes)", maxMessageSize)
+		}
 
 		// Check for end-of-message marker (NETCONF 1.0)
 		if !r.useChunk && strings.Contains(string(message), NetconfFrameEnd) {
@@ -101,29 +122,60 @@ func (r *netconfReader) ReadMessage() ([]byte, error) {
 
 		// NETCONF 1.1 chunked framing
 		if r.useChunk && strings.Contains(string(message), "\n##\n") {
-			// Parse chunks and reassemble
 			return parseChunkedMessage(message)
 		}
 	}
 }
 
+// parseChunkedMessage implements RFC 6242 chunked framing for NETCONF 1.1.
+// Handles multiple chunks: \n#<size>\n<data>\n#<size>\n<data>...\n##\n
 func parseChunkedMessage(data []byte) ([]byte, error) {
-	// Simple parser for NETCONF 1.1 chunked framing
-	// Format: \n#<size>\n<data>\n##\n
 	str := string(data)
-	if idx := strings.Index(str, "\n##\n"); idx > 0 {
-		// Find the chunk size and extract data
-		// This is simplified - production should handle multiple chunks
-		start := strings.Index(str, "\n#")
-		if start >= 0 {
-			sizeEnd := strings.Index(str[start+2:], "\n")
-			if sizeEnd > 0 {
-				dataStart := start + 2 + sizeEnd + 1
-				return []byte(str[dataStart:idx]), nil
-			}
+	var result []byte
+
+	pos := 0
+	for {
+		// Find start of next chunk header
+		chunkStart := strings.Index(str[pos:], "\n#")
+		if chunkStart == -1 {
+			break
 		}
+		chunkStart += pos
+
+		// Check for end-of-chunks marker
+		if strings.HasPrefix(str[chunkStart:], "\n##\n") {
+			break
+		}
+
+		// Parse chunk size: \n#<size>\n
+		sizeStart := chunkStart + 2 // skip "\n#"
+		sizeEnd := strings.Index(str[sizeStart:], "\n")
+		if sizeEnd == -1 {
+			return nil, fmt.Errorf("malformed NETCONF chunk: missing size terminator")
+		}
+		sizeEnd += sizeStart
+
+		sizeStr := strings.TrimSpace(str[sizeStart:sizeEnd])
+		chunkSize, err := strconv.Atoi(sizeStr)
+		if err != nil || chunkSize <= 0 {
+			return nil, fmt.Errorf("malformed NETCONF chunk: invalid size %q", sizeStr)
+		}
+
+		// Extract chunk data
+		dataStart := sizeEnd + 1
+		dataEnd := dataStart + chunkSize
+		if dataEnd > len(str) {
+			return nil, fmt.Errorf("malformed NETCONF chunk: size %d exceeds available data", chunkSize)
+		}
+
+		result = append(result, str[dataStart:dataEnd]...)
+		pos = dataEnd
 	}
-	return data, nil
+
+	if len(result) == 0 {
+		return data, nil
+	}
+	return result, nil
 }
 
 // NewDriver creates a new NETCONF driver
@@ -169,12 +221,13 @@ func (d *Driver) Connect(ctx context.Context, config *types.EquipmentConfig) err
 		Timeout: d.config.Timeout,
 	}
 
-	// Handle TLS/HostKey verification
-	if d.config.TLSSkipVerify {
-		sshConfig.HostKeyCallback = ssh.InsecureIgnoreHostKey() //nolint:gosec // user requested skip verify
-	} else {
-		// In production, use ssh.FixedHostKey or ssh.KnownHosts
-		sshConfig.HostKeyCallback = ssh.InsecureIgnoreHostKey() //nolint:gosec // TODO: implement proper host key verification
+	// Host key verification: respect TLSSkipVerify setting.
+	// When TLSSkipVerify is false (default), we still use InsecureIgnoreHostKey
+	// but log a warning — proper known_hosts support is a future improvement.
+	sshConfig.HostKeyCallback = ssh.InsecureIgnoreHostKey() //nolint:gosec // known_hosts support is planned
+	if !d.config.TLSSkipVerify {
+		slog.Warn("NETCONF SSH host key verification disabled: TLSSkipVerify not explicitly set",
+			"address", d.config.Address, "port", d.config.Port)
 	}
 
 	// Connect to SSH
@@ -326,9 +379,13 @@ func (d *Driver) IsConnected() bool {
 	return d.connected
 }
 
-// GetCapabilities returns the server's NETCONF capabilities
+// GetCapabilities returns a copy of the server's NETCONF capabilities.
 func (d *Driver) GetCapabilities() []string {
-	return d.capabilities
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	cp := make([]string, len(d.capabilities))
+	copy(cp, d.capabilities)
+	return cp
 }
 
 // HasCapability checks if server supports a specific capability
@@ -553,7 +610,7 @@ func (d *Driver) Unlock(ctx context.Context, target string) error {
 // Validate validates configuration
 func (d *Driver) Validate(ctx context.Context, source string) error {
 	if !d.HasCapability(CapValidate) {
-		return nil // Skip if not supported
+		return fmt.Errorf("NETCONF server does not support validate capability")
 	}
 	if source == "" {
 		source = "candidate"
@@ -599,46 +656,28 @@ func (d *Driver) UpdateSubscriber(ctx context.Context, subscriber *model.Subscri
 	return err
 }
 
-// DeleteSubscriber removes a subscriber
+// DeleteSubscriber removes a subscriber.
+// Base implementation — vendor adapters must override with real config.
 func (d *Driver) DeleteSubscriber(ctx context.Context, subscriberID string) error {
-	if !d.IsConnected() {
-		return fmt.Errorf("not connected to device")
-	}
-	// Base implementation - vendor adapters provide real delete config
-	return nil
+	return types.ErrNotImplemented
 }
 
-// SuspendSubscriber suspends a subscriber
+// SuspendSubscriber suspends a subscriber.
+// Base implementation — vendor adapters must override.
 func (d *Driver) SuspendSubscriber(ctx context.Context, subscriberID string) error {
-	if !d.IsConnected() {
-		return fmt.Errorf("not connected to device")
-	}
-	return nil
+	return types.ErrNotImplemented
 }
 
-// ResumeSubscriber resumes a suspended subscriber
+// ResumeSubscriber resumes a suspended subscriber.
+// Base implementation — vendor adapters must override.
 func (d *Driver) ResumeSubscriber(ctx context.Context, subscriberID string) error {
-	if !d.IsConnected() {
-		return fmt.Errorf("not connected to device")
-	}
-	return nil
+	return types.ErrNotImplemented
 }
 
-// GetSubscriberStatus retrieves subscriber status
+// GetSubscriberStatus retrieves subscriber status.
+// Base implementation — vendor adapters must override.
 func (d *Driver) GetSubscriberStatus(ctx context.Context, subscriberID string) (*types.SubscriberStatus, error) {
-	if !d.IsConnected() {
-		return nil, fmt.Errorf("not connected to device")
-	}
-
-	status := &types.SubscriberStatus{
-		SubscriberID: subscriberID,
-		State:        "active",
-		IsOnline:     true,
-		LastActivity: time.Now(),
-		Metadata:     map[string]interface{}{},
-	}
-
-	return status, nil
+	return nil, types.ErrNotImplemented
 }
 
 // GetSubscriberStats retrieves subscriber statistics
