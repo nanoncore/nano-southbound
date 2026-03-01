@@ -19,10 +19,10 @@ func almostEqual(a, b float64) bool {
 
 func TestParseAutofindOutput(t *testing.T) {
 	tests := []struct {
-		name           string
-		output         string
-		expectedCount  int
-		checkFirst     func(t *testing.T, d ONTDiscovery)
+		name          string
+		output        string
+		expectedCount int
+		checkFirst    func(t *testing.T, d ONTDiscovery)
 	}{
 		{
 			name: "standard autofind output with two ONTs",
@@ -231,12 +231,12 @@ func TestParseONTStatus(t *testing.T) {
 
 func TestParseOpticalInfo(t *testing.T) {
 	tests := []struct {
-		name         string
-		output       string
-		wantRxPower  string
-		wantTxPower  string
-		wantOltRx    string
-		wantTemp     string
+		name        string
+		output      string
+		wantRxPower string
+		wantTxPower string
+		wantOltRx   string
+		wantTemp    string
 	}{
 		{
 			name: "full optical info",

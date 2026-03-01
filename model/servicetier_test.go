@@ -2,8 +2,8 @@ package model
 
 import "testing"
 
-func intPtr(v int) *int   { return &v }
-func boolP(v bool) *bool  { return &v }
+func intPtr(v int) *int  { return &v }
+func boolP(v bool) *bool { return &v }
 
 func TestServiceTierGetPriority(t *testing.T) {
 	tests := []struct {

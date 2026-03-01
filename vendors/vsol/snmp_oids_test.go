@@ -293,8 +293,8 @@ func TestParseBiasCurrentFunc(t *testing.T) {
 
 func TestParseDistance(t *testing.T) {
 	tests := []struct {
-		name   string
-		value  interface{}
+		name     string
+		value    interface{}
 		wantDist int
 		wantOK   bool
 	}{
@@ -330,11 +330,11 @@ func TestParseDistance(t *testing.T) {
 
 func TestParseONUIndex(t *testing.T) {
 	tests := []struct {
-		name       string
-		index      string
-		wantPON    int
-		wantONU    int
-		wantErr    bool
+		name    string
+		index   string
+		wantPON int
+		wantONU int
+		wantErr bool
 	}{
 		{"with leading dot", ".1.6", 1, 6, false},
 		{"without leading dot", "1.6", 1, 6, false},
@@ -418,9 +418,9 @@ func TestParseONUVLANIndex(t *testing.T) {
 
 func TestPONIndexToPort(t *testing.T) {
 	tests := []struct {
-		name    string
-		ponIdx  int
-		want    string
+		name   string
+		ponIdx int
+		want   string
 	}{
 		{"port 1", 1, "0/1"},
 		{"port 8", 8, "0/8"},

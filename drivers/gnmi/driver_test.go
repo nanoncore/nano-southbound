@@ -71,13 +71,7 @@ func TestNewDriver(t *testing.T) {
 			if drv == nil {
 				t.Fatal("NewDriver() returned nil driver")
 			}
-			// Verify defaults were applied on the config
-			if tt.config.Port == 9339 {
-				// default port was applied
-			}
-			if tt.config.Timeout == 30*time.Second {
-				// default timeout was applied
-			}
+			// Verify driver was created successfully (defaults tested below)
 		})
 	}
 

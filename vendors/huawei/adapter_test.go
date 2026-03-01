@@ -198,9 +198,9 @@ func TestGetONTID(t *testing.T) {
 
 func TestGetLineProfileID(t *testing.T) {
 	tests := []struct {
-		name        string
-		tier        *model.ServiceTier
-		expected    int
+		name     string
+		tier     *model.ServiceTier
+		expected int
 	}{
 		{
 			name:     "nil tier returns default 1",
@@ -2205,12 +2205,12 @@ func TestRunDiagnostics(t *testing.T) {
 func TestGetSubscriberStats_SNMP(t *testing.T) {
 	snmpExec := &testutil.MockSNMPExecutor{
 		BulkGetResults: map[string]interface{}{
-			"1.3.6.1.4.1.2011.6.128.1.1.4.23.1.3.256.5": uint64(12345),  // up bytes
-			"1.3.6.1.4.1.2011.6.128.1.1.4.23.1.4.256.5": uint64(67890),  // down bytes
-			"1.3.6.1.4.1.2011.6.128.1.1.2.51.1.4.256.5": int64(-1850),   // rx power
-			"1.3.6.1.4.1.2011.6.128.1.1.2.51.1.3.256.5": int64(210),     // tx power
-			"1.3.6.1.4.1.2011.6.128.1.1.2.51.1.1.256.5": int64(11264),   // temperature
-			"1.3.6.1.4.1.2011.6.128.1.1.2.51.1.5.256.5": int64(3300),    // voltage
+			"1.3.6.1.4.1.2011.6.128.1.1.4.23.1.3.256.5": uint64(12345), // up bytes
+			"1.3.6.1.4.1.2011.6.128.1.1.4.23.1.4.256.5": uint64(67890), // down bytes
+			"1.3.6.1.4.1.2011.6.128.1.1.2.51.1.4.256.5": int64(-1850),  // rx power
+			"1.3.6.1.4.1.2011.6.128.1.1.2.51.1.3.256.5": int64(210),    // tx power
+			"1.3.6.1.4.1.2011.6.128.1.1.2.51.1.1.256.5": int64(11264),  // temperature
+			"1.3.6.1.4.1.2011.6.128.1.1.2.51.1.5.256.5": int64(3300),   // voltage
 		},
 	}
 
@@ -2548,9 +2548,9 @@ func TestGetONUList_NoFilter(t *testing.T) {
 			OIDOnuTemperature: {},
 			OIDOnuVoltage:     {},
 			OIDOnuDistance:    {},
-			OIDOnuCurrent:    {},
-			OIDOnuUpBytes:    {},
-			OIDOnuDownBytes:  {},
+			OIDOnuCurrent:     {},
+			OIDOnuUpBytes:     {},
+			OIDOnuDownBytes:   {},
 		},
 	}
 
@@ -2579,15 +2579,15 @@ func TestGetONUList_WithStatusFilter(t *testing.T) {
 			},
 			OIDOnuRxPower: {
 				"0.1.0": int64(-1850),      // online
-				"0.1.1": int64(2147483647),  // offline
+				"0.1.1": int64(2147483647), // offline
 			},
 			OIDOnuTxPower:     {},
 			OIDOnuTemperature: {},
 			OIDOnuVoltage:     {},
 			OIDOnuDistance:    {},
-			OIDOnuCurrent:    {},
-			OIDOnuUpBytes:    {},
-			OIDOnuDownBytes:  {},
+			OIDOnuCurrent:     {},
+			OIDOnuUpBytes:     {},
+			OIDOnuDownBytes:   {},
 		},
 	}
 
@@ -2615,8 +2615,8 @@ func TestGetONUList_WithPONPortFilter(t *testing.T) {
 	snmpExec := &testutil.MockSNMPExecutor{
 		WalkResults: map[string]map[string]interface{}{
 			OIDOnuSerialNumber: {
-				"0.1.0": "HWTC00001234",  // port 0/0/1
-				"0.2.0": "ZTEG00005678",  // port 0/0/2
+				"0.1.0": "HWTC00001234", // port 0/0/1
+				"0.2.0": "ZTEG00005678", // port 0/0/2
 			},
 			OIDOnuRxPower: {
 				"0.1.0": int64(-1850),
@@ -2626,9 +2626,9 @@ func TestGetONUList_WithPONPortFilter(t *testing.T) {
 			OIDOnuTemperature: {},
 			OIDOnuVoltage:     {},
 			OIDOnuDistance:    {},
-			OIDOnuCurrent:    {},
-			OIDOnuUpBytes:    {},
-			OIDOnuDownBytes:  {},
+			OIDOnuCurrent:     {},
+			OIDOnuUpBytes:     {},
+			OIDOnuDownBytes:   {},
 		},
 	}
 
@@ -2661,9 +2661,9 @@ func TestGetONUList_WithSerialFilter(t *testing.T) {
 			OIDOnuTemperature: {},
 			OIDOnuVoltage:     {},
 			OIDOnuDistance:    {},
-			OIDOnuCurrent:    {},
-			OIDOnuUpBytes:    {},
-			OIDOnuDownBytes:  {},
+			OIDOnuCurrent:     {},
+			OIDOnuUpBytes:     {},
+			OIDOnuDownBytes:   {},
 		},
 	}
 
@@ -2709,9 +2709,9 @@ func TestGetONUBySerial_Found(t *testing.T) {
 			OIDOnuTemperature: {},
 			OIDOnuVoltage:     {},
 			OIDOnuDistance:    {},
-			OIDOnuCurrent:    {},
-			OIDOnuUpBytes:    {},
-			OIDOnuDownBytes:  {},
+			OIDOnuCurrent:     {},
+			OIDOnuUpBytes:     {},
+			OIDOnuDownBytes:   {},
 		},
 	}
 
@@ -2737,14 +2737,14 @@ func TestGetONUBySerial_NotFound(t *testing.T) {
 	snmpExec := &testutil.MockSNMPExecutor{
 		WalkResults: map[string]map[string]interface{}{
 			OIDOnuSerialNumber: {},
-			OIDOnuRxPower:     {},
-			OIDOnuTxPower:     {},
-			OIDOnuTemperature: {},
-			OIDOnuVoltage:     {},
-			OIDOnuDistance:    {},
-			OIDOnuCurrent:    {},
-			OIDOnuUpBytes:    {},
-			OIDOnuDownBytes:  {},
+			OIDOnuRxPower:      {},
+			OIDOnuTxPower:      {},
+			OIDOnuTemperature:  {},
+			OIDOnuVoltage:      {},
+			OIDOnuDistance:     {},
+			OIDOnuCurrent:      {},
+			OIDOnuUpBytes:      {},
+			OIDOnuDownBytes:    {},
 		},
 	}
 

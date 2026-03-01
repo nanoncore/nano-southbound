@@ -223,7 +223,7 @@ func TestGetPONPort(t *testing.T) {
 			name: "nano.io annotation takes precedence",
 			subscriber: &model.Subscriber{
 				Annotations: map[string]string{
-					"nano.io/pon-port":      "0/3",
+					"nano.io/pon-port":       "0/3",
 					"nanoncore.com/pon-port": "0/5",
 				},
 			},
@@ -410,10 +410,10 @@ func TestFilterONUList(t *testing.T) {
 	}
 
 	tests := []struct {
-		name     string
-		filter   *types.ONUFilter
-		wantLen  int
-		checkFn  func(t *testing.T, result []types.ONUInfo)
+		name    string
+		filter  *types.ONUFilter
+		wantLen int
+		checkFn func(t *testing.T, result []types.ONUInfo)
 	}{
 		{
 			name:    "nil filter returns all",
@@ -2019,9 +2019,9 @@ func (m *mockDriverCLI) CreateSubscriber(_ context.Context, _ *model.Subscriber,
 func (m *mockDriverCLI) UpdateSubscriber(_ context.Context, _ *model.Subscriber, _ *model.ServiceTier) error {
 	return nil
 }
-func (m *mockDriverCLI) DeleteSubscriber(_ context.Context, _ string) error          { return nil }
-func (m *mockDriverCLI) SuspendSubscriber(_ context.Context, _ string) error         { return nil }
-func (m *mockDriverCLI) ResumeSubscriber(_ context.Context, _ string) error          { return nil }
+func (m *mockDriverCLI) DeleteSubscriber(_ context.Context, _ string) error  { return nil }
+func (m *mockDriverCLI) SuspendSubscriber(_ context.Context, _ string) error { return nil }
+func (m *mockDriverCLI) ResumeSubscriber(_ context.Context, _ string) error  { return nil }
 func (m *mockDriverCLI) GetSubscriberStatus(_ context.Context, _ string) (*types.SubscriberStatus, error) {
 	return nil, nil
 }
@@ -2050,9 +2050,9 @@ func (m *mockDriverSNMP) CreateSubscriber(_ context.Context, _ *model.Subscriber
 func (m *mockDriverSNMP) UpdateSubscriber(_ context.Context, _ *model.Subscriber, _ *model.ServiceTier) error {
 	return nil
 }
-func (m *mockDriverSNMP) DeleteSubscriber(_ context.Context, _ string) error          { return nil }
-func (m *mockDriverSNMP) SuspendSubscriber(_ context.Context, _ string) error         { return nil }
-func (m *mockDriverSNMP) ResumeSubscriber(_ context.Context, _ string) error          { return nil }
+func (m *mockDriverSNMP) DeleteSubscriber(_ context.Context, _ string) error  { return nil }
+func (m *mockDriverSNMP) SuspendSubscriber(_ context.Context, _ string) error { return nil }
+func (m *mockDriverSNMP) ResumeSubscriber(_ context.Context, _ string) error  { return nil }
 func (m *mockDriverSNMP) GetSubscriberStatus(_ context.Context, _ string) (*types.SubscriberStatus, error) {
 	return nil, nil
 }
@@ -2386,7 +2386,7 @@ onu 1 service INTERNET gemport 1 vlan 702`,
 		exec := &mockCLIExecutor{
 			outputs: map[string]string{
 				"show running-config onu 1": "unknown command",
-				"show running-config":      "full config here",
+				"show running-config":       "full config here",
 			},
 		}
 		adapter := &Adapter{
@@ -2627,12 +2627,12 @@ distance: 5200`,
 	t.Run("SNMP preferred over CLI when available", func(t *testing.T) {
 		snmpExec := &flexSNMPExecutor{
 			bulkGet: map[string]interface{}{
-				OIDONURxPower + ".1.5":      "-18.300",
-				OIDONUTxPower + ".1.5":      "2.500",
-				OIDONUDistance + ".1.5":      "5200",
-				OIDONUTemperature + ".1.5":   "45.0",
-				OIDONUVoltage + ".1.5":       "3.28",
-				OIDONUBiasCurrent + ".1.5":   "6.22",
+				OIDONURxPower + ".1.5":     "-18.300",
+				OIDONUTxPower + ".1.5":     "2.500",
+				OIDONUDistance + ".1.5":    "5200",
+				OIDONUTemperature + ".1.5": "45.0",
+				OIDONUVoltage + ".1.5":     "3.28",
+				OIDONUBiasCurrent + ".1.5": "6.22",
 			},
 		}
 		adapter := &Adapter{
@@ -3925,12 +3925,12 @@ func TestGetONUPowerSNMP(t *testing.T) {
 	t.Run("full optical data", func(t *testing.T) {
 		snmpExec := &flexSNMPExecutor{
 			bulkGet: map[string]interface{}{
-				OIDONURxPower + ".1.5":      "-18.300",
-				OIDONUTxPower + ".1.5":      "2.500",
-				OIDONUDistance + ".1.5":      int64(5200), // ParseDistance expects integer type
-				OIDONUTemperature + ".1.5":   "45.0",
-				OIDONUVoltage + ".1.5":       "3.28",
-				OIDONUBiasCurrent + ".1.5":   "6.22",
+				OIDONURxPower + ".1.5":     "-18.300",
+				OIDONUTxPower + ".1.5":     "2.500",
+				OIDONUDistance + ".1.5":    int64(5200), // ParseDistance expects integer type
+				OIDONUTemperature + ".1.5": "45.0",
+				OIDONUVoltage + ".1.5":     "3.28",
+				OIDONUBiasCurrent + ".1.5": "6.22",
 			},
 		}
 		adapter := &Adapter{
