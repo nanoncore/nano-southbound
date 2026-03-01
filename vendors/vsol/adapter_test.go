@@ -810,6 +810,111 @@ func TestRestoreSubscriberConfig_NoCLI(t *testing.T) {
 	}
 }
 
+func TestReplaceONU_Success(t *testing.T) {
+	mock := &mockCLIExecutor{
+		outputs: map[string]string{
+			// For CaptureSubscriberConfig
+			"show onu info all": `Onuindex         Model            Profile          Mode  AuthInfo
+---------------------------------------------------------------------------
+GPON0/1:5        AN5506-04-F1     AN5506-04-F1     sn    VSOL12345678`,
+			"show running-config onu 5": `onu 5 profile AN5506-04-F1 sn VSOL12345678
+onu 5 line-profile line_vlan_100
+onu 5 tcont 1
+onu 5 gemport 1 tcont 1
+onu 5 service INTERNET gemport 1 vlan 100 cos 0-7
+onu 5 service-port 1 gemport 1 uservlan 100 vlan 100`,
+			"show service-port all": `Index   VLAN  Interface  ONT-ID  GemPort  UserVLAN  TagTransform
+--------------------------------------------------------------
+1       100   0/1        5       1        100       translate`,
+		},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	result, err := adapter.ReplaceONU(context.Background(), "onu-0/1-5", "VSOLNEWSERIAL")
+	if err != nil {
+		t.Fatalf("ReplaceONU() error: %v", err)
+	}
+
+	if result.OldSerial != "VSOL12345678" {
+		t.Errorf("OldSerial = %q, want %q", result.OldSerial, "VSOL12345678")
+	}
+	if result.NewSerial != "VSOLNEWSERIAL" {
+		t.Errorf("NewSerial = %q, want %q", result.NewSerial, "VSOLNEWSERIAL")
+	}
+	if result.Snapshot == nil {
+		t.Fatal("Snapshot is nil")
+	}
+	if result.Snapshot.VLAN != 100 {
+		t.Errorf("Snapshot.VLAN = %d, want 100", result.Snapshot.VLAN)
+	}
+
+	// Verify create-first: the restore commands should contain the new serial
+	hasNewSerial := false
+	for _, cmd := range mock.commands {
+		if strings.Contains(cmd, "VSOLNEWSERIAL") {
+			hasNewSerial = true
+			break
+		}
+	}
+	if !hasNewSerial {
+		t.Errorf("expected new serial in CLI commands, got: %v", mock.commands)
+	}
+}
+
+func TestReplaceONU_CaptureFailure(t *testing.T) {
+	// Empty ONU list means capture will fail with ONU_NOT_FOUND
+	mock := &mockCLIExecutor{
+		outputs: map[string]string{
+			"show onu info all":         "",
+			"show running-config onu 5": "",
+			"show service-port all":     "",
+		},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	_, err := adapter.ReplaceONU(context.Background(), "onu-0/1-5", "VSOLNEWSERIAL")
+	if err == nil {
+		t.Fatal("expected error when ONU not found")
+	}
+	if !strings.Contains(err.Error(), "failed to capture config") {
+		t.Errorf("error = %q, want to contain 'failed to capture config'", err.Error())
+	}
+}
+
+func TestReplaceONU_EmptyNewSerial(t *testing.T) {
+	adapter := &Adapter{
+		cliExecutor: &mockCLIExecutor{outputs: map[string]string{}},
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	_, err := adapter.ReplaceONU(context.Background(), "onu-0/1-5", "")
+	if err == nil {
+		t.Fatal("expected error for empty new serial")
+	}
+	if !strings.Contains(err.Error(), "new serial is required") {
+		t.Errorf("error = %q, want to contain 'new serial is required'", err.Error())
+	}
+}
+
+func TestReplaceONU_NoCLI(t *testing.T) {
+	adapter := &Adapter{
+		config: &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	_, err := adapter.ReplaceONU(context.Background(), "onu-0/1-5", "VSOLNEWSERIAL")
+	if err == nil {
+		t.Fatal("expected error when CLI executor is nil")
+	}
+}
+
 // Ensure unused imports are used
 var _ = types.DBAProfile{}
 var _ = strings.Contains

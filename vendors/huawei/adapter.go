@@ -2513,3 +2513,8 @@ func (a *Adapter) CaptureSubscriberConfig(ctx context.Context, subscriberID stri
 func (a *Adapter) RestoreSubscriberConfig(ctx context.Context, snapshot *types.SubscriberSnapshot, targetPONPort string, targetONUID int) (*types.SubscriberResult, error) {
 	return nil, types.ErrNotImplemented
 }
+
+// ReplaceONU performs ONU replacement using create-first strategy.
+func (a *Adapter) ReplaceONU(ctx context.Context, subscriberID string, newSerial string) (*types.ReplaceResult, error) {
+	return nil, types.ErrNotImplemented
+}

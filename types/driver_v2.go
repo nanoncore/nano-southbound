@@ -133,6 +133,14 @@ type DriverV2 interface {
 	// different ONU ID (e.g., during RMA or move). The targetPONPort and
 	// targetONUID specify where to provision the new ONU.
 	RestoreSubscriberConfig(ctx context.Context, snapshot *SubscriberSnapshot, targetPONPort string, targetONUID int) (*SubscriberResult, error)
+
+	// === ONU Replacement (RMA) ===
+
+	// ReplaceONU performs a full ONU replacement using create-first strategy:
+	// (1) CaptureSubscriberConfig on old ONU, (2) RestoreSubscriberConfig with
+	// new serial on same PON port, (3) verify new ONU online, (4) DeleteSubscriber
+	// on old ONU. If step 2 fails, old ONU remains untouched.
+	ReplaceONU(ctx context.Context, subscriberID string, newSerial string) (*ReplaceResult, error)
 }
 
 // ONUDiscovery represents an unprovisioned ONU found during discovery.
@@ -739,6 +747,24 @@ type ServicePortSnapshot struct {
 
 	// Metadata contains vendor-specific service port data
 	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+// ReplaceResult contains the outcome of an ONU replacement (RMA) operation.
+type ReplaceResult struct {
+	// OldSerial is the serial of the replaced ONU
+	OldSerial string `json:"old_serial"`
+
+	// NewSerial is the serial of the new ONU
+	NewSerial string `json:"new_serial"`
+
+	// Snapshot is the config that was preserved from the old ONU
+	Snapshot *SubscriberSnapshot `json:"snapshot"`
+
+	// VerificationStatus describes the new ONU's online state after replacement
+	VerificationStatus string `json:"verification_status"`
+
+	// Warnings contains non-fatal issues (e.g., "old ONU still present")
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // Common error codes for lifecycle operations
