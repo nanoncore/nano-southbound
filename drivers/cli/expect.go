@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	expect "github.com/google/goexpect"
@@ -35,10 +36,12 @@ var PagerDisableCommands = map[string]string{
 	"cisco":  "terminal length 0",
 }
 
-// ExpectSession wraps google/goexpect for network equipment CLI interaction
+// ExpectSession wraps google/goexpect for network equipment CLI interaction.
+// Execute is serialized with a mutex to prevent interleaved output from
+// concurrent callers.
 type ExpectSession struct {
+	mu          sync.Mutex
 	expecter    *expect.GExpect
-	sshClient   *ssh.Client
 	promptRE    *regexp.Regexp
 	pagerRE     *regexp.Regexp
 	timeout     time.Duration
@@ -88,11 +91,10 @@ func NewExpectSession(cfg ExpectSessionConfig) (*ExpectSession, error) {
 	}
 
 	session := &ExpectSession{
-		expecter:  exp,
-		sshClient: cfg.SSHClient,
-		promptRE:  promptRE,
-		timeout:   cfg.Timeout,
-		vendor:    cfg.Vendor,
+		expecter: exp,
+		promptRE: promptRE,
+		timeout:  cfg.Timeout,
+		vendor:   cfg.Vendor,
 	}
 	session.pagerRE = regexp.MustCompile(`(?m)(` + promptRE.String() + `|` + pagerMoreRE.String() + `)`)
 
@@ -203,8 +205,12 @@ func (s *ExpectSession) disablePager() error {
 	return err
 }
 
-// Execute sends a command and waits for the prompt, returning the output
+// Execute sends a command and waits for the prompt, returning the output.
+// Serialized with a mutex to prevent interleaved output from concurrent callers.
 func (s *ExpectSession) Execute(command string) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
 	if s.expecter == nil {
 		return "", fmt.Errorf("expect session not initialized")
 	}
@@ -273,5 +279,7 @@ func (s *ExpectSession) Close() error {
 
 // SetTimeout updates the command timeout
 func (s *ExpectSession) SetTimeout(timeout time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.timeout = timeout
 }

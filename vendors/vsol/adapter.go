@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"log/slog"
@@ -26,16 +27,82 @@ var (
 // Adapter wraps a base driver with V-SOL-specific logic
 // V-SOL OLTs (V1600G series) use CLI + SNMP, with optional EMS REST API
 type Adapter struct {
-	baseDriver      types.Driver
-	secondaryDriver types.Driver // SNMP driver when primary is CLI
-	cliExecutor     types.CLIExecutor
-	snmpExecutor    types.SNMPExecutor
-	config          *types.EquipmentConfig
+	baseDriver       types.Driver
+	secondaryDriver  types.Driver // SNMP driver when primary is CLI
+	cliExecutor      types.CLIExecutor
+	snmpExecutor     types.SNMPExecutor
+	config           *types.EquipmentConfig
+	wifiProfileMu    sync.RWMutex
+	wifiProfileCache map[string]string
 }
 
 var (
 	reConfirmOnuID  = regexp.MustCompile(`onu\s+(\d+)\s+OK`)
 	reRegisterOnuID = regexp.MustCompile(`Register\s+pon\s+\d+\s+onu\s+(\d+)\s+OK`)
+
+	// --- ONU index/ID parsing ---
+	reONUIndexGPON      = regexp.MustCompile(`(?:GPON)?(\d+/\d+):(\d+)`)
+	reONUIndexSlotFrame = regexp.MustCompile(`(\d+/\d+)/(\d+):(\d+)`)
+	reONUSubscriberID   = regexp.MustCompile(`on[tu]-(\d+/\d+)-(\d+)`)
+	reONUPort           = regexp.MustCompile(`port[:\s]+(\d+/\d+)`)
+	reONUID             = regexp.MustCompile(`(?:onu[_\s]*)?id[:\s]+(\d+)`)
+
+	// --- Optical power: ONU detail ---
+	reOpticalRxLevel     = regexp.MustCompile(`rx\s*optical\s*level[:\s]+(-?\d+\.?\d*)`)
+	reOpticalTxLevel     = regexp.MustCompile(`tx\s*optical\s*level[:\s]+(-?\d+\.?\d*)`)
+	reOpticalTemperature = regexp.MustCompile(`temperature[:\s]+(-?\d+\.?\d*)`)
+	reOpticalVoltage     = regexp.MustCompile(`(?:power\s*feed\s*)?voltage[:\s]+(-?\d+\.?\d*)`)
+	reOpticalBiasCurrent = regexp.MustCompile(`(?:laser\s*)?bias\s*current[:\s]+(-?\d+\.?\d*)`)
+
+	// --- Optical power: PON port / ONU ---
+	reOpticalTxPower    = regexp.MustCompile(`tx[_\s]*power[:\s]+(-?\d+\.?\d*)`)
+	reOpticalRxPower    = regexp.MustCompile(`rx[_\s]*power[:\s]+(-?\d+\.?\d*)`)
+	reOpticalTemp       = regexp.MustCompile(`temp[:\s]+(-?\d+\.?\d*)`)
+	reOpticalONUTxPower = regexp.MustCompile(`(?:onu[_\s]*)?tx[_\s]*power[:\s]+(-?\d+\.?\d*)`)
+	reOpticalONURxPower = regexp.MustCompile(`(?:onu[_\s]*)?rx[_\s]*power[:\s]+(-?\d+\.?\d*)`)
+	reOpticalOLTRx      = regexp.MustCompile(`olt[_\s]*rx[:\s]+(-?\d+\.?\d*)`)
+	reOpticalDistance   = regexp.MustCompile(`distance[:\s]+(\d+)`)
+	reOpticalRxDBm      = regexp.MustCompile(`rx[:\s]+(-?\d+\.?\d*).*dbm`)
+	reOpticalTxDBm      = regexp.MustCompile(`tx[:\s]+(-?\d+\.?\d*).*dbm`)
+
+	// --- Traffic statistics ---
+	reTrafficInputRate   = regexp.MustCompile(`input\s*rate\s*\(bps\)[:\s]+(\d+)`)
+	reTrafficOutputRate  = regexp.MustCompile(`output\s*rate\s*\(bps\)[:\s]+(\d+)`)
+	reTrafficInputBytes  = regexp.MustCompile(`input\s*bytes[:\s]+(\d+)`)
+	reTrafficOutputBytes = regexp.MustCompile(`output\s*bytes[:\s]+(\d+)`)
+	reTrafficInputPkts   = regexp.MustCompile(`input\s*packets[:\s]+(\d+)`)
+	reTrafficOutputPkts  = regexp.MustCompile(`output\s*packets[:\s]+(\d+)`)
+	reTrafficRxBytes     = regexp.MustCompile(`rx\s*bytes[:\s]+(\d+)`)
+	reTrafficTxBytes     = regexp.MustCompile(`tx\s*bytes[:\s]+(\d+)`)
+	reTrafficRxPackets   = regexp.MustCompile(`rx\s*packets[:\s]+(\d+)`)
+	reTrafficTxPackets   = regexp.MustCompile(`tx\s*packets[:\s]+(\d+)`)
+	reTrafficErrors      = regexp.MustCompile(`errors[:\s]+(\d+)`)
+	reTrafficDrops       = regexp.MustCompile(`drops[:\s]+(\d+)`)
+
+	// --- VLAN / service config ---
+	reVLANServicePort    = regexp.MustCompile(`service-port\s+\d+\s+gemport\s+\d+\s+uservlan\s+(\d+)`)
+	reVLANServiceGemport = regexp.MustCompile(`service\s+\S+\s+gemport\s+\d+\s+vlan\s+(\d+)`)
+	reVLANUserVLAN       = regexp.MustCompile(`uservlan\s+(\d+)`)
+	reVLANInline         = regexp.MustCompile(`vlan\s+(\d+)`)
+
+	// --- ONU detail / diagnostics ---
+	reONULineProfile    = regexp.MustCompile(`line[_\s]*profile[:\s]+(\S+)`)
+	reONUServiceProfile = regexp.MustCompile(`service[_\s]*profile[:\s]+(\S+)`)
+	reONUVLAN           = regexp.MustCompile(`vlan[:\s]+(\d+)`)
+	reONUBandwidthUp    = regexp.MustCompile(`(?:upstream|ingress)[:\s]+(\d+)`)
+	reONUBandwidthDown  = regexp.MustCompile(`(?:downstream|egress)[:\s]+(\d+)`)
+	reONUUptime         = regexp.MustCompile(`uptime[:\s]+(\d+)`)
+
+	// --- Telemetry: OLT status ---
+	reTelemetrySerialNum   = regexp.MustCompile(`(?i)olt serial number[:\s]+(\S+)`)
+	reTelemetrySoftwareVer = regexp.MustCompile(`(?i)software version[:\s]+(\S+)`)
+	reTelemetryCPUIdle     = regexp.MustCompile(`(?i)average:\s+all\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+([\d.]+)`)
+	reTelemetryMemTotal    = regexp.MustCompile(`(?i)memtotal[:\s]+(\d+)`)
+	reTelemetryMemFree     = regexp.MustCompile(`(?i)memfree[:\s]+(\d+)`)
+
+	// --- General parsing ---
+	reParseSlotPort   = regexp.MustCompile(`(\d+)/(\d+)`)
+	reParseMultiSpace = regexp.MustCompile(`\s{2,}`)
 )
 
 func (a *Adapter) preferCLI() bool {
@@ -60,6 +127,9 @@ func (a *Adapter) preferCLI() bool {
 // NewAdapter creates a new V-SOL adapter
 // If the base driver is CLI, it automatically creates an SNMP driver for monitoring
 func NewAdapter(baseDriver types.Driver, config *types.EquipmentConfig) types.Driver {
+	// V-SOL OLTs have non-compliant SSH; ensure PasswordAuthOnly is set.
+	config.PasswordAuthOnly = true
+
 	adapter := &Adapter{
 		baseDriver: baseDriver,
 		config:     config,
@@ -117,7 +187,9 @@ func (a *Adapter) createSNMPDriver() {
 
 	snmpDriver, err := snmp.NewDriver(&snmpConfig)
 	if err != nil {
-		return // SNMP creation failed, continue without it
+		slog.Warn("V-SOL: failed to create secondary SNMP driver, continuing without SNMP",
+			"address", a.config.Address, "error", err)
+		return
 	}
 
 	a.secondaryDriver = snmpDriver
@@ -168,7 +240,9 @@ func (a *Adapter) createCLIDriver() {
 
 	cliDriver, err := cli.NewDriver(cliConfig)
 	if err != nil {
-		return // CLI creation failed, continue without it
+		slog.Warn("V-SOL: failed to create secondary CLI driver, continuing without CLI",
+			"address", a.config.Address, "error", err)
+		return
 	}
 
 	// Store as secondary driver (for connecting later)
@@ -179,6 +253,16 @@ func (a *Adapter) createCLIDriver() {
 }
 
 func (a *Adapter) Connect(ctx context.Context, config *types.EquipmentConfig) error {
+	// Refresh adapter runtime config from connect-time options so metadata
+	// injected by callers (e.g. wifi_command_profile/model hints) is visible
+	// to V-SOL command resolution paths.
+	if config != nil {
+		a.config = config
+		if a.config.Metadata == nil {
+			a.config.Metadata = make(map[string]string)
+		}
+	}
+
 	// Connect primary driver
 	if err := a.baseDriver.Connect(ctx, config); err != nil {
 		return fmt.Errorf("primary driver connect failed: %w", err)
@@ -196,7 +280,10 @@ func (a *Adapter) Connect(ctx context.Context, config *types.EquipmentConfig) er
 			} else {
 				snmpConfig.Port = 161
 			}
-			_ = a.secondaryDriver.Connect(ctx, &snmpConfig) // Ignore error - secondary is optional
+			if err := a.secondaryDriver.Connect(ctx, &snmpConfig); err != nil {
+				slog.Warn("V-SOL: secondary SNMP driver connect failed, continuing without SNMP",
+					"address", a.config.Address, "error", err)
+			}
 		} else if a.snmpExecutor != nil && a.cliExecutor != nil {
 			// Secondary is CLI (primary was SNMP, created CLI for metrics)
 			cliPort := 22
@@ -215,7 +302,10 @@ func (a *Adapter) Connect(ctx context.Context, config *types.EquipmentConfig) er
 				Password: a.config.Password,
 				Timeout:  a.config.Timeout,
 			}
-			_ = a.secondaryDriver.Connect(ctx, cliConfig) // Ignore error - secondary is optional
+			if err := a.secondaryDriver.Connect(ctx, cliConfig); err != nil {
+				slog.Warn("V-SOL: secondary CLI driver connect failed, continuing without CLI",
+					"address", a.config.Address, "error", err)
+			}
 		}
 	}
 
@@ -363,7 +453,7 @@ func (a *Adapter) provisionGPONWithConfirm(ctx context.Context, ponPort, serial 
 	}
 
 	if lineProfile, hasLineProfile := common.GetAnnotationString(subscriber.Annotations, "nano.io/line-profile"); hasLineProfile && lineProfile != "" {
-		if out, err := a.cliExecutor.ExecCommand(ctx, fmt.Sprintf("onu %d profile line name %s", onuID, lineProfile)); err != nil {
+		if out, err := a.cliExecutor.ExecCommand(ctx, fmt.Sprintf("onu %d profile line name %s", onuID, common.SanitizeCLIParam(lineProfile))); err != nil {
 			record(out)
 			return 0, outputs, err
 		} else {
@@ -447,12 +537,12 @@ func (a *Adapter) buildGPONCommands(ponPort string, onuID int, serial string, vl
 		lineProfile, hasLineProfile := common.GetAnnotationString(subscriber.Annotations, "nano.io/line-profile")
 
 		// Step 1: Add ONU with ONU profile (hardware capabilities)
-		commands = append(commands, fmt.Sprintf("onu add %d profile %s sn %s", onuID, onuProfile, serial))
+		commands = append(commands, fmt.Sprintf("onu add %d profile %s sn %s", onuID, common.SanitizeCLIParam(onuProfile), common.SanitizeCLIParam(serial)))
 
 		if hasLineProfile && lineProfile != "" {
 			// NAN-260: Two-step provisioning with line profile (validated Test 6)
 			// Step 2: Apply line profile (service configuration with VLAN)
-			commands = append(commands, fmt.Sprintf("onu %d profile line name %s", onuID, lineProfile))
+			commands = append(commands, fmt.Sprintf("onu %d profile line name %s", onuID, common.SanitizeCLIParam(lineProfile)))
 			// No manual service-port needed - line profile manages VLAN
 		} else {
 			// Standard provisioning with explicit service-port configuration
@@ -497,13 +587,13 @@ func (a *Adapter) buildEPONCommands(ponPort string, onuID int, mac string, vlan 
 
 		// Register LLID with MAC address
 		// llid <llid-id> mac <mac-address>
-		fmt.Sprintf("llid %d mac %s", onuID, mac),
+		fmt.Sprintf("llid %d mac %s", onuID, common.SanitizeCLIParam(mac)),
 
 		// Assign profiles
 		fmt.Sprintf("llid profile %d line-profile %s service-profile %s",
 			onuID,
-			a.getLineProfile(tier),
-			a.getServiceProfile(tier)),
+			common.SanitizeCLIParam(a.getLineProfile(tier)),
+			common.SanitizeCLIParam(a.getServiceProfile(tier))),
 
 		// Configure VLAN
 		fmt.Sprintf("llid vlan %d user-vlan %d", onuID, vlan),
@@ -878,15 +968,26 @@ func (a *Adapter) GetONUList(ctx context.Context, filter *types.ONUFilter) ([]ty
 			}
 
 			// Parse the "show onu info" output (index 2: config=0, interface=1, info=2)
+			// Note: some V-SOL firmware returns ONUs from ALL ports regardless of
+			// the interface context, so we filter to only keep ONUs matching the
+			// current PON port to avoid duplicates across iterations.
 			if len(outputs) > 2 {
 				onus := a.parseV1600ONUList(outputs[2], ponPort)
-				allOnus = append(allOnus, onus...)
+				for _, onu := range onus {
+					if onu.PONPort == ponPort {
+						allOnus = append(allOnus, onu)
+					}
+				}
 			}
 
 			// Parse the "show onu state" output (index 3)
 			if len(outputs) > 3 {
 				states := a.parseONUState(outputs[3])
-				allStates = append(allStates, states...)
+				for _, s := range states {
+					if s.PONPort == ponPort {
+						allStates = append(allStates, s)
+					}
+				}
 			}
 		}
 
@@ -1154,7 +1255,7 @@ func (a *Adapter) parseV1600ONUList(output string, ponPort string) []types.ONUIn
 			var onuID int
 
 			// Try to parse format like "GPON0/1:1" or "0/1:1"
-			re := regexp.MustCompile(`(?:GPON)?(\d+/\d+):(\d+)`)
+			re := reONUIndexGPON
 			if matches := re.FindStringSubmatch(onuIndex); len(matches) == 3 {
 				extractedPort = matches[1]
 				onuID, _ = strconv.Atoi(matches[2])
@@ -1236,12 +1337,18 @@ func (a *Adapter) parseONUState(output string) []ONUStateInfo {
 			var onuID int
 
 			// Try to parse format like "1/1/1:1" (slot/frame/port:onuid)
-			re := regexp.MustCompile(`(\d+/\d+)/(\d+):(\d+)`)
-			if matches := re.FindStringSubmatch(onuIndex); len(matches) == 4 {
+			if matches := reONUIndexSlotFrame.FindStringSubmatch(onuIndex); len(matches) == 4 {
 				// Convert "1/1/1:1" to PON port "0/1" format
 				portNum := matches[2]
 				ponPort = "0/" + portNum
 				onuID, _ = strconv.Atoi(matches[3])
+			} else if matches := reONUIndexGPON.FindStringSubmatch(onuIndex); len(matches) == 3 {
+				// Fallback: some firmware uses "GPON0/1:1" format in show onu state
+				ponPort = matches[1]
+				onuID, _ = strconv.Atoi(matches[2])
+			} else {
+				// Can't parse ONU index — skip this line
+				continue
 			}
 
 			adminState := strings.ToLower(fields[1])
@@ -1289,31 +1396,31 @@ func (a *Adapter) parseONUOpticalInfo(output string) *ONUOpticalInfo {
 	outputLower := strings.ToLower(output)
 
 	// Parse Rx optical level
-	rxRe := regexp.MustCompile(`rx\s*optical\s*level[:\s]+(-?\d+\.?\d*)`)
+	rxRe := reOpticalRxLevel
 	if match := rxRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		info.RxPowerDBm, _ = strconv.ParseFloat(match[1], 64)
 	}
 
 	// Parse Tx optical level
-	txRe := regexp.MustCompile(`tx\s*optical\s*level[:\s]+(-?\d+\.?\d*)`)
+	txRe := reOpticalTxLevel
 	if match := txRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		info.TxPowerDBm, _ = strconv.ParseFloat(match[1], 64)
 	}
 
 	// Parse Temperature
-	tempRe := regexp.MustCompile(`temperature[:\s]+(-?\d+\.?\d*)`)
+	tempRe := reOpticalTemperature
 	if match := tempRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		info.Temperature, _ = strconv.ParseFloat(match[1], 64)
 	}
 
 	// Parse Voltage (Power feed voltage)
-	voltRe := regexp.MustCompile(`(?:power\s*feed\s*)?voltage[:\s]+(-?\d+\.?\d*)`)
+	voltRe := reOpticalVoltage
 	if match := voltRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		info.Voltage, _ = strconv.ParseFloat(match[1], 64)
 	}
 
 	// Parse Laser bias current
-	biasRe := regexp.MustCompile(`(?:laser\s*)?bias\s*current[:\s]+(-?\d+\.?\d*)`)
+	biasRe := reOpticalBiasCurrent
 	if match := biasRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		info.BiasCurrent, _ = strconv.ParseFloat(match[1], 64)
 	}
@@ -1347,37 +1454,37 @@ func (a *Adapter) parseONUStatistics(output string) *ONUStatistics {
 	outputLower := strings.ToLower(output)
 
 	// Parse Input rate
-	inputRateRe := regexp.MustCompile(`input\s*rate\s*\(bps\)[:\s]+(\d+)`)
+	inputRateRe := reTrafficInputRate
 	if match := inputRateRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		stats.InputRateBps, _ = strconv.ParseUint(match[1], 10, 64)
 	}
 
 	// Parse Output rate
-	outputRateRe := regexp.MustCompile(`output\s*rate\s*\(bps\)[:\s]+(\d+)`)
+	outputRateRe := reTrafficOutputRate
 	if match := outputRateRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		stats.OutputRateBps, _ = strconv.ParseUint(match[1], 10, 64)
 	}
 
 	// Parse Input bytes
-	inputBytesRe := regexp.MustCompile(`input\s*bytes[:\s]+(\d+)`)
+	inputBytesRe := reTrafficInputBytes
 	if match := inputBytesRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		stats.InputBytes, _ = strconv.ParseUint(match[1], 10, 64)
 	}
 
 	// Parse Output bytes
-	outputBytesRe := regexp.MustCompile(`output\s*bytes[:\s]+(\d+)`)
+	outputBytesRe := reTrafficOutputBytes
 	if match := outputBytesRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		stats.OutputBytes, _ = strconv.ParseUint(match[1], 10, 64)
 	}
 
 	// Parse Input packets
-	inputPacketsRe := regexp.MustCompile(`input\s*packets[:\s]+(\d+)`)
+	inputPacketsRe := reTrafficInputPkts
 	if match := inputPacketsRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		stats.InputPackets, _ = strconv.ParseUint(match[1], 10, 64)
 	}
 
 	// Parse Output packets
-	outputPacketsRe := regexp.MustCompile(`output\s*packets[:\s]+(\d+)`)
+	outputPacketsRe := reTrafficOutputPkts
 	if match := outputPacketsRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		stats.OutputPackets, _ = strconv.ParseUint(match[1], 10, 64)
 	}
@@ -1396,7 +1503,7 @@ func (a *Adapter) parseONURunningConfigVLAN(output string) int {
 
 	// Look for service-port line with vlan (most specific)
 	// Format: onu X service-port Y gemport Z uservlan VVV vlan VVV
-	servicePortRe := regexp.MustCompile(`service-port\s+\d+\s+gemport\s+\d+\s+uservlan\s+(\d+)`)
+	servicePortRe := reVLANServicePort
 	if match := servicePortRe.FindStringSubmatch(output); len(match) > 1 {
 		if vlan, err := strconv.Atoi(match[1]); err == nil && vlan > 0 {
 			return vlan
@@ -1405,7 +1512,7 @@ func (a *Adapter) parseONURunningConfigVLAN(output string) int {
 
 	// Fallback: look for service line with vlan
 	// Format: onu X service NAME gemport Y vlan VVV
-	serviceRe := regexp.MustCompile(`service\s+\S+\s+gemport\s+\d+\s+vlan\s+(\d+)`)
+	serviceRe := reVLANServiceGemport
 	if match := serviceRe.FindStringSubmatch(output); len(match) > 1 {
 		if vlan, err := strconv.Atoi(match[1]); err == nil && vlan > 0 {
 			return vlan
@@ -1448,10 +1555,11 @@ func (a *Adapter) GetONUBySerial(ctx context.Context, serial string) (*types.ONU
 
 	// V-SOL CLI command to search for ONU by serial
 	var cmd string
+	sanitizedSerial := common.SanitizeCLIParam(serial)
 	if a.detectPONType() == "gpon" {
-		cmd = fmt.Sprintf("show onu sn %s", serial)
+		cmd = fmt.Sprintf("show onu sn %s", sanitizedSerial)
 	} else {
-		cmd = fmt.Sprintf("show llid sn %s", serial)
+		cmd = fmt.Sprintf("show llid sn %s", sanitizedSerial)
 	}
 
 	output, err := a.cliExecutor.ExecCommand(ctx, cmd)
@@ -1595,7 +1703,7 @@ func (a *Adapter) GetPONPower(ctx context.Context, ponPort string) (*types.PONPo
 	}
 
 	// Parse Tx power
-	txRe := regexp.MustCompile(`tx[_\s]*power[:\s]+(-?\d+\.?\d*)`)
+	txRe := reOpticalTxPower
 	if match := txRe.FindStringSubmatch(strings.ToLower(output)); len(match) > 1 {
 		if tx, err := strconv.ParseFloat(match[1], 64); err == nil {
 			reading.TxPowerDBm = tx
@@ -1603,7 +1711,7 @@ func (a *Adapter) GetPONPower(ctx context.Context, ponPort string) (*types.PONPo
 	}
 
 	// Parse Rx power (aggregate)
-	rxRe := regexp.MustCompile(`rx[_\s]*power[:\s]+(-?\d+\.?\d*)`)
+	rxRe := reOpticalRxPower
 	if match := rxRe.FindStringSubmatch(strings.ToLower(output)); len(match) > 1 {
 		if rx, err := strconv.ParseFloat(match[1], 64); err == nil {
 			reading.RxPowerDBm = rx
@@ -1611,7 +1719,7 @@ func (a *Adapter) GetPONPower(ctx context.Context, ponPort string) (*types.PONPo
 	}
 
 	// Parse temperature
-	tempRe := regexp.MustCompile(`temp[:\s]+(-?\d+\.?\d*)`)
+	tempRe := reOpticalTemp
 	if match := tempRe.FindStringSubmatch(strings.ToLower(output)); len(match) > 1 {
 		if temp, err := strconv.ParseFloat(match[1], 64); err == nil {
 			reading.Temperature = temp
@@ -1661,7 +1769,7 @@ func (a *Adapter) GetONUPower(ctx context.Context, ponPort string, onuID int) (*
 	outputLower := strings.ToLower(output)
 
 	// Parse ONU Tx power (what ONU sends)
-	txRe := regexp.MustCompile(`(?:onu[_\s]*)?tx[_\s]*power[:\s]+(-?\d+\.?\d*)`)
+	txRe := reOpticalONUTxPower
 	if match := txRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		if tx, err := strconv.ParseFloat(match[1], 64); err == nil {
 			reading.TxPowerDBm = tx
@@ -1669,7 +1777,7 @@ func (a *Adapter) GetONUPower(ctx context.Context, ponPort string, onuID int) (*
 	}
 
 	// Parse ONU Rx power (what ONU sees from OLT)
-	rxRe := regexp.MustCompile(`(?:onu[_\s]*)?rx[_\s]*power[:\s]+(-?\d+\.?\d*)`)
+	rxRe := reOpticalONURxPower
 	if match := rxRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		if rx, err := strconv.ParseFloat(match[1], 64); err == nil {
 			reading.RxPowerDBm = rx
@@ -1677,7 +1785,7 @@ func (a *Adapter) GetONUPower(ctx context.Context, ponPort string, onuID int) (*
 	}
 
 	// Parse OLT Rx power (what OLT receives from this ONU)
-	oltRxRe := regexp.MustCompile(`olt[_\s]*rx[:\s]+(-?\d+\.?\d*)`)
+	oltRxRe := reOpticalOLTRx
 	if match := oltRxRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		if oltRx, err := strconv.ParseFloat(match[1], 64); err == nil {
 			reading.OLTRxDBm = oltRx
@@ -1685,7 +1793,7 @@ func (a *Adapter) GetONUPower(ctx context.Context, ponPort string, onuID int) (*
 	}
 
 	// Parse distance
-	distRe := regexp.MustCompile(`distance[:\s]+(\d+)`)
+	distRe := reOpticalDistance
 	if match := distRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		if dist, err := strconv.Atoi(match[1]); err == nil {
 			reading.DistanceM = dist
@@ -2103,7 +2211,7 @@ func (a *Adapter) ApplyProfile(ctx context.Context, ponPort string, onuID int, p
 			if serviceProfile == "" {
 				serviceProfile = "service-internet"
 			}
-			commands = append(commands, fmt.Sprintf("llid profile %d line-profile %s service-profile %s", onuID, lineProfile, serviceProfile))
+			commands = append(commands, fmt.Sprintf("llid profile %d line-profile %s service-profile %s", onuID, common.SanitizeCLIParam(lineProfile), common.SanitizeCLIParam(serviceProfile)))
 		}
 
 		if profile.VLAN > 0 {
@@ -2171,7 +2279,7 @@ func (a *Adapter) BulkProvision(ctx context.Context, operations []types.BulkProv
 
 			commands = []string{
 				fmt.Sprintf("interface gpon %s", op.PONPort),
-				fmt.Sprintf("onu add %d profile %s sn %s", op.ONUID, onuProfile, op.Serial),
+				fmt.Sprintf("onu add %d profile %s sn %s", op.ONUID, common.SanitizeCLIParam(onuProfile), common.SanitizeCLIParam(op.Serial)),
 			}
 
 			if op.Profile != nil && op.Profile.VLAN > 0 {
@@ -2289,19 +2397,19 @@ func (a *Adapter) RunDiagnostics(ctx context.Context, ponPort string, onuID int)
 		outputLower := strings.ToLower(output)
 
 		// Line profile
-		lineRe := regexp.MustCompile(`line[_\s]*profile[:\s]+(\S+)`)
+		lineRe := reONULineProfile
 		if match := lineRe.FindStringSubmatch(outputLower); len(match) > 1 {
 			diag.LineProfile = match[1]
 		}
 
 		// Service profile
-		serviceRe := regexp.MustCompile(`service[_\s]*profile[:\s]+(\S+)`)
+		serviceRe := reONUServiceProfile
 		if match := serviceRe.FindStringSubmatch(outputLower); len(match) > 1 {
 			diag.ServiceProfile = match[1]
 		}
 
 		// VLAN
-		vlanRe := regexp.MustCompile(`vlan[:\s]+(\d+)`)
+		vlanRe := reONUVLAN
 		if match := vlanRe.FindStringSubmatch(outputLower); len(match) > 1 {
 			if vlan, err := strconv.Atoi(match[1]); err == nil {
 				diag.VLAN = vlan
@@ -2309,14 +2417,14 @@ func (a *Adapter) RunDiagnostics(ctx context.Context, ponPort string, onuID int)
 		}
 
 		// Bandwidth
-		bwUpRe := regexp.MustCompile(`(?:upstream|ingress)[:\s]+(\d+)`)
+		bwUpRe := reONUBandwidthUp
 		if match := bwUpRe.FindStringSubmatch(outputLower); len(match) > 1 {
 			if bw, err := strconv.Atoi(match[1]); err == nil {
 				diag.BandwidthUp = bw
 			}
 		}
 
-		bwDownRe := regexp.MustCompile(`(?:downstream|egress)[:\s]+(\d+)`)
+		bwDownRe := reONUBandwidthDown
 		if match := bwDownRe.FindStringSubmatch(outputLower); len(match) > 1 {
 			if bw, err := strconv.Atoi(match[1]); err == nil {
 				diag.BandwidthDown = bw
@@ -2399,13 +2507,13 @@ func (a *Adapter) GetOLTStatus(ctx context.Context) (*types.OLTStatus, error) {
 		}
 
 		// Parse serial number: "Olt Serial Number:           V2104230071"
-		snRe := regexp.MustCompile(`(?i)olt serial number[:\s]+(\S+)`)
+		snRe := reTelemetrySerialNum
 		if match := snRe.FindStringSubmatch(versionOutput); len(match) > 1 {
 			status.SerialNumber = match[1]
 		}
 
 		// Parse firmware version: "Software Version:            V2.1.6R"
-		fwRe := regexp.MustCompile(`(?i)software version[:\s]+(\S+)`)
+		fwRe := reTelemetrySoftwareVer
 		if match := fwRe.FindStringSubmatch(versionOutput); len(match) > 1 {
 			status.Firmware = match[1]
 		}
@@ -2429,7 +2537,7 @@ func (a *Adapter) enrichStatusWithCLIMetrics(ctx context.Context, status *types.
 		status.Metadata["cpu_output"] = cpuOutput
 		// Parse the "Average:" line for %idle (last column)
 		// "Average:     all    1.75    0.00    1.05    0.00    0.00   22.53    0.00    0.00   74.68"
-		idleRe := regexp.MustCompile(`(?i)average:\s+all\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+[\d.]+\s+([\d.]+)`)
+		idleRe := reTelemetryCPUIdle
 		if match := idleRe.FindStringSubmatch(cpuOutput); len(match) > 1 {
 			if idle, err := strconv.ParseFloat(match[1], 64); err == nil {
 				status.CPUPercent = 100 - idle
@@ -2447,8 +2555,8 @@ func (a *Adapter) enrichStatusWithCLIMetrics(ctx context.Context, status *types.
 	} else {
 		status.Metadata["mem_output"] = memOutput
 		var memTotal, memFree float64
-		totalRe := regexp.MustCompile(`(?i)memtotal[:\s]+(\d+)`)
-		freeRe := regexp.MustCompile(`(?i)memfree[:\s]+(\d+)`)
+		totalRe := reTelemetryMemTotal
+		freeRe := reTelemetryMemFree
 		if match := totalRe.FindStringSubmatch(memOutput); len(match) > 1 {
 			memTotal, _ = strconv.ParseFloat(match[1], 64)
 		}
@@ -2697,8 +2805,7 @@ func (a *Adapter) listPortsSNMPStandard(ctx context.Context) ([]types.PONPortSta
 // Example: "GPON 0/1" -> "0/1"
 func (a *Adapter) parsePortFromDescr(descr string) string {
 	// Try to extract slot/port pattern (e.g., "0/1")
-	re := regexp.MustCompile(`(\d+)/(\d+)`)
-	if match := re.FindStringSubmatch(descr); len(match) == 3 {
+	if match := reParseSlotPort.FindStringSubmatch(descr); len(match) == 3 {
 		return fmt.Sprintf("%s/%s", match[1], match[2])
 	}
 	return ""
@@ -2982,9 +3089,14 @@ func (a *Adapter) getONUProfilesCLI(ctx context.Context) ([]types.ONUInfo, error
 		}
 
 		// Parse "show onu info all" (index 2) → get serial, onuId, ONUProfile
+		// Filter to current PON port to avoid duplicates (some firmware returns all ports)
 		var portONUs []types.ONUInfo
 		if len(outputs) > 2 {
-			portONUs = a.parseV1600ONUList(outputs[2], ponPort)
+			for _, onu := range a.parseV1600ONUList(outputs[2], ponPort) {
+				if onu.PONPort == ponPort {
+					portONUs = append(portONUs, onu)
+				}
+			}
 		}
 		if len(portONUs) == 0 {
 			continue
@@ -3044,8 +3156,7 @@ func parseONURunningConfigProfiles(config string, onuID int) (lineProfile string
 
 		// "onu X service-port Y gemport Z uservlan VVV vlan VVV"
 		if fields[2] == "service-port" && vlan == 0 {
-			re := regexp.MustCompile(`uservlan\s+(\d+)`)
-			if match := re.FindStringSubmatch(line); len(match) > 1 {
+			if match := reVLANUserVLAN.FindStringSubmatch(line); len(match) > 1 {
 				if v, err := strconv.Atoi(match[1]); err == nil && v > 0 {
 					vlan = v
 				}
@@ -3055,8 +3166,7 @@ func parseONURunningConfigProfiles(config string, onuID int) (lineProfile string
 
 		// "onu X service <name> gemport Y vlan VVV"
 		if fields[2] == "service" && vlan == 0 {
-			re := regexp.MustCompile(`vlan\s+(\d+)`)
-			if match := re.FindStringSubmatch(line); len(match) > 1 {
+			if match := reVLANInline.FindStringSubmatch(line); len(match) > 1 {
 				if v, err := strconv.Atoi(match[1]); err == nil && v > 0 {
 					vlan = v
 				}
@@ -3358,7 +3468,7 @@ func (a *Adapter) parseONUStatus(output string, subscriberID string) *types.Subs
 	}
 
 	// Parse uptime if present
-	uptimeRe := regexp.MustCompile(`uptime[:\s]+(\d+)`)
+	uptimeRe := reONUUptime
 	if match := uptimeRe.FindStringSubmatch(output); len(match) > 1 {
 		if uptime, err := strconv.ParseInt(match[1], 10, 64); err == nil {
 			status.UptimeSeconds = uptime
@@ -3366,12 +3476,12 @@ func (a *Adapter) parseONUStatus(output string, subscriberID string) *types.Subs
 	}
 
 	// Parse optical power
-	rxPowerRe := regexp.MustCompile(`rx[:\s]+(-?\d+\.?\d*).*dbm`)
+	rxPowerRe := reOpticalRxDBm
 	if match := rxPowerRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		status.Metadata["rx_power_dbm"] = match[1]
 	}
 
-	txPowerRe := regexp.MustCompile(`tx[:\s]+(-?\d+\.?\d*).*dbm`)
+	txPowerRe := reOpticalTxDBm
 	if match := txPowerRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		status.Metadata["tx_power_dbm"] = match[1]
 	}
@@ -3394,28 +3504,28 @@ func (a *Adapter) parseONUStats(output string) *types.SubscriberStats {
 	// Rx Bytes: 123456789
 	// Tx Bytes: 987654321
 
-	rxBytesRe := regexp.MustCompile(`rx\s*bytes[:\s]+(\d+)`)
+	rxBytesRe := reTrafficRxBytes
 	if match := rxBytesRe.FindStringSubmatch(strings.ToLower(output)); len(match) > 1 {
 		if val, err := strconv.ParseUint(match[1], 10, 64); err == nil {
 			stats.BytesDown = val
 		}
 	}
 
-	txBytesRe := regexp.MustCompile(`tx\s*bytes[:\s]+(\d+)`)
+	txBytesRe := reTrafficTxBytes
 	if match := txBytesRe.FindStringSubmatch(strings.ToLower(output)); len(match) > 1 {
 		if val, err := strconv.ParseUint(match[1], 10, 64); err == nil {
 			stats.BytesUp = val
 		}
 	}
 
-	rxPacketsRe := regexp.MustCompile(`rx\s*packets[:\s]+(\d+)`)
+	rxPacketsRe := reTrafficRxPackets
 	if match := rxPacketsRe.FindStringSubmatch(strings.ToLower(output)); len(match) > 1 {
 		if val, err := strconv.ParseUint(match[1], 10, 64); err == nil {
 			stats.PacketsDown = val
 		}
 	}
 
-	txPacketsRe := regexp.MustCompile(`tx\s*packets[:\s]+(\d+)`)
+	txPacketsRe := reTrafficTxPackets
 	if match := txPacketsRe.FindStringSubmatch(strings.ToLower(output)); len(match) > 1 {
 		if val, err := strconv.ParseUint(match[1], 10, 64); err == nil {
 			stats.PacketsUp = val
@@ -3423,14 +3533,14 @@ func (a *Adapter) parseONUStats(output string) *types.SubscriberStats {
 	}
 
 	// Parse errors
-	errorsRe := regexp.MustCompile(`errors[:\s]+(\d+)`)
+	errorsRe := reTrafficErrors
 	if match := errorsRe.FindStringSubmatch(strings.ToLower(output)); len(match) > 1 {
 		if val, err := strconv.ParseUint(match[1], 10, 64); err == nil {
 			stats.ErrorsDown = val
 		}
 	}
 
-	dropsRe := regexp.MustCompile(`drops[:\s]+(\d+)`)
+	dropsRe := reTrafficDrops
 	if match := dropsRe.FindStringSubmatch(strings.ToLower(output)); len(match) > 1 {
 		if val, err := strconv.ParseUint(match[1], 10, 64); err == nil {
 			stats.Drops = val
@@ -3499,8 +3609,7 @@ func (a *Adapter) getServiceProfile(tier *model.ServiceTier) string {
 func (a *Adapter) parseSubscriberID(subscriberID string) (string, int) {
 	// Expected format: "onu-0/1-5" or "ont-0/1-5" (legacy)
 	// Try to parse from ID first
-	re := regexp.MustCompile(`on[tu]-(\d+/\d+)-(\d+)`)
-	if match := re.FindStringSubmatch(subscriberID); len(match) == 3 {
+	if match := reONUSubscriberID.FindStringSubmatch(subscriberID); len(match) == 3 {
 		if onuID, err := strconv.Atoi(match[2]); err == nil {
 			return match[1], onuID
 		}
@@ -3629,13 +3738,13 @@ func (a *Adapter) parseONUInfo(output string, serial string) *types.ONUInfo {
 	outputLower := strings.ToLower(output)
 
 	// Parse PON port
-	portRe := regexp.MustCompile(`port[:\s]+(\d+/\d+)`)
+	portRe := reONUPort
 	if match := portRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		onu.PONPort = match[1]
 	}
 
 	// Parse ONU ID
-	idRe := regexp.MustCompile(`(?:onu[_\s]*)?id[:\s]+(\d+)`)
+	idRe := reONUID
 	if match := idRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		if id, err := strconv.Atoi(match[1]); err == nil {
 			onu.ONUID = id
@@ -3658,7 +3767,7 @@ func (a *Adapter) parseONUInfo(output string, serial string) *types.ONUInfo {
 	}
 
 	// Parse Rx power
-	rxRe := regexp.MustCompile(`rx[_\s]*power[:\s]+(-?\d+\.?\d*)`)
+	rxRe := reOpticalRxPower
 	if match := rxRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		if rx, err := strconv.ParseFloat(match[1], 64); err == nil {
 			onu.RxPowerDBm = rx
@@ -3666,7 +3775,7 @@ func (a *Adapter) parseONUInfo(output string, serial string) *types.ONUInfo {
 	}
 
 	// Parse Tx power
-	txRe := regexp.MustCompile(`tx[_\s]*power[:\s]+(-?\d+\.?\d*)`)
+	txRe := reOpticalTxPower
 	if match := txRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		if tx, err := strconv.ParseFloat(match[1], 64); err == nil {
 			onu.TxPowerDBm = tx
@@ -3674,7 +3783,7 @@ func (a *Adapter) parseONUInfo(output string, serial string) *types.ONUInfo {
 	}
 
 	// Parse distance
-	distRe := regexp.MustCompile(`distance[:\s]+(\d+)`)
+	distRe := reOpticalDistance
 	if match := distRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		if dist, err := strconv.Atoi(match[1]); err == nil {
 			onu.DistanceM = dist
@@ -3682,19 +3791,19 @@ func (a *Adapter) parseONUInfo(output string, serial string) *types.ONUInfo {
 	}
 
 	// Parse line profile
-	lineRe := regexp.MustCompile(`line[_\s]*profile[:\s]+(\S+)`)
+	lineRe := reONULineProfile
 	if match := lineRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		onu.LineProfile = match[1]
 	}
 
 	// Parse service profile
-	serviceRe := regexp.MustCompile(`service[_\s]*profile[:\s]+(\S+)`)
+	serviceRe := reONUServiceProfile
 	if match := serviceRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		onu.ServiceProfile = match[1]
 	}
 
 	// Parse VLAN
-	vlanRe := regexp.MustCompile(`vlan[:\s]+(\d+)`)
+	vlanRe := reONUVLAN
 	if match := vlanRe.FindStringSubmatch(outputLower); len(match) > 1 {
 		if vlan, err := strconv.Atoi(match[1]); err == nil {
 			onu.VLAN = vlan
@@ -3792,7 +3901,7 @@ func (a *Adapter) parseVSolOamlog(output string) []types.OLTAlarm {
 		}
 
 		rest := strings.TrimSpace(line[len(fields[0])+len(fields[1])+2:])
-		columns := regexp.MustCompile(`\s{2,}`).Split(rest, -1)
+		columns := reParseMultiSpace.Split(rest, -1)
 
 		severity := "unknown"
 		eventName := ""
@@ -4275,10 +4384,10 @@ func (a *Adapter) CreateVLAN(ctx context.Context, req *types.CreateVLANRequest) 
 	}
 
 	if req.Name != "" {
-		commands = append(commands, fmt.Sprintf("name %s", req.Name))
+		commands = append(commands, fmt.Sprintf("name %s", common.SanitizeCLIParam(req.Name)))
 	}
 	if req.Description != "" {
-		commands = append(commands, fmt.Sprintf("description %s", req.Description))
+		commands = append(commands, fmt.Sprintf("description %s", common.SanitizeCLIParam(req.Description)))
 	}
 
 	commands = append(commands, "exit", "end")

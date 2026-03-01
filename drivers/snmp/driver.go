@@ -3,6 +3,7 @@ package snmp
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/gosnmp/gosnmp"
@@ -109,7 +110,10 @@ func (d *Driver) Connect(ctx context.Context, config *types.EquipmentConfig) err
 // Disconnect closes the SNMP connection
 func (d *Driver) Disconnect(ctx context.Context) error {
 	if d.snmp != nil {
-		err := d.snmp.Conn.Close()
+		var err error
+		if d.snmp.Conn != nil {
+			err = d.snmp.Conn.Close()
+		}
 		d.snmp = nil
 		return err
 	}
@@ -216,6 +220,37 @@ func (d *Driver) GetSubscriberStats(ctx context.Context, subscriberID string) (*
 	return stats, nil
 }
 
+// convertSNMPValue safely converts an SNMP PDU value to a Go type.
+// Uses comma-ok assertions to avoid panics on unexpected PDU types.
+func convertSNMPValue(pdu gosnmp.SnmpPDU) interface{} {
+	switch pdu.Type {
+	case gosnmp.OctetString:
+		if b, ok := pdu.Value.([]byte); ok {
+			return string(b)
+		}
+		return fmt.Sprintf("%v", pdu.Value)
+	case gosnmp.Integer:
+		if v, ok := pdu.Value.(int); ok {
+			return int64(v)
+		}
+		return pdu.Value
+	case gosnmp.Counter32, gosnmp.Gauge32, gosnmp.TimeTicks:
+		if v, ok := pdu.Value.(uint); ok {
+			return uint64(v)
+		}
+		return pdu.Value
+	case gosnmp.Counter64:
+		if v, ok := pdu.Value.(uint64); ok {
+			return v
+		}
+		return pdu.Value
+	case gosnmp.NoSuchObject, gosnmp.NoSuchInstance, gosnmp.EndOfMibView:
+		return nil
+	default:
+		return pdu.Value
+	}
+}
+
 // getSNMPValue retrieves a single SNMP value
 func (d *Driver) getSNMPValue(oid string) (interface{}, error) {
 	if !d.IsConnected() {
@@ -232,18 +267,11 @@ func (d *Driver) getSNMPValue(oid string) (interface{}, error) {
 	}
 
 	variable := result.Variables[0]
-
-	// Convert based on type
-	switch variable.Type {
-	case gosnmp.OctetString:
-		return string(variable.Value.([]byte)), nil
-	case gosnmp.Integer:
-		return variable.Value.(int), nil
-	case gosnmp.Counter32, gosnmp.Counter64:
-		return variable.Value.(uint64), nil
-	default:
-		return variable.Value, nil
+	if variable.Type == gosnmp.NoSuchObject || variable.Type == gosnmp.NoSuchInstance {
+		return nil, fmt.Errorf("no such object for OID %s", oid)
 	}
+
+	return convertSNMPValue(variable), nil
 }
 
 // HealthCheck performs a health check
@@ -259,35 +287,36 @@ func (d *Driver) HealthCheck(ctx context.Context) error {
 
 // GetSNMP implements types.SNMPExecutor - retrieves a single SNMP value
 func (d *Driver) GetSNMP(ctx context.Context, oid string) (interface{}, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	return d.getSNMPValue(oid)
 }
 
 // WalkSNMP implements types.SNMPExecutor - performs SNMP walk
 func (d *Driver) WalkSNMP(ctx context.Context, oid string) (map[string]interface{}, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if !d.IsConnected() {
 		return nil, fmt.Errorf("not connected")
+	}
+
+	if d.snmp.Conn == nil {
+		return nil, fmt.Errorf("SNMP connection is closed")
 	}
 
 	results := make(map[string]interface{})
 
 	err := d.snmp.Walk(oid, func(pdu gosnmp.SnmpPDU) error {
 		// Extract the index from the OID (last part after base OID)
-		index := pdu.Name[len(oid)+1:] // Skip base OID and dot
-
-		switch pdu.Type {
-		case gosnmp.OctetString:
-			results[index] = string(pdu.Value.([]byte))
-		case gosnmp.Integer:
-			results[index] = int64(pdu.Value.(int))
-		case gosnmp.Counter32:
-			results[index] = uint64(pdu.Value.(uint))
-		case gosnmp.Counter64:
-			results[index] = pdu.Value.(uint64)
-		case gosnmp.Gauge32:
-			results[index] = uint64(pdu.Value.(uint))
-		default:
-			results[index] = pdu.Value
+		if len(pdu.Name) <= len(oid)+1 {
+			slog.Debug("SNMP Walk: PDU OID too short to extract index",
+				"oid", oid, "pdu_name", pdu.Name)
+			return nil
 		}
+		index := pdu.Name[len(oid)+1:] // Skip base OID and dot
+		results[index] = convertSNMPValue(pdu)
 		return nil
 	})
 
@@ -300,6 +329,9 @@ func (d *Driver) WalkSNMP(ctx context.Context, oid string) (map[string]interface
 
 // BulkGetSNMP implements types.SNMPExecutor - retrieves multiple OIDs
 func (d *Driver) BulkGetSNMP(ctx context.Context, oids []string) (map[string]interface{}, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	if !d.IsConnected() {
 		return nil, fmt.Errorf("not connected")
 	}
@@ -311,20 +343,7 @@ func (d *Driver) BulkGetSNMP(ctx context.Context, oids []string) (map[string]int
 
 	results := make(map[string]interface{})
 	for _, variable := range result.Variables {
-		switch variable.Type {
-		case gosnmp.OctetString:
-			results[variable.Name] = string(variable.Value.([]byte))
-		case gosnmp.Integer:
-			results[variable.Name] = int64(variable.Value.(int))
-		case gosnmp.Counter32:
-			results[variable.Name] = uint64(variable.Value.(uint))
-		case gosnmp.Counter64:
-			results[variable.Name] = variable.Value.(uint64)
-		case gosnmp.Gauge32:
-			results[variable.Name] = uint64(variable.Value.(uint))
-		default:
-			results[variable.Name] = variable.Value
-		}
+		results[variable.Name] = convertSNMPValue(variable)
 	}
 
 	return results, nil

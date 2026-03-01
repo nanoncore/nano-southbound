@@ -251,9 +251,6 @@ func NewDriver(vendor Vendor, protocol Protocol, config *EquipmentConfig) (Drive
 		return vsol.NewAdapter(baseDriver, config), nil
 	case VendorCData:
 		return cdata.NewAdapter(baseDriver, config), nil
-	case VendorMock:
-		// Mock driver doesn't need a vendor adapter - it handles everything
-		return baseDriver, nil
 	default:
 		return nil, fmt.Errorf("vendor adapter not implemented: %s", vendor)
 	}
