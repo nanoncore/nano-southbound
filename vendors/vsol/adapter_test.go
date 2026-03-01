@@ -1212,6 +1212,139 @@ func TestCheckONUCompatibility_EmptySerial(t *testing.T) {
 	}
 }
 
+func TestAddONUToSubscriber_Success(t *testing.T) {
+	mock := &mockCLIExecutor{
+		outputs: map[string]string{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	binding := model.ONUBinding{
+		Serial:  "VSOL99999999",
+		PONPort: "0/3",
+		ONUID:   7,
+		Role:    model.ONUBindingRoleSecondary,
+	}
+
+	result, err := adapter.AddONUToSubscriber(context.Background(), "onu-0/1-5", binding, nil)
+	if err != nil {
+		t.Fatalf("AddONUToSubscriber() error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result is nil")
+	}
+
+	// Verify CLI commands target the new PON/ONU
+	hasNewPort := false
+	for _, cmd := range mock.commands {
+		if cmd == "interface gpon 0/3" {
+			hasNewPort = true
+			break
+		}
+	}
+	if !hasNewPort {
+		t.Errorf("expected commands targeting PON 0/3, got: %v", mock.commands)
+	}
+}
+
+func TestAddONUToSubscriber_MissingSerial(t *testing.T) {
+	adapter := &Adapter{
+		cliExecutor: &mockCLIExecutor{outputs: map[string]string{}},
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	binding := model.ONUBinding{PONPort: "0/3", ONUID: 7}
+	_, err := adapter.AddONUToSubscriber(context.Background(), "onu-0/1-5", binding, nil)
+	if err == nil {
+		t.Fatal("expected error for missing serial")
+	}
+}
+
+func TestRemoveONUFromSubscriber_NoCLI(t *testing.T) {
+	adapter := &Adapter{
+		config: &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	err := adapter.RemoveONUFromSubscriber(context.Background(), "onu-0/1-5", "VSOL12345678")
+	if err == nil {
+		t.Fatal("expected error when CLI executor is nil")
+	}
+}
+
+func TestRemoveONUFromSubscriber_EmptySerial(t *testing.T) {
+	adapter := &Adapter{
+		cliExecutor: &mockCLIExecutor{outputs: map[string]string{}},
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	err := adapter.RemoveONUFromSubscriber(context.Background(), "onu-0/1-5", "")
+	if err == nil {
+		t.Fatal("expected error for empty serial")
+	}
+	if !strings.Contains(err.Error(), "serial is required") {
+		t.Errorf("error = %q, want to contain 'serial is required'", err.Error())
+	}
+}
+
+func TestRemoveONUFromSubscriber_NotFound(t *testing.T) {
+	// Without SNMP, ListSubscriberONUs returns a placeholder with empty serial,
+	// so looking up a specific serial won't match.
+	adapter := &Adapter{
+		cliExecutor: &mockCLIExecutor{outputs: map[string]string{}},
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	err := adapter.RemoveONUFromSubscriber(context.Background(), "onu-0/1-5", "VSOL_NONEXIST")
+	if err == nil {
+		t.Fatal("expected error when ONU not found")
+	}
+	if !strings.Contains(err.Error(), "not found for subscriber") {
+		t.Errorf("error = %q, want to contain 'not found for subscriber'", err.Error())
+	}
+}
+
+func TestListSubscriberONUs_NoCLI(t *testing.T) {
+	adapter := &Adapter{
+		config: &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	_, err := adapter.ListSubscriberONUs(context.Background(), "onu-0/1-5")
+	if err == nil {
+		t.Fatal("expected error when CLI executor is nil")
+	}
+}
+
+func TestListSubscriberONUs_ReturnsPlaceholder(t *testing.T) {
+	mock := &mockCLIExecutor{
+		outputs: map[string]string{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	bindings, err := adapter.ListSubscriberONUs(context.Background(), "onu-0/1-5")
+	if err != nil {
+		t.Fatalf("ListSubscriberONUs() error: %v", err)
+	}
+	if len(bindings) != 1 {
+		t.Fatalf("expected 1 binding, got %d", len(bindings))
+	}
+	if bindings[0].PONPort != "0/1" {
+		t.Errorf("PONPort = %q, want %q", bindings[0].PONPort, "0/1")
+	}
+	if bindings[0].ONUID != 5 {
+		t.Errorf("ONUID = %d, want 5", bindings[0].ONUID)
+	}
+	if bindings[0].Role != model.ONUBindingRolePrimary {
+		t.Errorf("Role = %q, want %q", bindings[0].Role, model.ONUBindingRolePrimary)
+	}
+}
+
 // Ensure unused imports are used
 var _ = types.DBAProfile{}
 var _ = strings.Contains

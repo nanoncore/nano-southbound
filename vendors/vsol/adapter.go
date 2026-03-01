@@ -5274,3 +5274,129 @@ func suggestProfileForType(modelType, currentProfile string) string {
 	}
 	return currentProfile
 }
+
+// AddONUToSubscriber provisions an additional ONU for an existing subscriber.
+func (a *Adapter) AddONUToSubscriber(ctx context.Context, subscriberID string, binding model.ONUBinding, tier *model.ServiceTier) (*types.SubscriberResult, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+	if binding.Serial == "" {
+		return nil, fmt.Errorf("ONU serial is required")
+	}
+	if binding.PONPort == "" {
+		return nil, fmt.Errorf("PON port is required")
+	}
+
+	// Build a subscriber model for the additional ONU
+	subscriber := &model.Subscriber{
+		Name: fmt.Sprintf("%s-onu-%s-%d", subscriberID, binding.PONPort, binding.ONUID),
+		Annotations: map[string]string{
+			"nano.io/pon-port":      binding.PONPort,
+			"nano.io/onu-id":        strconv.Itoa(binding.ONUID),
+			"nano.io/parent-sub":    subscriberID,
+			"nano.io/binding-role":  string(binding.Role),
+		},
+		Spec: model.SubscriberSpec{
+			ONUSerial: binding.Serial,
+		},
+	}
+
+	if tier == nil {
+		tier = &model.ServiceTier{}
+	}
+
+	result, err := a.CreateSubscriber(ctx, subscriber, tier)
+	if err != nil {
+		return nil, fmt.Errorf("failed to add ONU %s to subscriber %s: %w", binding.Serial, subscriberID, err)
+	}
+
+	slog.Info("multi_onu: added ONU to subscriber",
+		"subscriber_id", subscriberID, "serial", binding.Serial,
+		"pon_port", binding.PONPort, "onu_id", binding.ONUID,
+		"role", binding.Role)
+
+	return result, nil
+}
+
+// RemoveONUFromSubscriber deprovisions a specific ONU by serial.
+func (a *Adapter) RemoveONUFromSubscriber(ctx context.Context, subscriberID string, serial string) error {
+	if a.cliExecutor == nil {
+		return fmt.Errorf("CLI executor not available")
+	}
+	if serial == "" {
+		return fmt.Errorf("serial is required")
+	}
+
+	// Find the ONU by serial across all PON ports
+	onus, err := a.ListSubscriberONUs(ctx, subscriberID)
+	if err != nil {
+		return fmt.Errorf("failed to list ONUs for subscriber %s: %w", subscriberID, err)
+	}
+
+	for _, onu := range onus {
+		if onu.Serial == serial {
+			onuSubID := fmt.Sprintf("onu-%s-%d", onu.PONPort, onu.ONUID)
+			if err := a.DeleteSubscriber(ctx, onuSubID); err != nil {
+				return fmt.Errorf("failed to remove ONU %s: %w", serial, err)
+			}
+			slog.Info("multi_onu: removed ONU from subscriber",
+				"subscriber_id", subscriberID, "serial", serial)
+			return nil
+		}
+	}
+
+	return fmt.Errorf("ONU with serial %s not found for subscriber %s", serial, subscriberID)
+}
+
+// ListSubscriberONUs returns all ONUs associated with a subscriber.
+// It queries ONUs by the subscriber ID pattern (onu-<ponPort>-<onuID>).
+func (a *Adapter) ListSubscriberONUs(ctx context.Context, subscriberID string) ([]model.ONUBinding, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+
+	// Get the primary ONU from the subscriber ID
+	ponPort, onuID := a.parseSubscriberID(subscriberID)
+
+	// Query ONU list for the PON port
+	filter := &types.ONUFilter{PONPort: ponPort}
+	var allONUs []types.ONUInfo
+
+	if a.snmpExecutor != nil {
+		onus, err := a.GetONUList(ctx, filter)
+		if err == nil {
+			allONUs = onus
+		}
+	}
+
+	// Build bindings from discovered ONUs
+	var bindings []model.ONUBinding
+
+	// Always include the primary ONU
+	primaryFound := false
+	for _, onu := range allONUs {
+		if onu.ONUID == onuID {
+			primaryFound = true
+			bindings = append(bindings, model.ONUBinding{
+				Serial:  onu.Serial,
+				PONPort: ponPort,
+				ONUID:   onu.ONUID,
+				Role:    model.ONUBindingRolePrimary,
+				Status:  onu.OperState,
+			})
+		}
+	}
+
+	// If we couldn't find via SNMP, add a placeholder from the subscriber ID
+	if !primaryFound {
+		bindings = append(bindings, model.ONUBinding{
+			Serial:  "",
+			PONPort: ponPort,
+			ONUID:   onuID,
+			Role:    model.ONUBindingRolePrimary,
+			Status:  "unknown",
+		})
+	}
+
+	return bindings, nil
+}

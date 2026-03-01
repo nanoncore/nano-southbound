@@ -2538,3 +2538,18 @@ func (a *Adapter) MoveSubscriber(ctx context.Context, subscriberID string, targe
 func (a *Adapter) CheckONUCompatibility(ctx context.Context, subscriberID string, newSerial string) (*types.CompatibilityReport, error) {
 	return nil, types.ErrNotImplemented
 }
+
+// AddONUToSubscriber provisions an additional ONU for an existing subscriber.
+func (a *Adapter) AddONUToSubscriber(ctx context.Context, subscriberID string, binding model.ONUBinding, tier *model.ServiceTier) (*types.SubscriberResult, error) {
+	return nil, types.ErrNotImplemented
+}
+
+// RemoveONUFromSubscriber deprovisions a specific ONU by serial.
+func (a *Adapter) RemoveONUFromSubscriber(ctx context.Context, subscriberID string, serial string) error {
+	return types.ErrNotImplemented
+}
+
+// ListSubscriberONUs returns all ONUs associated with a subscriber.
+func (a *Adapter) ListSubscriberONUs(ctx context.Context, subscriberID string) ([]model.ONUBinding, error) {
+	return nil, types.ErrNotImplemented
+}

@@ -3,6 +3,8 @@ package types
 import (
 	"context"
 	"time"
+
+	"github.com/nanoncore/nano-southbound/model"
 )
 
 // DriverV2 extends the base Driver interface with OLT-level operations,
@@ -169,6 +171,20 @@ type DriverV2 interface {
 	// current subscriber's profile requirements (ETH ports, POTS ports,
 	// T-CONT support, GPON vs XGS-PON). Used as a pre-flight check before swap.
 	CheckONUCompatibility(ctx context.Context, subscriberID string, newSerial string) (*CompatibilityReport, error)
+
+	// === Multi-ONU Provisioning ===
+
+	// AddONUToSubscriber provisions an additional ONU for an existing subscriber.
+	// Each ONU gets an independent service port. The binding specifies the
+	// ONU's serial, PON port, ONU ID, and role (primary/secondary/redundant).
+	AddONUToSubscriber(ctx context.Context, subscriberID string, binding model.ONUBinding, tier *model.ServiceTier) (*SubscriberResult, error)
+
+	// RemoveONUFromSubscriber deprovisions a specific ONU by serial from a
+	// subscriber, keeping other ONUs active.
+	RemoveONUFromSubscriber(ctx context.Context, subscriberID string, serial string) error
+
+	// ListSubscriberONUs returns all ONUs associated with a subscriber.
+	ListSubscriberONUs(ctx context.Context, subscriberID string) ([]model.ONUBinding, error)
 }
 
 // ONUDiscovery represents an unprovisioned ONU found during discovery.
