@@ -2528,3 +2528,8 @@ func (a *Adapter) SoftSuspendSubscriber(ctx context.Context, subscriberID string
 func (a *Adapter) GetSuspensionState(ctx context.Context, subscriberID string) (*types.SuspensionState, error) {
 	return nil, types.ErrNotImplemented
 }
+
+// MoveSubscriber moves a subscriber to a different PON port.
+func (a *Adapter) MoveSubscriber(ctx context.Context, subscriberID string, targetPONPort string, targetONUID int) (*types.MoveResult, error) {
+	return nil, types.ErrNotImplemented
+}

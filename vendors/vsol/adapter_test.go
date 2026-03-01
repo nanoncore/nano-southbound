@@ -1070,6 +1070,86 @@ func TestGetSuspensionState_NotSuspended(t *testing.T) {
 	}
 }
 
+func TestMoveSubscriber_Success(t *testing.T) {
+	mock := &mockCLIExecutor{
+		outputs: map[string]string{
+			"show onu info all": `Onuindex         Model            Profile          Mode  AuthInfo
+---------------------------------------------------------------------------
+GPON0/1:5        AN5506-04-F1     AN5506-04-F1     sn    VSOL12345678`,
+			"show running-config onu 5": `onu 5 profile AN5506-04-F1 sn VSOL12345678
+onu 5 line-profile line_vlan_100
+onu 5 tcont 1
+onu 5 gemport 1 tcont 1
+onu 5 service INTERNET gemport 1 vlan 100 cos 0-7
+onu 5 service-port 1 gemport 1 uservlan 100 vlan 100`,
+			"show service-port all": `Index   VLAN  Interface  ONT-ID  GemPort  UserVLAN  TagTransform
+--------------------------------------------------------------
+1       100   0/1        5       1        100       translate`,
+		},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	result, err := adapter.MoveSubscriber(context.Background(), "onu-0/1-5", "0/2", 3)
+	if err != nil {
+		t.Fatalf("MoveSubscriber() error: %v", err)
+	}
+
+	if result.OldPONPort != "0/1" {
+		t.Errorf("OldPONPort = %q, want %q", result.OldPONPort, "0/1")
+	}
+	if result.NewPONPort != "0/2" {
+		t.Errorf("NewPONPort = %q, want %q", result.NewPONPort, "0/2")
+	}
+	if result.OldONUID != 5 {
+		t.Errorf("OldONUID = %d, want 5", result.OldONUID)
+	}
+	if result.NewONUID != 3 {
+		t.Errorf("NewONUID = %d, want 3", result.NewONUID)
+	}
+
+	// Verify commands target the new PON port
+	hasNewPort := false
+	for _, cmd := range mock.commands {
+		if cmd == "interface gpon 0/2" {
+			hasNewPort = true
+			break
+		}
+	}
+	if !hasNewPort {
+		t.Errorf("expected commands targeting PON 0/2, got: %v", mock.commands)
+	}
+}
+
+func TestMoveSubscriber_EmptyTargetPort(t *testing.T) {
+	adapter := &Adapter{
+		cliExecutor: &mockCLIExecutor{outputs: map[string]string{}},
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	_, err := adapter.MoveSubscriber(context.Background(), "onu-0/1-5", "", 3)
+	if err == nil {
+		t.Fatal("expected error for empty target port")
+	}
+	if !strings.Contains(err.Error(), "target PON port is required") {
+		t.Errorf("error = %q, want to contain 'target PON port is required'", err.Error())
+	}
+}
+
+func TestMoveSubscriber_NoCLI(t *testing.T) {
+	adapter := &Adapter{
+		config: &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	_, err := adapter.MoveSubscriber(context.Background(), "onu-0/1-5", "0/2", 3)
+	if err == nil {
+		t.Fatal("expected error when CLI executor is nil")
+	}
+}
+
 // Ensure unused imports are used
 var _ = types.DBAProfile{}
 var _ = strings.Contains

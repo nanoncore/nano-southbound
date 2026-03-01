@@ -154,6 +154,14 @@ type DriverV2 interface {
 	// GetSuspensionState returns the current soft suspension state for a
 	// subscriber, or nil if the subscriber is not soft-suspended.
 	GetSuspensionState(ctx context.Context, subscriberID string) (*SuspensionState, error)
+
+	// === Subscriber Move ===
+
+	// MoveSubscriber moves a subscriber to a different PON port using create-first
+	// strategy: (1) CaptureSubscriberConfig, (2) RestoreSubscriberConfig on target
+	// PON port/ONU ID, (3) verify new ONU online, (4) DeleteSubscriber on old port.
+	// If step 2 fails, old ONU remains untouched.
+	MoveSubscriber(ctx context.Context, subscriberID string, targetPONPort string, targetONUID int) (*MoveResult, error)
 }
 
 // ONUDiscovery represents an unprovisioned ONU found during discovery.
@@ -828,6 +836,30 @@ type SuspensionState struct {
 
 	// AppliedVLAN is the walled-garden VLAN that was applied
 	AppliedVLAN int `json:"applied_vlan,omitempty"`
+}
+
+// MoveResult contains the outcome of a subscriber move operation.
+type MoveResult struct {
+	// OldPONPort is the original PON port
+	OldPONPort string `json:"old_pon_port"`
+
+	// NewPONPort is the target PON port
+	NewPONPort string `json:"new_pon_port"`
+
+	// OldONUID is the original ONU ID
+	OldONUID int `json:"old_onu_id"`
+
+	// NewONUID is the new ONU ID on the target port
+	NewONUID int `json:"new_onu_id"`
+
+	// Snapshot is the config that was preserved during the move
+	Snapshot *SubscriberSnapshot `json:"snapshot"`
+
+	// VerificationStatus describes the new ONU's state after move
+	VerificationStatus string `json:"verification_status"`
+
+	// Warnings contains non-fatal issues
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // Common error codes for lifecycle operations

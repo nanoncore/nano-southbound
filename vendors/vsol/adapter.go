@@ -5112,3 +5112,59 @@ func (a *Adapter) GetSuspensionState(ctx context.Context, subscriberID string) (
 	}
 	return a.suspensionStates[subscriberID], nil
 }
+
+// MoveSubscriber moves a subscriber to a different PON port using create-first
+// strategy: capture config, restore on target port, verify, delete from old port.
+func (a *Adapter) MoveSubscriber(ctx context.Context, subscriberID string, targetPONPort string, targetONUID int) (*types.MoveResult, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+	if targetPONPort == "" {
+		return nil, fmt.Errorf("target PON port is required")
+	}
+
+	oldPONPort, oldONUID := a.parseSubscriberID(subscriberID)
+
+	// Step 1: Capture current config
+	snapshot, err := a.CaptureSubscriberConfig(ctx, subscriberID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to capture config for move: %w", err)
+	}
+
+	result := &types.MoveResult{
+		OldPONPort: oldPONPort,
+		NewPONPort: targetPONPort,
+		OldONUID:   oldONUID,
+		NewONUID:   targetONUID,
+		Snapshot:   snapshot,
+	}
+
+	// Step 2: Restore on target PON port
+	_, restoreErr := a.RestoreSubscriberConfig(ctx, snapshot, targetPONPort, targetONUID)
+	if restoreErr != nil {
+		// Old ONU remains untouched — safe failure
+		return nil, fmt.Errorf("failed to create subscriber on target port: %w", restoreErr)
+	}
+
+	// Step 3: Verify new ONU responding
+	result.VerificationStatus = "unverified"
+	power, powerErr := a.GetONUPower(ctx, targetPONPort, targetONUID)
+	if powerErr == nil && power != nil && power.RxPowerDBm < 0 && power.RxPowerDBm > -30 {
+		result.VerificationStatus = "online"
+	} else if powerErr != nil {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("power check failed: %v", powerErr))
+	}
+
+	// Step 4: Delete old subscriber
+	if deleteErr := a.DeleteSubscriber(ctx, subscriberID); deleteErr != nil {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("old subscriber cleanup: %v", deleteErr))
+	}
+
+	slog.Info("move_subscriber: move complete",
+		"subscriber_id", subscriberID,
+		"old_port", oldPONPort, "new_port", targetPONPort,
+		"old_onu_id", oldONUID, "new_onu_id", targetONUID,
+		"verification", result.VerificationStatus)
+
+	return result, nil
+}
