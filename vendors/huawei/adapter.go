@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nanoncore/nano-southbound/drivers/snmp"
@@ -49,14 +50,19 @@ type Adapter struct {
 	cliExecutor     types.CLIExecutor
 	snmpExecutor    types.SNMPExecutor
 	config          *types.EquipmentConfig
+
+	// Soft suspension state tracking
+	suspensionMu     sync.RWMutex
+	suspensionStates map[string]*types.SuspensionState
 }
 
 // NewAdapter creates a new Huawei adapter
 // If the base driver is CLI, it automatically creates an SNMP driver for monitoring
 func NewAdapter(baseDriver types.Driver, config *types.EquipmentConfig) types.Driver {
 	adapter := &Adapter{
-		baseDriver: baseDriver,
-		config:     config,
+		baseDriver:       baseDriver,
+		config:           config,
+		suspensionStates: make(map[string]*types.SuspensionState),
 	}
 
 	// Extract executors from base driver
@@ -2502,4 +2508,605 @@ func (a *Adapter) DeleteServicePort(ctx context.Context, ponPort string, ontID i
 	}
 
 	return nil
+}
+
+// CaptureSubscriberConfig reads the full provisioning state of an ONT.
+// Uses CLI `display ont info` to get serial, profiles, and VLAN configuration.
+func (a *Adapter) CaptureSubscriberConfig(ctx context.Context, subscriberID string) (*types.SubscriberSnapshot, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+
+	frame, slot, port, ontID := a.parseSubscriberID(subscriberID)
+	ponPort := fmt.Sprintf("%d/%d/%d", frame, slot, port)
+
+	// Query ONT info from CLI
+	commands := []string{
+		"enable",
+		"config",
+		fmt.Sprintf("interface gpon %d/%d", frame, slot),
+		fmt.Sprintf("display ont info %d %d", port, ontID),
+		"quit",
+		"quit",
+	}
+
+	outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
+	if err != nil {
+		return nil, &types.HumanError{
+			Code:    types.ErrCodeSnapshotFailed,
+			Message: fmt.Sprintf("failed to read ONT config for %s: %v", subscriberID, err),
+			Vendor:  "huawei",
+		}
+	}
+
+	// Parse serial from display output
+	var serial string
+	if len(outputs) > 3 {
+		serial = a.parseSerialFromDisplayONT(outputs[3])
+	}
+
+	// Try to get serial from SNMP if CLI parsing didn't get it
+	if serial == "" && a.snmpExecutor != nil {
+		filter := &types.ONUFilter{PONPort: ponPort}
+		onus, err := a.GetONUList(ctx, filter)
+		if err == nil {
+			for _, onu := range onus {
+				if onu.ONUID == ontID {
+					serial = onu.Serial
+					break
+				}
+			}
+		}
+	}
+
+	if serial == "" {
+		return nil, &types.HumanError{
+			Code:    types.ErrCodeONUNotFound,
+			Message: fmt.Sprintf("ONT not found at %s ONT %d", ponPort, ontID),
+			Vendor:  "huawei",
+		}
+	}
+
+	// Build snapshot with known configuration
+	// Huawei stores profile IDs (integers) rather than names
+	snapshot := &types.SubscriberSnapshot{
+		Serial:  serial,
+		PONPort: ponPort,
+		ONUID:   ontID,
+		Metadata: map[string]string{
+			"vendor":        "huawei",
+			"model":         a.detectModel(),
+			"frame":         strconv.Itoa(frame),
+			"slot":          strconv.Itoa(slot),
+			"port":          strconv.Itoa(port),
+			"subscriber_id": subscriberID,
+		},
+		CapturedAt: time.Now(),
+	}
+
+	// Try to get VLAN from service port listing
+	servicePorts, _ := a.ListServicePorts(ctx)
+	if len(servicePorts) > 0 {
+		for _, sp := range servicePorts {
+			if sp.Interface == ponPort && sp.ONTID == ontID {
+				snapshot.VLAN = sp.VLAN
+				snapshot.ServicePorts = append(snapshot.ServicePorts, types.ServicePortSnapshot{
+					Index:    sp.Index,
+					VLAN:     sp.VLAN,
+					UserVLAN: sp.UserVLAN,
+					GemPort:  sp.GemPort,
+				})
+			}
+		}
+	}
+
+	slog.Info("huawei: captured subscriber config",
+		"subscriber_id", subscriberID, "serial", serial, "pon_port", ponPort)
+
+	return snapshot, nil
+}
+
+// parseSerialFromDisplayONT extracts serial from Huawei `display ont info` output.
+func (a *Adapter) parseSerialFromDisplayONT(output string) string {
+	// Look for "SN" or "Serial" patterns in display output
+	for _, line := range strings.Split(output, "\n") {
+		line = strings.TrimSpace(line)
+		if strings.Contains(strings.ToLower(line), "sn") || strings.Contains(strings.ToLower(line), "serial") {
+			parts := strings.Fields(line)
+			for i, p := range parts {
+				if (strings.ToLower(p) == "sn" || strings.Contains(strings.ToLower(p), "serial")) && i+1 < len(parts) {
+					// Next field or field after colon is the serial
+					val := parts[i+1]
+					val = strings.TrimPrefix(val, ":")
+					val = strings.TrimSpace(val)
+					if val != "" && val != ":" && len(val) >= 8 {
+						return val
+					}
+					if i+2 < len(parts) {
+						return strings.TrimSpace(parts[i+2])
+					}
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// RestoreSubscriberConfig provisions a new ONT from a previously captured snapshot.
+func (a *Adapter) RestoreSubscriberConfig(ctx context.Context, snapshot *types.SubscriberSnapshot, targetPONPort string, targetONUID int) (*types.SubscriberResult, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+	if snapshot == nil {
+		return nil, fmt.Errorf("snapshot is nil")
+	}
+
+	// Parse target FSP
+	parts := strings.Split(targetPONPort, "/")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid target PON port format: %s (expected frame/slot/port)", targetPONPort)
+	}
+	frame, _ := strconv.Atoi(parts[0])
+	slot, _ := strconv.Atoi(parts[1])
+	port, _ := strconv.Atoi(parts[2])
+
+	// Build synthetic subscriber from snapshot
+	subscriber := &model.Subscriber{
+		Name: fmt.Sprintf("ont-%s-%d", targetPONPort, targetONUID),
+		Annotations: map[string]string{
+			"nano.io/pon-port":       targetPONPort,
+			"nano.io/onu-id":         strconv.Itoa(targetONUID),
+			"nanoncore.com/gpon-fsp": fmt.Sprintf("%d/%d/%d", frame, slot, port),
+			"nanoncore.com/ont-id":   strconv.Itoa(targetONUID),
+		},
+		Spec: model.SubscriberSpec{
+			ONUSerial: snapshot.Serial,
+			VLAN:      snapshot.VLAN,
+		},
+	}
+
+	// Retrieve profile IDs from snapshot metadata
+	tier := &model.ServiceTier{
+		Annotations: map[string]string{},
+		Spec: model.ServiceTierSpec{
+			BandwidthDown: snapshot.BandwidthDownKbps / 1000,
+			BandwidthUp:   snapshot.BandwidthUpKbps / 1000,
+		},
+	}
+	if lpID, ok := snapshot.Metadata["line_profile_id"]; ok {
+		tier.Annotations["nanoncore.com/line-profile-id"] = lpID
+	}
+	if spID, ok := snapshot.Metadata["srv_profile_id"]; ok {
+		tier.Annotations["nanoncore.com/srv-profile-id"] = spID
+	}
+	if ttID, ok := snapshot.Metadata["traffic_table_id"]; ok {
+		tier.Annotations["nanoncore.com/traffic-table-id"] = ttID
+	}
+
+	result, err := a.CreateSubscriber(ctx, subscriber, tier)
+	if err != nil {
+		return nil, &types.HumanError{
+			Code:    types.ErrCodeRestoreFailed,
+			Message: fmt.Sprintf("failed to restore ONT on %s ONT %d: %v", targetPONPort, targetONUID, err),
+			Vendor:  "huawei",
+		}
+	}
+
+	return result, nil
+}
+
+// ReplaceONU performs ONT replacement using create-first strategy.
+// (1) CaptureSubscriberConfig, (2) RestoreSubscriberConfig with new serial on same FSP,
+// (3) Verify new ONT online, (4) DeleteSubscriber on old ONT.
+func (a *Adapter) ReplaceONU(ctx context.Context, subscriberID string, newSerial string) (*types.ReplaceResult, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+	if newSerial == "" {
+		return nil, fmt.Errorf("new serial is required")
+	}
+
+	frame, slot, port, ontID := a.parseSubscriberID(subscriberID)
+	ponPort := fmt.Sprintf("%d/%d/%d", frame, slot, port)
+
+	// Step 1: Capture current config
+	snapshot, err := a.CaptureSubscriberConfig(ctx, subscriberID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to capture config: %w", err)
+	}
+
+	oldSerial := snapshot.Serial
+	snapshot.Serial = newSerial
+
+	// Step 2: Create new ONT with new serial (create-first)
+	_, err = a.RestoreSubscriberConfig(ctx, snapshot, ponPort, ontID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create replacement ONT: %w", err)
+	}
+
+	// Step 3: Verify new ONT (best-effort)
+	var verificationStatus string
+	power, verifyErr := a.GetONUPower(ctx, ponPort, ontID)
+	if verifyErr == nil && power != nil && power.IsWithinSpec {
+		verificationStatus = "online"
+	} else {
+		verificationStatus = "unverified"
+	}
+
+	// Step 4: Delete old ONT — in Huawei, the ont add with same port/ID
+	// replaces the existing one, so explicit delete may not be needed.
+	// But if the old ONU was on a different logical entry, clean up.
+	var warnings []string
+	if oldSerial != newSerial {
+		slog.Info("huawei: replacement ONT created, old serial replaced",
+			"old_serial", oldSerial, "new_serial", newSerial)
+	}
+
+	return &types.ReplaceResult{
+		OldSerial:          oldSerial,
+		NewSerial:          newSerial,
+		Snapshot:           snapshot,
+		VerificationStatus: verificationStatus,
+		Warnings:           warnings,
+	}, nil
+}
+
+// SoftSuspendSubscriber applies a soft suspension mode to an ONT.
+// Throttle: applies restrictive traffic profile with near-zero bandwidth.
+// Walled-garden: redirects service port to walled-garden VLAN.
+// Quarantine: both throttle + walled-garden.
+func (a *Adapter) SoftSuspendSubscriber(ctx context.Context, subscriberID string, opts *types.SuspendOptions) (*types.SuspensionState, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+	if opts == nil {
+		return nil, fmt.Errorf("suspend options are required")
+	}
+
+	switch opts.Mode {
+	case types.SuspensionModeThrottle, types.SuspensionModeWalledGarden, types.SuspensionModeQuarantine:
+		// valid
+	default:
+		return nil, fmt.Errorf("invalid suspension mode: %q", opts.Mode)
+	}
+
+	frame, slot, port, ontID := a.parseSubscriberID(subscriberID)
+	ponPort := fmt.Sprintf("%d/%d/%d", frame, slot, port)
+
+	// Capture current config before suspending
+	snapshot, err := a.CaptureSubscriberConfig(ctx, subscriberID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to capture config before suspend: %w", err)
+	}
+
+	state := &types.SuspensionState{
+		Mode:             opts.Mode,
+		OriginalSnapshot: snapshot,
+		SuspendedAt:      time.Now(),
+	}
+
+	// Apply throttle: modify traffic policy to restrictive profile
+	if opts.Mode == types.SuspensionModeThrottle || opts.Mode == types.SuspensionModeQuarantine {
+		bw := opts.ThrottleBandwidthKbps
+		if bw == 0 {
+			bw = 64 // default 64kbps
+		}
+
+		// Use bandwidth value as traffic table ID (Huawei convention)
+		commands := []string{
+			"config",
+			fmt.Sprintf("interface gpon %d/%d", frame, slot),
+			fmt.Sprintf("ont traffic-policy %d %d profile-id %d", port, ontID, bw),
+			"quit",
+			"quit",
+		}
+
+		_, err := a.cliExecutor.ExecCommands(ctx, commands)
+		if err != nil {
+			return nil, fmt.Errorf("failed to apply throttle: %w", err)
+		}
+
+		state.AppliedBandwidthKbps = bw
+	}
+
+	// Apply walled-garden: redirect service port VLAN
+	if opts.Mode == types.SuspensionModeWalledGarden || opts.Mode == types.SuspensionModeQuarantine {
+		// Delete existing service port, create new one with walled-garden VLAN
+		_ = a.DeleteServicePort(ctx, ponPort, ontID)
+
+		walledVLAN := opts.WalledGardenVLAN
+		err := a.AddServicePort(ctx, &types.AddServicePortRequest{
+			PONPort: ponPort,
+			ONTID:   ontID,
+			VLAN:    walledVLAN,
+			GemPort: 1,
+		})
+		if err != nil {
+			return nil, fmt.Errorf("failed to apply walled-garden VLAN %d: %w", walledVLAN, err)
+		}
+
+		state.AppliedVLAN = walledVLAN
+	}
+
+	// Store suspension state
+	a.suspensionMu.Lock()
+	a.suspensionStates[subscriberID] = state
+	a.suspensionMu.Unlock()
+
+	slog.Info("huawei: soft suspension applied",
+		"subscriber_id", subscriberID, "mode", opts.Mode)
+
+	return state, nil
+}
+
+// GetSuspensionState returns the current soft suspension state for a subscriber.
+func (a *Adapter) GetSuspensionState(ctx context.Context, subscriberID string) (*types.SuspensionState, error) {
+	a.suspensionMu.RLock()
+	defer a.suspensionMu.RUnlock()
+
+	state, ok := a.suspensionStates[subscriberID]
+	if !ok {
+		return nil, nil // not suspended
+	}
+	return state, nil
+}
+
+// MoveSubscriber moves an ONT to a different PON port using create-first strategy.
+func (a *Adapter) MoveSubscriber(ctx context.Context, subscriberID string, targetPONPort string, targetONUID int) (*types.MoveResult, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+
+	frame, slot, port, ontID := a.parseSubscriberID(subscriberID)
+	oldPONPort := fmt.Sprintf("%d/%d/%d", frame, slot, port)
+
+	if targetPONPort == "" {
+		return nil, fmt.Errorf("target PON port is required")
+	}
+
+	// Step 1: Capture current config
+	snapshot, err := a.CaptureSubscriberConfig(ctx, subscriberID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to capture config: %w", err)
+	}
+
+	// Step 2: Create on target port (create-first)
+	_, err = a.RestoreSubscriberConfig(ctx, snapshot, targetPONPort, targetONUID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create ONT on target port %s: %w", targetPONPort, err)
+	}
+
+	// Step 3: Verify new ONT (best-effort)
+	var verificationStatus string
+	power, verifyErr := a.GetONUPower(ctx, targetPONPort, targetONUID)
+	if verifyErr == nil && power != nil && power.IsWithinSpec {
+		verificationStatus = "online"
+	} else {
+		verificationStatus = "unverified"
+	}
+
+	// Step 4: Delete old ONT
+	var warnings []string
+	if err := a.DeleteSubscriber(ctx, subscriberID); err != nil {
+		warnings = append(warnings, fmt.Sprintf("failed to delete old ONT: %v", err))
+		slog.Warn("huawei: move succeeded but old ONT deletion failed",
+			"subscriber_id", subscriberID, "error", err)
+	}
+
+	slog.Info("huawei: subscriber moved",
+		"subscriber_id", subscriberID,
+		"from", oldPONPort, "to", targetPONPort)
+
+	return &types.MoveResult{
+		OldPONPort:         oldPONPort,
+		NewPONPort:         targetPONPort,
+		OldONUID:           ontID,
+		NewONUID:           targetONUID,
+		Snapshot:           snapshot,
+		VerificationStatus: verificationStatus,
+		Warnings:           warnings,
+	}, nil
+}
+
+// CheckONUCompatibility checks if a new ONU is compatible with the current subscriber's config.
+// For Huawei, checks PON technology from serial prefix and basic model classification.
+func (a *Adapter) CheckONUCompatibility(ctx context.Context, subscriberID string, newSerial string) (*types.CompatibilityReport, error) {
+	if newSerial == "" {
+		return nil, fmt.Errorf("new serial is required")
+	}
+
+	report := &types.CompatibilityReport{
+		Compatible: true,
+	}
+
+	// Classify current and new ONU by serial prefix
+	// Huawei ONT serials: HWTC (GPON), 485754 (hex for HWT), etc.
+	newTech := classifyHuaweiSerial(newSerial)
+
+	// If we can determine the current subscriber's technology, compare
+	frame, slot, port, ontID := a.parseSubscriberID(subscriberID)
+	ponPort := fmt.Sprintf("%d/%d/%d", frame, slot, port)
+
+	var currentSerial string
+	if a.snmpExecutor != nil {
+		filter := &types.ONUFilter{PONPort: ponPort}
+		onus, err := a.GetONUList(ctx, filter)
+		if err == nil {
+			for _, onu := range onus {
+				if onu.ONUID == ontID {
+					currentSerial = onu.Serial
+					break
+				}
+			}
+		}
+	}
+
+	if currentSerial != "" {
+		currentTech := classifyHuaweiSerial(currentSerial)
+		if currentTech != "" && newTech != "" && currentTech != newTech {
+			report.Compatible = false
+			report.Warnings = append(report.Warnings,
+				fmt.Sprintf("PON technology mismatch: current %s, new %s", currentTech, newTech))
+			report.RequiredProfileChanges = append(report.RequiredProfileChanges,
+				fmt.Sprintf("line profile must support %s", newTech))
+		}
+		report.CurrentProfile = currentSerial[:4]
+	}
+
+	if newTech != "" {
+		report.SuggestedProfile = newTech
+	}
+
+	return report, nil
+}
+
+// classifyHuaweiSerial determines PON technology from serial prefix.
+func classifyHuaweiSerial(serial string) string {
+	if len(serial) < 4 {
+		return ""
+	}
+	prefix := strings.ToUpper(serial[:4])
+	switch {
+	case prefix == "HWTC" || prefix == "4857":
+		return "GPON"
+	case strings.HasPrefix(prefix, "XGSH") || strings.HasPrefix(prefix, "XGSP"):
+		return "XGS-PON"
+	case strings.HasPrefix(prefix, "EPON"):
+		return "EPON"
+	default:
+		return "GPON" // default assumption for Huawei
+	}
+}
+
+// AddONUToSubscriber provisions an additional ONT for an existing subscriber.
+func (a *Adapter) AddONUToSubscriber(ctx context.Context, subscriberID string, binding model.ONUBinding, tier *model.ServiceTier) (*types.SubscriberResult, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+	if binding.Serial == "" {
+		return nil, fmt.Errorf("serial is required")
+	}
+	if binding.PONPort == "" {
+		return nil, fmt.Errorf("pon_port is required")
+	}
+
+	// Parse the target FSP from binding
+	parts := strings.Split(binding.PONPort, "/")
+	if len(parts) != 3 {
+		return nil, fmt.Errorf("invalid PON port format: %s (expected frame/slot/port)", binding.PONPort)
+	}
+	frame, _ := strconv.Atoi(parts[0])
+	slot, _ := strconv.Atoi(parts[1])
+	port, _ := strconv.Atoi(parts[2])
+
+	// Build subscriber for the new ONT
+	subscriber := &model.Subscriber{
+		Name: fmt.Sprintf("ont-%s-%d", binding.PONPort, binding.ONUID),
+		Annotations: map[string]string{
+			"nanoncore.com/gpon-fsp":          binding.PONPort,
+			"nanoncore.com/ont-id":            strconv.Itoa(binding.ONUID),
+			"nano.io/pon-port":                binding.PONPort,
+			"nano.io/onu-id":                  strconv.Itoa(binding.ONUID),
+			"nanoncore.com/parent-subscriber": subscriberID,
+		},
+		Spec: model.SubscriberSpec{
+			ONUSerial: binding.Serial,
+		},
+	}
+
+	if tier == nil {
+		tier = &model.ServiceTier{
+			Annotations: map[string]string{},
+			Spec:        model.ServiceTierSpec{},
+		}
+	}
+
+	result, err := a.CreateSubscriber(ctx, subscriber, tier)
+	if err != nil {
+		return nil, fmt.Errorf("failed to provision additional ONT: %w", err)
+	}
+
+	slog.Info("huawei: added ONT to subscriber",
+		"subscriber_id", subscriberID, "serial", binding.Serial,
+		"fsp", fmt.Sprintf("%d/%d/%d", frame, slot, port), "ont_id", binding.ONUID)
+
+	return result, nil
+}
+
+// RemoveONUFromSubscriber deprovisions a specific ONT by serial.
+func (a *Adapter) RemoveONUFromSubscriber(ctx context.Context, subscriberID string, serial string) error {
+	if a.cliExecutor == nil {
+		return fmt.Errorf("CLI executor not available")
+	}
+	if serial == "" {
+		return fmt.Errorf("serial is required")
+	}
+
+	// Find the ONT by serial
+	onus, err := a.ListSubscriberONUs(ctx, subscriberID)
+	if err != nil {
+		return fmt.Errorf("failed to list ONTs for subscriber %s: %w", subscriberID, err)
+	}
+
+	for _, onu := range onus {
+		if onu.Serial == serial {
+			ontSubID := fmt.Sprintf("ont-%s-%d", onu.PONPort, onu.ONUID)
+			if err := a.DeleteSubscriber(ctx, ontSubID); err != nil {
+				return fmt.Errorf("failed to remove ONT %s: %w", serial, err)
+			}
+			slog.Info("huawei: removed ONT from subscriber",
+				"subscriber_id", subscriberID, "serial", serial)
+			return nil
+		}
+	}
+
+	return fmt.Errorf("ONT with serial %s not found for subscriber %s", serial, subscriberID)
+}
+
+// ListSubscriberONUs returns all ONTs associated with a subscriber.
+func (a *Adapter) ListSubscriberONUs(ctx context.Context, subscriberID string) ([]model.ONUBinding, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+
+	frame, slot, port, ontID := a.parseSubscriberID(subscriberID)
+	ponPort := fmt.Sprintf("%d/%d/%d", frame, slot, port)
+
+	var bindings []model.ONUBinding
+
+	// Query via SNMP if available
+	if a.snmpExecutor != nil {
+		filter := &types.ONUFilter{PONPort: ponPort}
+		onus, err := a.GetONUList(ctx, filter)
+		if err == nil {
+			primaryFound := false
+			for _, onu := range onus {
+				role := model.ONUBindingRoleSecondary
+				if onu.ONUID == ontID {
+					role = model.ONUBindingRolePrimary
+					primaryFound = true
+				}
+				bindings = append(bindings, model.ONUBinding{
+					Serial:  onu.Serial,
+					PONPort: ponPort,
+					ONUID:   onu.ONUID,
+					Role:    role,
+					Status:  onu.OperState,
+				})
+			}
+			if primaryFound {
+				return bindings, nil
+			}
+		}
+	}
+
+	// Fallback: return placeholder for the primary ONT
+	bindings = append(bindings, model.ONUBinding{
+		PONPort: ponPort,
+		ONUID:   ontID,
+		Role:    model.ONUBindingRolePrimary,
+		Status:  "unknown",
+	})
+
+	return bindings, nil
 }

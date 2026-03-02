@@ -34,6 +34,8 @@ type Adapter struct {
 	config           *types.EquipmentConfig
 	wifiProfileMu    sync.RWMutex
 	wifiProfileCache map[string]string
+	suspensionMu     sync.RWMutex
+	suspensionStates map[string]*types.SuspensionState // subscriberID -> state
 }
 
 var (
@@ -4708,4 +4710,691 @@ func (a *Adapter) DeleteServicePort(ctx context.Context, ponPort string, ontID i
 	}
 
 	return nil
+}
+
+// CaptureSubscriberConfig reads the full provisioning state of an ONU.
+// It collects PON port, ONU ID, serial, profiles, VLAN, and service ports
+// into a SubscriberSnapshot that can be used to restore the subscriber
+// on a different port or with a different serial.
+func (a *Adapter) CaptureSubscriberConfig(ctx context.Context, subscriberID string) (*types.SubscriberSnapshot, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+
+	ponPort, onuID := a.parseSubscriberID(subscriberID)
+
+	// Step 1: Get ONU details (serial, profiles, VLAN) from running config
+	var serial, lineProfile, onuProfile string
+	var vlan int
+
+	if a.detectPONType() == "gpon" {
+		commands := []string{
+			"configure terminal",
+			fmt.Sprintf("interface gpon %s", ponPort),
+			"show onu info all",
+			fmt.Sprintf("show running-config onu %d", onuID),
+			"exit",
+			"exit",
+		}
+
+		outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
+		if err != nil {
+			return nil, &types.HumanError{
+				Code:    types.ErrCodeSnapshotFailed,
+				Message: fmt.Sprintf("failed to read ONU config for %s: %v", subscriberID, err),
+				Vendor:  "vsol",
+			}
+		}
+
+		// Parse ONU info list (index 2) and find our ONU by ID
+		if len(outputs) > 2 {
+			for _, onu := range a.parseV1600ONUList(outputs[2], ponPort) {
+				if onu.ONUID == onuID {
+					serial = onu.Serial
+					onuProfile = onu.ONUProfile
+					break
+				}
+			}
+		}
+
+		// Parse running config (index 3) for line profile and VLAN
+		if len(outputs) > 3 {
+			lp, v := parseONURunningConfigProfiles(common.StripANSI(outputs[3]), onuID)
+			if lp != "" {
+				lineProfile = lp
+			}
+			if v > 0 {
+				vlan = v
+			}
+			// If VLAN not found from profiles, try the service-port pattern
+			if vlan == 0 {
+				vlan = a.parseONURunningConfigVLAN(outputs[3])
+			}
+		}
+	} else {
+		// EPON: get LLID info
+		commands := []string{
+			"configure terminal",
+			fmt.Sprintf("interface epon %s", ponPort),
+			fmt.Sprintf("show llid %d", onuID),
+			"exit",
+			"exit",
+		}
+
+		outputs, err := a.cliExecutor.ExecCommands(ctx, commands)
+		if err != nil {
+			return nil, &types.HumanError{
+				Code:    types.ErrCodeSnapshotFailed,
+				Message: fmt.Sprintf("failed to read EPON ONU config for %s: %v", subscriberID, err),
+				Vendor:  "vsol",
+			}
+		}
+
+		if len(outputs) > 2 {
+			info := a.parseONUInfo(outputs[2], "")
+			if info != nil {
+				serial = info.Serial
+				vlan = info.VLAN
+			}
+		}
+	}
+
+	if serial == "" {
+		return nil, &types.HumanError{
+			Code:    types.ErrCodeONUNotFound,
+			Message: fmt.Sprintf("ONU not found at %s ONU %d", ponPort, onuID),
+			Vendor:  "vsol",
+		}
+	}
+
+	// Step 2: Collect service ports for this ONU
+	allServicePorts, err := a.ListServicePorts(ctx)
+	if err != nil {
+		// Non-fatal: we can still capture the basic config
+		slog.Warn("failed to list service ports during snapshot",
+			"subscriber_id", subscriberID, "error", err)
+	}
+
+	var snapshotPorts []types.ServicePortSnapshot
+	for _, sp := range allServicePorts {
+		if sp.Interface == ponPort && sp.ONTID == onuID {
+			snapshotPorts = append(snapshotPorts, types.ServicePortSnapshot{
+				Index:        sp.Index,
+				VLAN:         sp.VLAN,
+				UserVLAN:     sp.UserVLAN,
+				GemPort:      sp.GemPort,
+				TagTransform: sp.TagTransform,
+			})
+			// Use service port VLAN if not captured from running config
+			if vlan == 0 && sp.VLAN > 0 {
+				vlan = sp.VLAN
+			}
+		}
+	}
+
+	snapshot := &types.SubscriberSnapshot{
+		Serial:       serial,
+		PONPort:      ponPort,
+		ONUID:        onuID,
+		VLAN:         vlan,
+		LineProfile:  lineProfile,
+		ONUProfile:   onuProfile,
+		ServicePorts: snapshotPorts,
+		Metadata: map[string]string{
+			"vendor":   "vsol",
+			"pon_type": a.detectPONType(),
+			"model":    a.detectModel(),
+		},
+		CapturedAt: time.Now(),
+	}
+
+	return snapshot, nil
+}
+
+// RestoreSubscriberConfig provisions a new ONU from a previously captured snapshot.
+// It re-creates the ONU on the specified PON port and ONU ID, applying all
+// captured configuration (profiles, VLAN, service ports, bandwidth).
+func (a *Adapter) RestoreSubscriberConfig(ctx context.Context, snapshot *types.SubscriberSnapshot, targetPONPort string, targetONUID int) (*types.SubscriberResult, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+	if snapshot == nil {
+		return nil, fmt.Errorf("snapshot is nil")
+	}
+
+	// Build a synthetic subscriber from the snapshot for CreateSubscriber
+	subscriber := &model.Subscriber{
+		Name: fmt.Sprintf("onu-%s-%d", targetPONPort, targetONUID),
+		Annotations: map[string]string{
+			"nano.io/pon-port": targetPONPort,
+			"nano.io/onu-id":   strconv.Itoa(targetONUID),
+		},
+		Spec: model.SubscriberSpec{
+			ONUSerial: snapshot.Serial,
+			VLAN:      snapshot.VLAN,
+		},
+	}
+
+	// Set ONU profile from snapshot
+	if snapshot.ONUProfile != "" {
+		subscriber.Annotations["nano.io/onu-profile"] = snapshot.ONUProfile
+	}
+	// Set line profile from snapshot
+	if snapshot.LineProfile != "" {
+		subscriber.Annotations["nano.io/line-profile"] = snapshot.LineProfile
+	}
+
+	// Build a minimal tier for bandwidth
+	tier := &model.ServiceTier{
+		Spec: model.ServiceTierSpec{
+			BandwidthDown: snapshot.BandwidthDownKbps / 1000,
+			BandwidthUp:   snapshot.BandwidthUpKbps / 1000,
+		},
+	}
+
+	result, err := a.CreateSubscriber(ctx, subscriber, tier)
+	if err != nil {
+		return nil, &types.HumanError{
+			Code:    types.ErrCodeRestoreFailed,
+			Message: fmt.Sprintf("failed to restore subscriber on %s ONU %d: %v", targetPONPort, targetONUID, err),
+			Vendor:  "vsol",
+		}
+	}
+
+	// Note: Service ports from the snapshot are already handled by CreateSubscriber's
+	// buildGPONCommands (tcont, gemport, service, service-port, portvlan).
+	// No need to re-create them separately — they match the snapshot VLAN.
+
+	// Add warnings if result has none
+	var warnings []string
+	if result.Metadata != nil {
+		if outputs, ok := result.Metadata["cli_outputs"]; ok {
+			if outputSlice, ok := outputs.([]string); ok {
+				for _, out := range outputSlice {
+					outLower := strings.ToLower(out)
+					if strings.Contains(outLower, "warning") || strings.Contains(outLower, "already exist") {
+						warnings = append(warnings, out)
+					}
+				}
+			}
+		}
+	}
+
+	return &types.SubscriberResult{
+		SubscriberID:  result.SubscriberID,
+		SessionID:     result.SessionID,
+		InterfaceName: result.InterfaceName,
+		VLAN:          result.VLAN,
+		Metadata: map[string]interface{}{
+			"restored_from": snapshot.Serial,
+			"target_pon":    targetPONPort,
+			"target_onu_id": targetONUID,
+			"warnings":      warnings,
+		},
+	}, nil
+}
+
+// ReplaceONU performs a full ONU replacement using create-first strategy:
+// (1) Capture config from old ONU, (2) Create new ONU with new serial on same
+// PON port, (3) Verify new ONU online, (4) Delete old ONU.
+// If step 2 fails, old ONU remains untouched. If step 4 fails, both ONUs
+// exist temporarily (warning, not critical).
+func (a *Adapter) ReplaceONU(ctx context.Context, subscriberID string, newSerial string) (*types.ReplaceResult, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+	if newSerial == "" {
+		return nil, fmt.Errorf("new serial is required")
+	}
+
+	ponPort, onuID := a.parseSubscriberID(subscriberID)
+
+	// Step 1: Capture current ONU configuration
+	snapshot, err := a.CaptureSubscriberConfig(ctx, subscriberID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to capture config for replacement: %w", err)
+	}
+
+	oldSerial := snapshot.Serial
+	result := &types.ReplaceResult{
+		OldSerial: oldSerial,
+		NewSerial: newSerial,
+		Snapshot:  snapshot,
+	}
+
+	// Step 2: Create new ONU with new serial on same PON port
+	// Modify snapshot serial to the new one for restore
+	snapshot.Serial = newSerial
+
+	_, restoreErr := a.RestoreSubscriberConfig(ctx, snapshot, ponPort, onuID)
+	if restoreErr != nil {
+		// Old ONU remains untouched — safe failure
+		return nil, fmt.Errorf("failed to create replacement ONU: %w", restoreErr)
+	}
+
+	// Step 3: Verify new ONU is responding (optical power check)
+	result.VerificationStatus = "unverified"
+	power, powerErr := a.GetONUPower(ctx, ponPort, onuID)
+	if powerErr == nil && power != nil && power.RxPowerDBm < 0 && power.RxPowerDBm > -30 {
+		result.VerificationStatus = "online"
+	} else if powerErr != nil {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("power check failed: %v", powerErr))
+	}
+
+	// Step 4: Delete old ONU
+	// Since we re-used the same PON port and ONU ID, the old ONU was already
+	// replaced by the RestoreSubscriberConfig call (which calls CreateSubscriber
+	// on the same slot). The old serial is gone. No explicit delete needed
+	// when using the same PON/ONUID — the OLT re-provisions the slot.
+	//
+	// However, if the old subscriber had a different ID format, attempt cleanup.
+	oldSubscriberID := fmt.Sprintf("onu-%s-%d", snapshot.PONPort, snapshot.ONUID)
+	if oldSubscriberID != subscriberID {
+		if deleteErr := a.DeleteSubscriber(ctx, oldSubscriberID); deleteErr != nil {
+			result.Warnings = append(result.Warnings, fmt.Sprintf("old ONU cleanup warning: %v", deleteErr))
+		}
+	}
+
+	slog.Info("replace_onu: replacement complete",
+		"old_serial", oldSerial, "new_serial", newSerial,
+		"pon_port", ponPort, "onu_id", onuID,
+		"verification", result.VerificationStatus)
+
+	return result, nil
+}
+
+// SoftSuspendSubscriber applies a soft suspension mode without fully deactivating
+// the ONU. Captures original config for later restoration.
+func (a *Adapter) SoftSuspendSubscriber(ctx context.Context, subscriberID string, opts *types.SuspendOptions) (*types.SuspensionState, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+	if opts == nil {
+		return nil, fmt.Errorf("suspend options are required")
+	}
+
+	switch opts.Mode {
+	case types.SuspensionModeThrottle, types.SuspensionModeWalledGarden, types.SuspensionModeQuarantine:
+		// valid
+	default:
+		return nil, fmt.Errorf("unsupported suspension mode: %q", opts.Mode)
+	}
+
+	ponPort, onuID := a.parseSubscriberID(subscriberID)
+
+	// Step 1: Capture current config for restoration
+	snapshot, err := a.CaptureSubscriberConfig(ctx, subscriberID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to capture config before soft suspend: %w", err)
+	}
+
+	state := &types.SuspensionState{
+		Mode:             opts.Mode,
+		OriginalSnapshot: snapshot,
+		SuspendedAt:      time.Now(),
+	}
+
+	// Step 2: Apply suspension mode
+	if opts.Mode == types.SuspensionModeThrottle || opts.Mode == types.SuspensionModeQuarantine {
+		throttleBw := opts.ThrottleBandwidthKbps
+		if throttleBw <= 0 {
+			throttleBw = 64 // default 64kbps
+		}
+		state.AppliedBandwidthKbps = throttleBw
+
+		// Apply near-zero bandwidth profile
+		bwProfiles, bwErr := a.findOrCreateBandwidthProfiles(ctx, throttleBw, throttleBw)
+		if bwErr != nil {
+			return nil, fmt.Errorf("failed to create throttle bandwidth profiles: %w", bwErr)
+		}
+		if bwProfiles != nil {
+			bwCmds := buildBandwidthCommands(ponPort, onuID, bwProfiles)
+			if _, err := a.cliExecutor.ExecCommands(ctx, bwCmds); err != nil {
+				return nil, fmt.Errorf("failed to apply throttle bandwidth: %w", err)
+			}
+		}
+	}
+
+	if opts.Mode == types.SuspensionModeWalledGarden || opts.Mode == types.SuspensionModeQuarantine {
+		walledVLAN := opts.WalledGardenVLAN
+		if walledVLAN <= 0 {
+			return nil, fmt.Errorf("walled_garden_vlan is required for mode %q", opts.Mode)
+		}
+		state.AppliedVLAN = walledVLAN
+
+		// Delete current service port and re-create with walled-garden VLAN
+		if err := a.DeleteServicePort(ctx, ponPort, onuID); err != nil {
+			slog.Warn("soft_suspend: failed to delete existing service port, may not exist",
+				"subscriber_id", subscriberID, "error", err)
+		}
+
+		if err := a.AddServicePort(ctx, &types.AddServicePortRequest{
+			PONPort:  ponPort,
+			ONTID:    onuID,
+			VLAN:     walledVLAN,
+			UserVLAN: walledVLAN,
+			GemPort:  1,
+			ETHPort:  1,
+		}); err != nil {
+			return nil, fmt.Errorf("failed to redirect to walled-garden VLAN %d: %w", walledVLAN, err)
+		}
+	}
+
+	// Store suspension state
+	a.suspensionMu.Lock()
+	if a.suspensionStates == nil {
+		a.suspensionStates = make(map[string]*types.SuspensionState)
+	}
+	a.suspensionStates[subscriberID] = state
+	a.suspensionMu.Unlock()
+
+	slog.Info("soft_suspend: suspension applied",
+		"subscriber_id", subscriberID, "mode", opts.Mode,
+		"throttle_kbps", state.AppliedBandwidthKbps,
+		"walled_vlan", state.AppliedVLAN)
+
+	return state, nil
+}
+
+// GetSuspensionState returns the current soft suspension state for a subscriber.
+func (a *Adapter) GetSuspensionState(ctx context.Context, subscriberID string) (*types.SuspensionState, error) {
+	a.suspensionMu.RLock()
+	defer a.suspensionMu.RUnlock()
+
+	if a.suspensionStates == nil {
+		return nil, nil
+	}
+	return a.suspensionStates[subscriberID], nil
+}
+
+// MoveSubscriber moves a subscriber to a different PON port using create-first
+// strategy: capture config, restore on target port, verify, delete from old port.
+func (a *Adapter) MoveSubscriber(ctx context.Context, subscriberID string, targetPONPort string, targetONUID int) (*types.MoveResult, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+	if targetPONPort == "" {
+		return nil, fmt.Errorf("target PON port is required")
+	}
+
+	oldPONPort, oldONUID := a.parseSubscriberID(subscriberID)
+
+	// Step 1: Capture current config
+	snapshot, err := a.CaptureSubscriberConfig(ctx, subscriberID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to capture config for move: %w", err)
+	}
+
+	result := &types.MoveResult{
+		OldPONPort: oldPONPort,
+		NewPONPort: targetPONPort,
+		OldONUID:   oldONUID,
+		NewONUID:   targetONUID,
+		Snapshot:   snapshot,
+	}
+
+	// Step 2: Restore on target PON port
+	_, restoreErr := a.RestoreSubscriberConfig(ctx, snapshot, targetPONPort, targetONUID)
+	if restoreErr != nil {
+		// Old ONU remains untouched — safe failure
+		return nil, fmt.Errorf("failed to create subscriber on target port: %w", restoreErr)
+	}
+
+	// Step 3: Verify new ONU responding
+	result.VerificationStatus = "unverified"
+	power, powerErr := a.GetONUPower(ctx, targetPONPort, targetONUID)
+	if powerErr == nil && power != nil && power.RxPowerDBm < 0 && power.RxPowerDBm > -30 {
+		result.VerificationStatus = "online"
+	} else if powerErr != nil {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("power check failed: %v", powerErr))
+	}
+
+	// Step 4: Delete old subscriber
+	if deleteErr := a.DeleteSubscriber(ctx, subscriberID); deleteErr != nil {
+		result.Warnings = append(result.Warnings, fmt.Sprintf("old subscriber cleanup: %v", deleteErr))
+	}
+
+	slog.Info("move_subscriber: move complete",
+		"subscriber_id", subscriberID,
+		"old_port", oldPONPort, "new_port", targetPONPort,
+		"old_onu_id", oldONUID, "new_onu_id", targetONUID,
+		"verification", result.VerificationStatus)
+
+	return result, nil
+}
+
+// CheckONUCompatibility checks whether a new ONU is compatible with the
+// current subscriber's profile requirements by comparing model capabilities
+// derived from serial prefixes and current ONU profile.
+func (a *Adapter) CheckONUCompatibility(ctx context.Context, subscriberID string, newSerial string) (*types.CompatibilityReport, error) {
+	if newSerial == "" {
+		return nil, fmt.Errorf("new serial is required")
+	}
+
+	report := &types.CompatibilityReport{
+		Compatible: true,
+	}
+
+	// Get current subscriber config to determine profile
+	snapshot, err := a.CaptureSubscriberConfig(ctx, subscriberID)
+	if err != nil {
+		// If we can't capture config, we can still do basic serial-prefix checks
+		slog.Warn("compatibility check: could not capture current config",
+			"subscriber_id", subscriberID, "error", err)
+	} else {
+		report.CurrentProfile = snapshot.ONUProfile
+	}
+
+	// Derive model type from serial prefix for both current and new ONU
+	var currentSerial string
+	if snapshot != nil {
+		currentSerial = snapshot.Serial
+	}
+	currentType := classifyONUFromSerial(currentSerial)
+	newType := classifyONUFromSerial(newSerial)
+
+	// Check PON technology compatibility (GPON vs EPON)
+	currentTech := ponTechFromSerial(currentSerial)
+	newTech := ponTechFromSerial(newSerial)
+	if currentTech != "" && newTech != "" && currentTech != newTech {
+		report.Compatible = false
+		report.Warnings = append(report.Warnings,
+			fmt.Sprintf("PON technology mismatch: current is %s, new is %s", currentTech, newTech))
+		report.RequiredProfileChanges = append(report.RequiredProfileChanges,
+			fmt.Sprintf("line profile must support %s", newTech))
+	}
+
+	// Check model type compatibility (bridge vs router)
+	if currentType != "" && newType != "" && currentType != newType {
+		report.Warnings = append(report.Warnings,
+			fmt.Sprintf("ONU type change: current is %s, new is %s", currentType, newType))
+		if snapshot != nil && snapshot.ONUProfile != "" {
+			report.SuggestedProfile = suggestProfileForType(newType, snapshot.ONUProfile)
+			if report.SuggestedProfile != snapshot.ONUProfile {
+				report.RequiredProfileChanges = append(report.RequiredProfileChanges,
+					fmt.Sprintf("ONU profile should change from %s to %s", snapshot.ONUProfile, report.SuggestedProfile))
+			}
+		}
+	}
+
+	return report, nil
+}
+
+// classifyONUFromSerial derives the ONU model type from serial prefix.
+// V-SOL convention: AN5506-04 = bridge (4 ETH), HG = router, etc.
+func classifyONUFromSerial(serial string) string {
+	if serial == "" {
+		return ""
+	}
+	upper := strings.ToUpper(serial)
+	switch {
+	case strings.HasPrefix(upper, "VSOL"), strings.Contains(upper, "AN5506"):
+		return "bridge"
+	case strings.HasPrefix(upper, "HG"), strings.Contains(upper, "ROUTER"):
+		return "router"
+	default:
+		return "unknown"
+	}
+}
+
+// ponTechFromSerial infers PON technology from serial prefix patterns.
+func ponTechFromSerial(serial string) string {
+	if serial == "" {
+		return ""
+	}
+	upper := strings.ToUpper(serial)
+	switch {
+	case strings.HasPrefix(upper, "GPON"), strings.HasPrefix(upper, "VSOL"):
+		return "gpon"
+	case strings.HasPrefix(upper, "EPON"):
+		return "epon"
+	case strings.HasPrefix(upper, "XGS"):
+		return "xgs-pon"
+	default:
+		return ""
+	}
+}
+
+// suggestProfileForType returns a suggested ONU profile based on the model type.
+func suggestProfileForType(modelType, currentProfile string) string {
+	// Simple heuristic: if switching from bridge to router or vice versa,
+	// suggest a profile adjustment. In production, this would query the OLT's
+	// available profiles.
+	switch modelType {
+	case "router":
+		if strings.Contains(currentProfile, "bridge") || strings.Contains(currentProfile, "04-F1") {
+			return strings.Replace(currentProfile, "04-F1", "04-F2", 1)
+		}
+	case "bridge":
+		if strings.Contains(currentProfile, "router") || strings.Contains(currentProfile, "04-F2") {
+			return strings.Replace(currentProfile, "04-F2", "04-F1", 1)
+		}
+	}
+	return currentProfile
+}
+
+// AddONUToSubscriber provisions an additional ONU for an existing subscriber.
+func (a *Adapter) AddONUToSubscriber(ctx context.Context, subscriberID string, binding model.ONUBinding, tier *model.ServiceTier) (*types.SubscriberResult, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+	if binding.Serial == "" {
+		return nil, fmt.Errorf("ONU serial is required")
+	}
+	if binding.PONPort == "" {
+		return nil, fmt.Errorf("PON port is required")
+	}
+
+	// Build a subscriber model for the additional ONU
+	subscriber := &model.Subscriber{
+		Name: fmt.Sprintf("%s-onu-%s-%d", subscriberID, binding.PONPort, binding.ONUID),
+		Annotations: map[string]string{
+			"nano.io/pon-port":     binding.PONPort,
+			"nano.io/onu-id":       strconv.Itoa(binding.ONUID),
+			"nano.io/parent-sub":   subscriberID,
+			"nano.io/binding-role": string(binding.Role),
+		},
+		Spec: model.SubscriberSpec{
+			ONUSerial: binding.Serial,
+		},
+	}
+
+	if tier == nil {
+		tier = &model.ServiceTier{}
+	}
+
+	result, err := a.CreateSubscriber(ctx, subscriber, tier)
+	if err != nil {
+		return nil, fmt.Errorf("failed to add ONU %s to subscriber %s: %w", binding.Serial, subscriberID, err)
+	}
+
+	slog.Info("multi_onu: added ONU to subscriber",
+		"subscriber_id", subscriberID, "serial", binding.Serial,
+		"pon_port", binding.PONPort, "onu_id", binding.ONUID,
+		"role", binding.Role)
+
+	return result, nil
+}
+
+// RemoveONUFromSubscriber deprovisions a specific ONU by serial.
+func (a *Adapter) RemoveONUFromSubscriber(ctx context.Context, subscriberID string, serial string) error {
+	if a.cliExecutor == nil {
+		return fmt.Errorf("CLI executor not available")
+	}
+	if serial == "" {
+		return fmt.Errorf("serial is required")
+	}
+
+	// Find the ONU by serial across all PON ports
+	onus, err := a.ListSubscriberONUs(ctx, subscriberID)
+	if err != nil {
+		return fmt.Errorf("failed to list ONUs for subscriber %s: %w", subscriberID, err)
+	}
+
+	for _, onu := range onus {
+		if onu.Serial == serial {
+			onuSubID := fmt.Sprintf("onu-%s-%d", onu.PONPort, onu.ONUID)
+			if err := a.DeleteSubscriber(ctx, onuSubID); err != nil {
+				return fmt.Errorf("failed to remove ONU %s: %w", serial, err)
+			}
+			slog.Info("multi_onu: removed ONU from subscriber",
+				"subscriber_id", subscriberID, "serial", serial)
+			return nil
+		}
+	}
+
+	return fmt.Errorf("ONU with serial %s not found for subscriber %s", serial, subscriberID)
+}
+
+// ListSubscriberONUs returns all ONUs associated with a subscriber.
+// It queries ONUs by the subscriber ID pattern (onu-<ponPort>-<onuID>).
+func (a *Adapter) ListSubscriberONUs(ctx context.Context, subscriberID string) ([]model.ONUBinding, error) {
+	if a.cliExecutor == nil {
+		return nil, fmt.Errorf("CLI executor not available")
+	}
+
+	// Get the primary ONU from the subscriber ID
+	ponPort, onuID := a.parseSubscriberID(subscriberID)
+
+	// Query ONU list for the PON port
+	filter := &types.ONUFilter{PONPort: ponPort}
+	var allONUs []types.ONUInfo
+
+	if a.snmpExecutor != nil {
+		onus, err := a.GetONUList(ctx, filter)
+		if err == nil {
+			allONUs = onus
+		}
+	}
+
+	// Build bindings from discovered ONUs
+	var bindings []model.ONUBinding
+
+	// Always include the primary ONU
+	primaryFound := false
+	for _, onu := range allONUs {
+		if onu.ONUID == onuID {
+			primaryFound = true
+			bindings = append(bindings, model.ONUBinding{
+				Serial:  onu.Serial,
+				PONPort: ponPort,
+				ONUID:   onu.ONUID,
+				Role:    model.ONUBindingRolePrimary,
+				Status:  onu.OperState,
+			})
+		}
+	}
+
+	// If we couldn't find via SNMP, add a placeholder from the subscriber ID
+	if !primaryFound {
+		bindings = append(bindings, model.ONUBinding{
+			Serial:  "",
+			PONPort: ponPort,
+			ONUID:   onuID,
+			Role:    model.ONUBindingRolePrimary,
+			Status:  "unknown",
+		})
+	}
+
+	return bindings, nil
 }

@@ -3,6 +3,8 @@ package types
 import (
 	"context"
 	"time"
+
+	"github.com/nanoncore/nano-southbound/model"
 )
 
 // DriverV2 extends the base Driver interface with OLT-level operations,
@@ -120,6 +122,69 @@ type DriverV2 interface {
 	// fields populated (PONPort, ONUID, Serial, ONUProfile, LineProfile,
 	// ServiceProfile, VLAN).
 	GetONUProfiles(ctx context.Context) ([]ONUInfo, error)
+
+	// === Subscriber Config Snapshot (used by RMA, Move, Swap, Soft Suspend) ===
+
+	// CaptureSubscriberConfig reads the full provisioning state of an ONU.
+	// Returns a snapshot that can be used to recreate the ONU on a different
+	// port or with a different serial via RestoreSubscriberConfig.
+	CaptureSubscriberConfig(ctx context.Context, subscriberID string) (*SubscriberSnapshot, error)
+
+	// RestoreSubscriberConfig provisions a new ONU from a previously captured
+	// snapshot. Used to re-create an ONU on a different PON port or with a
+	// different ONU ID (e.g., during RMA or move). The targetPONPort and
+	// targetONUID specify where to provision the new ONU.
+	RestoreSubscriberConfig(ctx context.Context, snapshot *SubscriberSnapshot, targetPONPort string, targetONUID int) (*SubscriberResult, error)
+
+	// === ONU Replacement (RMA) ===
+
+	// ReplaceONU performs a full ONU replacement using create-first strategy:
+	// (1) CaptureSubscriberConfig on old ONU, (2) RestoreSubscriberConfig with
+	// new serial on same PON port, (3) verify new ONU online, (4) DeleteSubscriber
+	// on old ONU. If step 2 fails, old ONU remains untouched.
+	ReplaceONU(ctx context.Context, subscriberID string, newSerial string) (*ReplaceResult, error)
+
+	// === Soft Suspension ===
+
+	// SoftSuspendSubscriber applies a soft suspension mode without fully
+	// deactivating the ONU. Captures original config in SuspensionState
+	// for later restoration by ResumeSubscriber. Modes: throttle reduces
+	// bandwidth, walled-garden redirects to a captive VLAN, quarantine
+	// applies both. Existing SuspendSubscriber (hard suspend) is unchanged.
+	SoftSuspendSubscriber(ctx context.Context, subscriberID string, opts *SuspendOptions) (*SuspensionState, error)
+
+	// GetSuspensionState returns the current soft suspension state for a
+	// subscriber, or nil if the subscriber is not soft-suspended.
+	GetSuspensionState(ctx context.Context, subscriberID string) (*SuspensionState, error)
+
+	// === Subscriber Move ===
+
+	// MoveSubscriber moves a subscriber to a different PON port using create-first
+	// strategy: (1) CaptureSubscriberConfig, (2) RestoreSubscriberConfig on target
+	// PON port/ONU ID, (3) verify new ONU online, (4) DeleteSubscriber on old port.
+	// If step 2 fails, old ONU remains untouched.
+	MoveSubscriber(ctx context.Context, subscriberID string, targetPONPort string, targetONUID int) (*MoveResult, error)
+
+	// === ONU Compatibility Check (for Swap) ===
+
+	// CheckONUCompatibility checks whether a new ONU is compatible with the
+	// current subscriber's profile requirements (ETH ports, POTS ports,
+	// T-CONT support, GPON vs XGS-PON). Used as a pre-flight check before swap.
+	CheckONUCompatibility(ctx context.Context, subscriberID string, newSerial string) (*CompatibilityReport, error)
+
+	// === Multi-ONU Provisioning ===
+
+	// AddONUToSubscriber provisions an additional ONU for an existing subscriber.
+	// Each ONU gets an independent service port. The binding specifies the
+	// ONU's serial, PON port, ONU ID, and role (primary/secondary/redundant).
+	AddONUToSubscriber(ctx context.Context, subscriberID string, binding model.ONUBinding, tier *model.ServiceTier) (*SubscriberResult, error)
+
+	// RemoveONUFromSubscriber deprovisions a specific ONU by serial from a
+	// subscriber, keeping other ONUs active.
+	RemoveONUFromSubscriber(ctx context.Context, subscriberID string, serial string) error
+
+	// ListSubscriberONUs returns all ONUs associated with a subscriber.
+	ListSubscriberONUs(ctx context.Context, subscriberID string) ([]model.ONUBinding, error)
 }
 
 // ONUDiscovery represents an unprovisioned ONU found during discovery.
@@ -659,3 +724,192 @@ func IsPowerWithinSpec(rxDBm, txDBm float64) bool {
 	txOK := txDBm >= GPONTxLowThreshold && txDBm <= GPONTxHighThreshold
 	return rxOK && txOK
 }
+
+// SubscriberSnapshot captures the full provisioning state of an ONU.
+// It is the shared primitive used by RMA, Move, Swap, and Soft Suspend
+// to capture and recreate subscriber configurations.
+type SubscriberSnapshot struct {
+	// Serial is the ONU serial number at capture time
+	Serial string `json:"serial"`
+
+	// PONPort is the PON port at capture time
+	PONPort string `json:"pon_port"`
+
+	// ONUID is the ONU ID at capture time
+	ONUID int `json:"onu_id"`
+
+	// VLAN is the C-VLAN ID
+	VLAN int `json:"vlan"`
+
+	// SVLAN is the S-VLAN ID (Q-in-Q, 0 if not used)
+	SVLAN int `json:"svlan,omitempty"`
+
+	// LineProfile is the line profile name
+	LineProfile string `json:"line_profile,omitempty"`
+
+	// ServiceProfile is the service profile name
+	ServiceProfile string `json:"service_profile,omitempty"`
+
+	// TrafficProfile is the traffic/bandwidth profile name
+	TrafficProfile string `json:"traffic_profile,omitempty"`
+
+	// ONUProfile is the ONU hardware profile name
+	ONUProfile string `json:"onu_profile,omitempty"`
+
+	// BandwidthUpKbps is the upstream bandwidth in kbps
+	BandwidthUpKbps int `json:"bandwidth_up_kbps,omitempty"`
+
+	// BandwidthDownKbps is the downstream bandwidth in kbps
+	BandwidthDownKbps int `json:"bandwidth_down_kbps,omitempty"`
+
+	// ServicePorts contains all service port configurations for this ONU
+	ServicePorts []ServicePortSnapshot `json:"service_ports,omitempty"`
+
+	// Metadata contains vendor-specific config data needed for restore
+	Metadata map[string]string `json:"metadata,omitempty"`
+
+	// CapturedAt is when the snapshot was taken
+	CapturedAt time.Time `json:"captured_at"`
+}
+
+// ServicePortSnapshot captures a single service port configuration.
+type ServicePortSnapshot struct {
+	// Index is the service port index
+	Index int `json:"index"`
+
+	// VLAN is the service VLAN
+	VLAN int `json:"vlan"`
+
+	// UserVLAN is the user-side VLAN (C-VLAN)
+	UserVLAN int `json:"user_vlan,omitempty"`
+
+	// GemPort is the GEM port ID
+	GemPort int `json:"gemport,omitempty"`
+
+	// TagTransform is the VLAN tag transformation mode
+	TagTransform string `json:"tag_transform,omitempty"`
+
+	// Metadata contains vendor-specific service port data
+	Metadata map[string]string `json:"metadata,omitempty"`
+}
+
+// ReplaceResult contains the outcome of an ONU replacement (RMA) operation.
+type ReplaceResult struct {
+	// OldSerial is the serial of the replaced ONU
+	OldSerial string `json:"old_serial"`
+
+	// NewSerial is the serial of the new ONU
+	NewSerial string `json:"new_serial"`
+
+	// Snapshot is the config that was preserved from the old ONU
+	Snapshot *SubscriberSnapshot `json:"snapshot"`
+
+	// VerificationStatus describes the new ONU's online state after replacement
+	VerificationStatus string `json:"verification_status"`
+
+	// Warnings contains non-fatal issues (e.g., "old ONU still present")
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// SuspensionMode defines how an ONU is soft-suspended.
+type SuspensionMode string
+
+const (
+	// SuspensionModeHard is the traditional full deactivation (existing behavior).
+	SuspensionModeHard SuspensionMode = "hard"
+
+	// SuspensionModeThrottle reduces bandwidth to near-zero (e.g., 64kbps).
+	SuspensionModeThrottle SuspensionMode = "throttle"
+
+	// SuspensionModeWalledGarden redirects traffic to a captive portal VLAN.
+	SuspensionModeWalledGarden SuspensionMode = "walled-garden"
+
+	// SuspensionModeQuarantine applies both throttle and walled-garden.
+	SuspensionModeQuarantine SuspensionMode = "quarantine"
+)
+
+// SuspendOptions configures a soft suspension operation.
+type SuspendOptions struct {
+	// Mode is the suspension type to apply
+	Mode SuspensionMode `json:"mode"`
+
+	// WalledGardenVLAN is the VLAN to redirect traffic to (for walled-garden/quarantine)
+	WalledGardenVLAN int `json:"walled_garden_vlan,omitempty"`
+
+	// ThrottleBandwidthKbps is the bandwidth limit in kbps (for throttle/quarantine).
+	// Defaults to 64 kbps if zero.
+	ThrottleBandwidthKbps int `json:"throttle_bandwidth_kbps,omitempty"`
+}
+
+// SuspensionState captures the state of a soft suspension, including the
+// original config snapshot for restoration on resume.
+type SuspensionState struct {
+	// Mode is the active suspension mode
+	Mode SuspensionMode `json:"mode"`
+
+	// OriginalSnapshot is the subscriber config before suspension, used to
+	// restore original VLAN/bandwidth on resume
+	OriginalSnapshot *SubscriberSnapshot `json:"original_snapshot,omitempty"`
+
+	// SuspendedAt is when the suspension was applied
+	SuspendedAt time.Time `json:"suspended_at"`
+
+	// AppliedBandwidthKbps is the actual throttle bandwidth applied
+	AppliedBandwidthKbps int `json:"applied_bandwidth_kbps,omitempty"`
+
+	// AppliedVLAN is the walled-garden VLAN that was applied
+	AppliedVLAN int `json:"applied_vlan,omitempty"`
+}
+
+// MoveResult contains the outcome of a subscriber move operation.
+type MoveResult struct {
+	// OldPONPort is the original PON port
+	OldPONPort string `json:"old_pon_port"`
+
+	// NewPONPort is the target PON port
+	NewPONPort string `json:"new_pon_port"`
+
+	// OldONUID is the original ONU ID
+	OldONUID int `json:"old_onu_id"`
+
+	// NewONUID is the new ONU ID on the target port
+	NewONUID int `json:"new_onu_id"`
+
+	// Snapshot is the config that was preserved during the move
+	Snapshot *SubscriberSnapshot `json:"snapshot"`
+
+	// VerificationStatus describes the new ONU's state after move
+	VerificationStatus string `json:"verification_status"`
+
+	// Warnings contains non-fatal issues
+	Warnings []string `json:"warnings,omitempty"`
+}
+
+// CompatibilityReport is the result of an ONU compatibility check.
+type CompatibilityReport struct {
+	// Compatible is true if the new ONU can replace the current one
+	Compatible bool `json:"compatible"`
+
+	// Warnings contains non-fatal compatibility notes
+	Warnings []string `json:"warnings,omitempty"`
+
+	// RequiredProfileChanges lists profile adjustments needed for the swap
+	RequiredProfileChanges []string `json:"required_profile_changes,omitempty"`
+
+	// CurrentProfile is the ONU profile currently in use
+	CurrentProfile string `json:"current_profile,omitempty"`
+
+	// SuggestedProfile is the recommended profile for the new ONU
+	SuggestedProfile string `json:"suggested_profile,omitempty"`
+}
+
+// Common error codes for lifecycle operations
+const (
+	ErrCodeNotImplemented   = "NOT_IMPLEMENTED"
+	ErrCodeOperationLocked  = "OPERATION_LOCKED"
+	ErrCodeSnapshotFailed   = "SNAPSHOT_FAILED"
+	ErrCodeRestoreFailed    = "RESTORE_FAILED"
+	ErrCodeVerifyFailed     = "VERIFY_FAILED"
+	ErrCodeIncompatibleONU  = "INCOMPATIBLE_ONU"
+	ErrCodeSubscriberExists = "SUBSCRIBER_EXISTS"
+)

@@ -2776,3 +2776,459 @@ func TestDisconnect_WithSecondaryDriver(t *testing.T) {
 		t.Fatalf("Disconnect() error = %v", err)
 	}
 }
+
+// ============================================================================
+// ONU Lifecycle Operations Tests
+// ============================================================================
+
+// newTestAdapter creates a Huawei adapter with a mock CLI executor for lifecycle testing.
+func newTestAdapter(outputs map[string]string) *Adapter {
+	return &Adapter{
+		cliExecutor:      &testutil.MockCLIExecutor{Outputs: outputs},
+		config:           testutil.NewTestEquipmentConfig(types.VendorHuawei, "10.0.0.1"),
+		suspensionStates: make(map[string]*types.SuspensionState),
+	}
+}
+
+func TestCaptureSubscriberConfig_Success(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{
+		"display ont info 0 5": "SN : HWTC12345678\nLine profile ID: 10\nStatus: online\n",
+	})
+
+	snapshot, err := adapter.CaptureSubscriberConfig(context.Background(), "ont-0/1/0-5")
+	if err != nil {
+		t.Fatalf("CaptureSubscriberConfig() error: %v", err)
+	}
+	if snapshot == nil {
+		t.Fatal("snapshot is nil")
+	}
+	if snapshot.Serial != "HWTC12345678" {
+		t.Errorf("Serial = %q, want HWTC12345678", snapshot.Serial)
+	}
+	if snapshot.PONPort != "0/1/0" {
+		t.Errorf("PONPort = %q, want 0/1/0", snapshot.PONPort)
+	}
+	if snapshot.ONUID != 5 {
+		t.Errorf("ONUID = %d, want 5", snapshot.ONUID)
+	}
+	if snapshot.Metadata["vendor"] != "huawei" {
+		t.Errorf("vendor = %q, want huawei", snapshot.Metadata["vendor"])
+	}
+}
+
+func TestCaptureSubscriberConfig_NoCLI(t *testing.T) {
+	adapter := &Adapter{
+		config:           testutil.NewTestEquipmentConfig(types.VendorHuawei, "10.0.0.1"),
+		suspensionStates: make(map[string]*types.SuspensionState),
+	}
+
+	_, err := adapter.CaptureSubscriberConfig(context.Background(), "ont-0/1/0-5")
+	if err == nil {
+		t.Fatal("expected error when CLI executor is nil")
+	}
+}
+
+func TestCaptureSubscriberConfig_ONTNotFound(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{
+		"display ont info 0 5": "No such ONT\n",
+	})
+
+	_, err := adapter.CaptureSubscriberConfig(context.Background(), "ont-0/1/0-5")
+	if err == nil {
+		t.Fatal("expected error when ONT not found")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("error = %q, want to contain 'not found'", err.Error())
+	}
+}
+
+func TestRestoreSubscriberConfig_Success(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{})
+
+	snapshot := &types.SubscriberSnapshot{
+		Serial:  "HWTC99999999",
+		PONPort: "0/1/0",
+		ONUID:   5,
+		VLAN:    100,
+		Metadata: map[string]string{
+			"vendor": "huawei",
+		},
+	}
+
+	result, err := adapter.RestoreSubscriberConfig(context.Background(), snapshot, "0/2/0", 3)
+	if err != nil {
+		t.Fatalf("RestoreSubscriberConfig() error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result is nil")
+	}
+	if result.SubscriberID != "ont-0/2/0-3" {
+		t.Errorf("SubscriberID = %q, want ont-0/2/0-3", result.SubscriberID)
+	}
+}
+
+func TestRestoreSubscriberConfig_NilSnapshot(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{})
+
+	_, err := adapter.RestoreSubscriberConfig(context.Background(), nil, "0/2/0", 3)
+	if err == nil {
+		t.Fatal("expected error for nil snapshot")
+	}
+}
+
+func TestRestoreSubscriberConfig_InvalidFSP(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{})
+
+	snapshot := &types.SubscriberSnapshot{Serial: "HWTC99999999", VLAN: 100, Metadata: map[string]string{}}
+	_, err := adapter.RestoreSubscriberConfig(context.Background(), snapshot, "0/1", 3)
+	if err == nil {
+		t.Fatal("expected error for invalid FSP format")
+	}
+	if !strings.Contains(err.Error(), "invalid target PON port") {
+		t.Errorf("error = %q, want 'invalid target PON port'", err.Error())
+	}
+}
+
+func TestReplaceONU_Success(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{
+		"display ont info 0 5": "SN : HWTC12345678\nStatus: online\n",
+	})
+
+	result, err := adapter.ReplaceONU(context.Background(), "ont-0/1/0-5", "HWTCNEW12345")
+	if err != nil {
+		t.Fatalf("ReplaceONU() error: %v", err)
+	}
+	if result.OldSerial != "HWTC12345678" {
+		t.Errorf("OldSerial = %q, want HWTC12345678", result.OldSerial)
+	}
+	if result.NewSerial != "HWTCNEW12345" {
+		t.Errorf("NewSerial = %q, want HWTCNEW12345", result.NewSerial)
+	}
+}
+
+func TestReplaceONU_EmptySerial(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{})
+
+	_, err := adapter.ReplaceONU(context.Background(), "ont-0/1/0-5", "")
+	if err == nil {
+		t.Fatal("expected error for empty serial")
+	}
+	if !strings.Contains(err.Error(), "new serial is required") {
+		t.Errorf("error = %q, want 'new serial is required'", err.Error())
+	}
+}
+
+func TestReplaceONU_NoCLI(t *testing.T) {
+	adapter := &Adapter{
+		config:           testutil.NewTestEquipmentConfig(types.VendorHuawei, "10.0.0.1"),
+		suspensionStates: make(map[string]*types.SuspensionState),
+	}
+
+	_, err := adapter.ReplaceONU(context.Background(), "ont-0/1/0-5", "HWTCNEW12345")
+	if err == nil {
+		t.Fatal("expected error when CLI executor is nil")
+	}
+}
+
+func TestSoftSuspendSubscriber_Throttle(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{
+		"display ont info 0 5": "SN : HWTC12345678\nStatus: online\n",
+	})
+
+	opts := &types.SuspendOptions{
+		Mode:                  types.SuspensionModeThrottle,
+		ThrottleBandwidthKbps: 64,
+	}
+
+	state, err := adapter.SoftSuspendSubscriber(context.Background(), "ont-0/1/0-5", opts)
+	if err != nil {
+		t.Fatalf("SoftSuspendSubscriber() error: %v", err)
+	}
+	if state.Mode != types.SuspensionModeThrottle {
+		t.Errorf("Mode = %q, want throttle", state.Mode)
+	}
+	if state.AppliedBandwidthKbps != 64 {
+		t.Errorf("AppliedBandwidthKbps = %d, want 64", state.AppliedBandwidthKbps)
+	}
+	if state.OriginalSnapshot == nil {
+		t.Error("OriginalSnapshot should not be nil")
+	}
+}
+
+func TestSoftSuspendSubscriber_WalledGarden(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{
+		"display ont info 0 5": "SN : HWTC12345678\nStatus: online\n",
+	})
+
+	opts := &types.SuspendOptions{
+		Mode:             types.SuspensionModeWalledGarden,
+		WalledGardenVLAN: 999,
+	}
+
+	state, err := adapter.SoftSuspendSubscriber(context.Background(), "ont-0/1/0-5", opts)
+	if err != nil {
+		t.Fatalf("SoftSuspendSubscriber() error: %v", err)
+	}
+	if state.Mode != types.SuspensionModeWalledGarden {
+		t.Errorf("Mode = %q, want walled-garden", state.Mode)
+	}
+	if state.AppliedVLAN != 999 {
+		t.Errorf("AppliedVLAN = %d, want 999", state.AppliedVLAN)
+	}
+}
+
+func TestSoftSuspendSubscriber_InvalidMode(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{})
+
+	opts := &types.SuspendOptions{Mode: "invalid"}
+	_, err := adapter.SoftSuspendSubscriber(context.Background(), "ont-0/1/0-5", opts)
+	if err == nil {
+		t.Fatal("expected error for invalid mode")
+	}
+	if !strings.Contains(err.Error(), "invalid suspension mode") {
+		t.Errorf("error = %q, want 'invalid suspension mode'", err.Error())
+	}
+}
+
+func TestSoftSuspendSubscriber_NilOpts(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{})
+
+	_, err := adapter.SoftSuspendSubscriber(context.Background(), "ont-0/1/0-5", nil)
+	if err == nil {
+		t.Fatal("expected error for nil opts")
+	}
+}
+
+func TestGetSuspensionState_NotSuspended(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{})
+
+	state, err := adapter.GetSuspensionState(context.Background(), "ont-0/1/0-5")
+	if err != nil {
+		t.Fatalf("GetSuspensionState() error: %v", err)
+	}
+	if state != nil {
+		t.Error("expected nil state for non-suspended subscriber")
+	}
+}
+
+func TestGetSuspensionState_Suspended(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{
+		"display ont info 0 5": "SN : HWTC12345678\nStatus: online\n",
+	})
+
+	// First suspend
+	opts := &types.SuspendOptions{
+		Mode:                  types.SuspensionModeThrottle,
+		ThrottleBandwidthKbps: 64,
+	}
+	_, err := adapter.SoftSuspendSubscriber(context.Background(), "ont-0/1/0-5", opts)
+	if err != nil {
+		t.Fatalf("SoftSuspendSubscriber() error: %v", err)
+	}
+
+	// Then check state
+	state, err := adapter.GetSuspensionState(context.Background(), "ont-0/1/0-5")
+	if err != nil {
+		t.Fatalf("GetSuspensionState() error: %v", err)
+	}
+	if state == nil {
+		t.Fatal("expected non-nil state")
+	}
+	if state.Mode != types.SuspensionModeThrottle {
+		t.Errorf("Mode = %q, want throttle", state.Mode)
+	}
+}
+
+func TestMoveSubscriber_Success(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{
+		"display ont info 0 5": "SN : HWTC12345678\nStatus: online\n",
+	})
+
+	result, err := adapter.MoveSubscriber(context.Background(), "ont-0/1/0-5", "0/2/0", 3)
+	if err != nil {
+		t.Fatalf("MoveSubscriber() error: %v", err)
+	}
+	if result.OldPONPort != "0/1/0" {
+		t.Errorf("OldPONPort = %q, want 0/1/0", result.OldPONPort)
+	}
+	if result.NewPONPort != "0/2/0" {
+		t.Errorf("NewPONPort = %q, want 0/2/0", result.NewPONPort)
+	}
+	if result.OldONUID != 5 {
+		t.Errorf("OldONUID = %d, want 5", result.OldONUID)
+	}
+	if result.NewONUID != 3 {
+		t.Errorf("NewONUID = %d, want 3", result.NewONUID)
+	}
+}
+
+func TestMoveSubscriber_EmptyTarget(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{})
+
+	_, err := adapter.MoveSubscriber(context.Background(), "ont-0/1/0-5", "", 3)
+	if err == nil {
+		t.Fatal("expected error for empty target")
+	}
+	if !strings.Contains(err.Error(), "target PON port is required") {
+		t.Errorf("error = %q, want 'target PON port is required'", err.Error())
+	}
+}
+
+func TestMoveSubscriber_NoCLI(t *testing.T) {
+	adapter := &Adapter{
+		config:           testutil.NewTestEquipmentConfig(types.VendorHuawei, "10.0.0.1"),
+		suspensionStates: make(map[string]*types.SuspensionState),
+	}
+
+	_, err := adapter.MoveSubscriber(context.Background(), "ont-0/1/0-5", "0/2/0", 3)
+	if err == nil {
+		t.Fatal("expected error when CLI executor is nil")
+	}
+}
+
+func TestCheckONUCompatibility_SameVendor(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{})
+
+	report, err := adapter.CheckONUCompatibility(context.Background(), "ont-0/1/0-5", "HWTCNEW12345")
+	if err != nil {
+		t.Fatalf("CheckONUCompatibility() error: %v", err)
+	}
+	if !report.Compatible {
+		t.Error("expected compatible for same-vendor ONTs")
+	}
+}
+
+func TestCheckONUCompatibility_EmptySerial(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{})
+
+	_, err := adapter.CheckONUCompatibility(context.Background(), "ont-0/1/0-5", "")
+	if err == nil {
+		t.Fatal("expected error for empty serial")
+	}
+}
+
+func TestClassifyHuaweiSerial(t *testing.T) {
+	tests := []struct {
+		serial   string
+		expected string
+	}{
+		{"HWTC12345678", "GPON"},
+		{"485712345678", "GPON"},
+		{"XGSH12345678", "XGS-PON"},
+		{"EPON12345678", "EPON"},
+		{"UNKN12345678", "GPON"}, // default
+		{"AB", ""},               // too short
+	}
+
+	for _, tt := range tests {
+		got := classifyHuaweiSerial(tt.serial)
+		if got != tt.expected {
+			t.Errorf("classifyHuaweiSerial(%q) = %q, want %q", tt.serial, got, tt.expected)
+		}
+	}
+}
+
+func TestAddONUToSubscriber_Success(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{})
+
+	binding := model.ONUBinding{
+		Serial:  "HWTC99999999",
+		PONPort: "0/3/0",
+		ONUID:   7,
+		Role:    model.ONUBindingRoleSecondary,
+	}
+
+	result, err := adapter.AddONUToSubscriber(context.Background(), "ont-0/1/0-5", binding, nil)
+	if err != nil {
+		t.Fatalf("AddONUToSubscriber() error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result is nil")
+	}
+}
+
+func TestAddONUToSubscriber_MissingSerial(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{})
+
+	binding := model.ONUBinding{PONPort: "0/3/0", ONUID: 7}
+	_, err := adapter.AddONUToSubscriber(context.Background(), "ont-0/1/0-5", binding, nil)
+	if err == nil {
+		t.Fatal("expected error for missing serial")
+	}
+}
+
+func TestAddONUToSubscriber_InvalidFSP(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{})
+
+	binding := model.ONUBinding{Serial: "HWTC99999999", PONPort: "0/1", ONUID: 7}
+	_, err := adapter.AddONUToSubscriber(context.Background(), "ont-0/1/0-5", binding, nil)
+	if err == nil {
+		t.Fatal("expected error for invalid FSP")
+	}
+}
+
+func TestRemoveONUFromSubscriber_NoCLI(t *testing.T) {
+	adapter := &Adapter{
+		config:           testutil.NewTestEquipmentConfig(types.VendorHuawei, "10.0.0.1"),
+		suspensionStates: make(map[string]*types.SuspensionState),
+	}
+
+	err := adapter.RemoveONUFromSubscriber(context.Background(), "ont-0/1/0-5", "HWTC12345678")
+	if err == nil {
+		t.Fatal("expected error when CLI executor is nil")
+	}
+}
+
+func TestRemoveONUFromSubscriber_EmptySerial(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{})
+
+	err := adapter.RemoveONUFromSubscriber(context.Background(), "ont-0/1/0-5", "")
+	if err == nil {
+		t.Fatal("expected error for empty serial")
+	}
+}
+
+func TestRemoveONUFromSubscriber_NotFound(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{})
+
+	err := adapter.RemoveONUFromSubscriber(context.Background(), "ont-0/1/0-5", "HWTC_NONEXIST")
+	if err == nil {
+		t.Fatal("expected error when ONT not found")
+	}
+	if !strings.Contains(err.Error(), "not found for subscriber") {
+		t.Errorf("error = %q, want 'not found for subscriber'", err.Error())
+	}
+}
+
+func TestListSubscriberONUs_NoCLI(t *testing.T) {
+	adapter := &Adapter{
+		config:           testutil.NewTestEquipmentConfig(types.VendorHuawei, "10.0.0.1"),
+		suspensionStates: make(map[string]*types.SuspensionState),
+	}
+
+	_, err := adapter.ListSubscriberONUs(context.Background(), "ont-0/1/0-5")
+	if err == nil {
+		t.Fatal("expected error when CLI executor is nil")
+	}
+}
+
+func TestListSubscriberONUs_Placeholder(t *testing.T) {
+	adapter := newTestAdapter(map[string]string{})
+
+	bindings, err := adapter.ListSubscriberONUs(context.Background(), "ont-0/1/0-5")
+	if err != nil {
+		t.Fatalf("ListSubscriberONUs() error: %v", err)
+	}
+	if len(bindings) != 1 {
+		t.Fatalf("expected 1 binding, got %d", len(bindings))
+	}
+	if bindings[0].PONPort != "0/1/0" {
+		t.Errorf("PONPort = %q, want 0/1/0", bindings[0].PONPort)
+	}
+	if bindings[0].ONUID != 5 {
+		t.Errorf("ONUID = %d, want 5", bindings[0].ONUID)
+	}
+	if bindings[0].Role != model.ONUBindingRolePrimary {
+		t.Errorf("Role = %q, want primary", bindings[0].Role)
+	}
+}

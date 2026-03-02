@@ -624,6 +624,727 @@ func TestBuildBandwidthCommands(t *testing.T) {
 	}
 }
 
+// --- CaptureSubscriberConfig / RestoreSubscriberConfig tests ---
+
+func TestCaptureSubscriberConfig_GPON(t *testing.T) {
+	mock := &mockCLIExecutor{
+		outputs: map[string]string{
+			// parseV1600ONUList format: Onuindex Model Profile Mode AuthInfo
+			"show onu info all": `Onuindex         Model            Profile          Mode  AuthInfo
+---------------------------------------------------------------------------
+GPON0/1:5        AN5506-04-F1     AN5506-04-F1     sn    VSOL12345678`,
+			"show running-config onu 5": `onu 5 profile AN5506-04-F1 sn VSOL12345678
+onu 5 line-profile line_vlan_100
+onu 5 tcont 1
+onu 5 gemport 1 tcont 1
+onu 5 service INTERNET gemport 1 vlan 100 cos 0-7
+onu 5 service-port 1 gemport 1 uservlan 100 vlan 100`,
+			"show service-port all": `Index   VLAN  Interface  ONT-ID  GemPort  UserVLAN  TagTransform
+--------------------------------------------------------------
+1       100   0/1        5       1        100       translate`,
+		},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	snapshot, err := adapter.CaptureSubscriberConfig(context.Background(), "onu-0/1-5")
+	if err != nil {
+		t.Fatalf("CaptureSubscriberConfig() error: %v", err)
+	}
+
+	if snapshot.Serial != "VSOL12345678" {
+		t.Errorf("Serial = %q, want %q", snapshot.Serial, "VSOL12345678")
+	}
+	if snapshot.PONPort != "0/1" {
+		t.Errorf("PONPort = %q, want %q", snapshot.PONPort, "0/1")
+	}
+	if snapshot.ONUID != 5 {
+		t.Errorf("ONUID = %d, want 5", snapshot.ONUID)
+	}
+	if snapshot.VLAN != 100 {
+		t.Errorf("VLAN = %d, want 100", snapshot.VLAN)
+	}
+	if snapshot.LineProfile != "line_vlan_100" {
+		t.Errorf("LineProfile = %q, want %q", snapshot.LineProfile, "line_vlan_100")
+	}
+	if snapshot.Metadata["vendor"] != "vsol" {
+		t.Errorf("Metadata[vendor] = %q, want %q", snapshot.Metadata["vendor"], "vsol")
+	}
+	if snapshot.Metadata["pon_type"] != "gpon" {
+		t.Errorf("Metadata[pon_type] = %q, want %q", snapshot.Metadata["pon_type"], "gpon")
+	}
+	if len(snapshot.ServicePorts) != 1 {
+		t.Fatalf("ServicePorts length = %d, want 1", len(snapshot.ServicePorts))
+	}
+	if snapshot.ServicePorts[0].VLAN != 100 {
+		t.Errorf("ServicePorts[0].VLAN = %d, want 100", snapshot.ServicePorts[0].VLAN)
+	}
+	if snapshot.CapturedAt.IsZero() {
+		t.Error("CapturedAt is zero")
+	}
+}
+
+func TestCaptureSubscriberConfig_ONUNotFound(t *testing.T) {
+	mock := &mockCLIExecutor{
+		outputs: map[string]string{
+			// No serial in output
+			"show onu 5 info":           "No such ONU",
+			"show running-config onu 5": "",
+			"show service-port all":     "",
+		},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	_, err := adapter.CaptureSubscriberConfig(context.Background(), "onu-0/1-5")
+	if err == nil {
+		t.Fatal("expected error for non-existent ONU")
+	}
+	humanErr, ok := err.(*types.HumanError)
+	if !ok {
+		t.Fatalf("expected HumanError, got %T", err)
+	}
+	if humanErr.Code != types.ErrCodeONUNotFound {
+		t.Errorf("error code = %q, want %q", humanErr.Code, types.ErrCodeONUNotFound)
+	}
+}
+
+func TestCaptureSubscriberConfig_NoCLI(t *testing.T) {
+	adapter := &Adapter{
+		config: &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	_, err := adapter.CaptureSubscriberConfig(context.Background(), "onu-0/1-5")
+	if err == nil {
+		t.Fatal("expected error when CLI executor is nil")
+	}
+}
+
+func TestRestoreSubscriberConfig_GPON(t *testing.T) {
+	var capturedCommands []string
+	mock := &mockCLIExecutor{
+		outputs:  map[string]string{},
+		commands: capturedCommands,
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	snapshot := &types.SubscriberSnapshot{
+		Serial:      "VSOL12345678",
+		PONPort:     "0/1",
+		ONUID:       5,
+		VLAN:        100,
+		LineProfile: "line_vlan_100",
+		ONUProfile:  "AN5506-04-F1",
+		ServicePorts: []types.ServicePortSnapshot{
+			{Index: 1, VLAN: 100, UserVLAN: 100, GemPort: 1},
+		},
+		Metadata:   map[string]string{"vendor": "vsol", "pon_type": "gpon"},
+		CapturedAt: time.Now(),
+	}
+
+	result, err := adapter.RestoreSubscriberConfig(context.Background(), snapshot, "0/2", 3)
+	if err != nil {
+		t.Fatalf("RestoreSubscriberConfig() error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result is nil")
+	}
+	if result.VLAN != 100 {
+		t.Errorf("VLAN = %d, want 100", result.VLAN)
+	}
+
+	// Verify the CLI commands contain the target PON port and ONU ID
+	hasInterfaceCmd := false
+	hasONUAddCmd := false
+	for _, cmd := range mock.commands {
+		if cmd == "interface gpon 0/2" {
+			hasInterfaceCmd = true
+		}
+		if strings.Contains(cmd, "onu add 3") && strings.Contains(cmd, "VSOL12345678") {
+			hasONUAddCmd = true
+		}
+	}
+	if !hasInterfaceCmd {
+		t.Errorf("expected 'interface gpon 0/2' in commands, got: %v", mock.commands)
+	}
+	if !hasONUAddCmd {
+		t.Errorf("expected 'onu add 3 ... VSOL12345678' in commands, got: %v", mock.commands)
+	}
+}
+
+func TestRestoreSubscriberConfig_NilSnapshot(t *testing.T) {
+	adapter := &Adapter{
+		cliExecutor: &mockCLIExecutor{outputs: map[string]string{}},
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	_, err := adapter.RestoreSubscriberConfig(context.Background(), nil, "0/2", 3)
+	if err == nil {
+		t.Fatal("expected error for nil snapshot")
+	}
+}
+
+func TestRestoreSubscriberConfig_NoCLI(t *testing.T) {
+	adapter := &Adapter{
+		config: &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	snapshot := &types.SubscriberSnapshot{
+		Serial: "VSOL12345678",
+		VLAN:   100,
+	}
+
+	_, err := adapter.RestoreSubscriberConfig(context.Background(), snapshot, "0/2", 3)
+	if err == nil {
+		t.Fatal("expected error when CLI executor is nil")
+	}
+}
+
+func TestReplaceONU_Success(t *testing.T) {
+	mock := &mockCLIExecutor{
+		outputs: map[string]string{
+			// For CaptureSubscriberConfig
+			"show onu info all": `Onuindex         Model            Profile          Mode  AuthInfo
+---------------------------------------------------------------------------
+GPON0/1:5        AN5506-04-F1     AN5506-04-F1     sn    VSOL12345678`,
+			"show running-config onu 5": `onu 5 profile AN5506-04-F1 sn VSOL12345678
+onu 5 line-profile line_vlan_100
+onu 5 tcont 1
+onu 5 gemport 1 tcont 1
+onu 5 service INTERNET gemport 1 vlan 100 cos 0-7
+onu 5 service-port 1 gemport 1 uservlan 100 vlan 100`,
+			"show service-port all": `Index   VLAN  Interface  ONT-ID  GemPort  UserVLAN  TagTransform
+--------------------------------------------------------------
+1       100   0/1        5       1        100       translate`,
+		},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	result, err := adapter.ReplaceONU(context.Background(), "onu-0/1-5", "VSOLNEWSERIAL")
+	if err != nil {
+		t.Fatalf("ReplaceONU() error: %v", err)
+	}
+
+	if result.OldSerial != "VSOL12345678" {
+		t.Errorf("OldSerial = %q, want %q", result.OldSerial, "VSOL12345678")
+	}
+	if result.NewSerial != "VSOLNEWSERIAL" {
+		t.Errorf("NewSerial = %q, want %q", result.NewSerial, "VSOLNEWSERIAL")
+	}
+	if result.Snapshot == nil {
+		t.Fatal("Snapshot is nil")
+	}
+	if result.Snapshot.VLAN != 100 {
+		t.Errorf("Snapshot.VLAN = %d, want 100", result.Snapshot.VLAN)
+	}
+
+	// Verify create-first: the restore commands should contain the new serial
+	hasNewSerial := false
+	for _, cmd := range mock.commands {
+		if strings.Contains(cmd, "VSOLNEWSERIAL") {
+			hasNewSerial = true
+			break
+		}
+	}
+	if !hasNewSerial {
+		t.Errorf("expected new serial in CLI commands, got: %v", mock.commands)
+	}
+}
+
+func TestReplaceONU_CaptureFailure(t *testing.T) {
+	// Empty ONU list means capture will fail with ONU_NOT_FOUND
+	mock := &mockCLIExecutor{
+		outputs: map[string]string{
+			"show onu info all":         "",
+			"show running-config onu 5": "",
+			"show service-port all":     "",
+		},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	_, err := adapter.ReplaceONU(context.Background(), "onu-0/1-5", "VSOLNEWSERIAL")
+	if err == nil {
+		t.Fatal("expected error when ONU not found")
+	}
+	if !strings.Contains(err.Error(), "failed to capture config") {
+		t.Errorf("error = %q, want to contain 'failed to capture config'", err.Error())
+	}
+}
+
+func TestReplaceONU_EmptyNewSerial(t *testing.T) {
+	adapter := &Adapter{
+		cliExecutor: &mockCLIExecutor{outputs: map[string]string{}},
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	_, err := adapter.ReplaceONU(context.Background(), "onu-0/1-5", "")
+	if err == nil {
+		t.Fatal("expected error for empty new serial")
+	}
+	if !strings.Contains(err.Error(), "new serial is required") {
+		t.Errorf("error = %q, want to contain 'new serial is required'", err.Error())
+	}
+}
+
+func TestReplaceONU_NoCLI(t *testing.T) {
+	adapter := &Adapter{
+		config: &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	_, err := adapter.ReplaceONU(context.Background(), "onu-0/1-5", "VSOLNEWSERIAL")
+	if err == nil {
+		t.Fatal("expected error when CLI executor is nil")
+	}
+}
+
+func TestSoftSuspendSubscriber_Throttle(t *testing.T) {
+	mock := &mockCLIExecutor{
+		outputs: map[string]string{
+			"show onu info all": `Onuindex         Model            Profile          Mode  AuthInfo
+---------------------------------------------------------------------------
+GPON0/1:5        AN5506-04-F1     AN5506-04-F1     sn    VSOL12345678`,
+			"show running-config onu 5": `onu 5 profile AN5506-04-F1 sn VSOL12345678
+onu 5 line-profile line_vlan_100
+onu 5 tcont 1
+onu 5 gemport 1 tcont 1
+onu 5 service INTERNET gemport 1 vlan 100 cos 0-7
+onu 5 service-port 1 gemport 1 uservlan 100 vlan 100`,
+			"show service-port all": `Index   VLAN  Interface  ONT-ID  GemPort  UserVLAN  TagTransform
+--------------------------------------------------------------
+1       100   0/1        5       1        100       translate`,
+			"show dba-profile all":     "",
+			"show traffic-profile all": "",
+		},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	opts := &types.SuspendOptions{
+		Mode:                  types.SuspensionModeThrottle,
+		ThrottleBandwidthKbps: 64,
+	}
+
+	state, err := adapter.SoftSuspendSubscriber(context.Background(), "onu-0/1-5", opts)
+	if err != nil {
+		t.Fatalf("SoftSuspendSubscriber() error: %v", err)
+	}
+
+	if state.Mode != types.SuspensionModeThrottle {
+		t.Errorf("Mode = %q, want %q", state.Mode, types.SuspensionModeThrottle)
+	}
+	if state.AppliedBandwidthKbps != 64 {
+		t.Errorf("AppliedBandwidthKbps = %d, want 64", state.AppliedBandwidthKbps)
+	}
+	if state.OriginalSnapshot == nil {
+		t.Fatal("OriginalSnapshot is nil")
+	}
+	if state.OriginalSnapshot.VLAN != 100 {
+		t.Errorf("OriginalSnapshot.VLAN = %d, want 100", state.OriginalSnapshot.VLAN)
+	}
+
+	// Verify suspension state is stored
+	stored, err := adapter.GetSuspensionState(context.Background(), "onu-0/1-5")
+	if err != nil {
+		t.Fatalf("GetSuspensionState() error: %v", err)
+	}
+	if stored == nil {
+		t.Fatal("stored suspension state is nil")
+	}
+	if stored.Mode != types.SuspensionModeThrottle {
+		t.Errorf("stored Mode = %q, want %q", stored.Mode, types.SuspensionModeThrottle)
+	}
+}
+
+func TestSoftSuspendSubscriber_WalledGarden(t *testing.T) {
+	mock := &mockCLIExecutor{
+		outputs: map[string]string{
+			"show onu info all": `Onuindex         Model            Profile          Mode  AuthInfo
+---------------------------------------------------------------------------
+GPON0/1:5        AN5506-04-F1     AN5506-04-F1     sn    VSOL12345678`,
+			"show running-config onu 5": `onu 5 profile AN5506-04-F1 sn VSOL12345678
+onu 5 service-port 1 gemport 1 uservlan 100 vlan 100`,
+			"show service-port all": `Index   VLAN  Interface  ONT-ID  GemPort  UserVLAN  TagTransform
+--------------------------------------------------------------
+1       100   0/1        5       1        100       translate`,
+		},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	opts := &types.SuspendOptions{
+		Mode:             types.SuspensionModeWalledGarden,
+		WalledGardenVLAN: 999,
+	}
+
+	state, err := adapter.SoftSuspendSubscriber(context.Background(), "onu-0/1-5", opts)
+	if err != nil {
+		t.Fatalf("SoftSuspendSubscriber() error: %v", err)
+	}
+
+	if state.Mode != types.SuspensionModeWalledGarden {
+		t.Errorf("Mode = %q, want %q", state.Mode, types.SuspensionModeWalledGarden)
+	}
+	if state.AppliedVLAN != 999 {
+		t.Errorf("AppliedVLAN = %d, want 999", state.AppliedVLAN)
+	}
+
+	// Verify AddServicePort was called with walled-garden VLAN
+	hasWalledVLAN := false
+	for _, cmd := range mock.commands {
+		if strings.Contains(cmd, "vlan 999") {
+			hasWalledVLAN = true
+			break
+		}
+	}
+	if !hasWalledVLAN {
+		t.Errorf("expected walled-garden VLAN 999 in commands, got: %v", mock.commands)
+	}
+}
+
+func TestSoftSuspendSubscriber_InvalidMode(t *testing.T) {
+	adapter := &Adapter{
+		cliExecutor: &mockCLIExecutor{outputs: map[string]string{}},
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	opts := &types.SuspendOptions{
+		Mode: types.SuspensionMode("unknown"),
+	}
+
+	_, err := adapter.SoftSuspendSubscriber(context.Background(), "onu-0/1-5", opts)
+	if err == nil {
+		t.Fatal("expected error for unsupported mode")
+	}
+	if !strings.Contains(err.Error(), "unsupported suspension mode") {
+		t.Errorf("error = %q, want to contain 'unsupported suspension mode'", err.Error())
+	}
+}
+
+func TestSoftSuspendSubscriber_NilOpts(t *testing.T) {
+	adapter := &Adapter{
+		cliExecutor: &mockCLIExecutor{outputs: map[string]string{}},
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	_, err := adapter.SoftSuspendSubscriber(context.Background(), "onu-0/1-5", nil)
+	if err == nil {
+		t.Fatal("expected error for nil opts")
+	}
+}
+
+func TestGetSuspensionState_NotSuspended(t *testing.T) {
+	adapter := &Adapter{
+		config: &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	state, err := adapter.GetSuspensionState(context.Background(), "onu-0/1-5")
+	if err != nil {
+		t.Fatalf("GetSuspensionState() error: %v", err)
+	}
+	if state != nil {
+		t.Errorf("expected nil state for non-suspended subscriber, got %+v", state)
+	}
+}
+
+func TestMoveSubscriber_Success(t *testing.T) {
+	mock := &mockCLIExecutor{
+		outputs: map[string]string{
+			"show onu info all": `Onuindex         Model            Profile          Mode  AuthInfo
+---------------------------------------------------------------------------
+GPON0/1:5        AN5506-04-F1     AN5506-04-F1     sn    VSOL12345678`,
+			"show running-config onu 5": `onu 5 profile AN5506-04-F1 sn VSOL12345678
+onu 5 line-profile line_vlan_100
+onu 5 tcont 1
+onu 5 gemport 1 tcont 1
+onu 5 service INTERNET gemport 1 vlan 100 cos 0-7
+onu 5 service-port 1 gemport 1 uservlan 100 vlan 100`,
+			"show service-port all": `Index   VLAN  Interface  ONT-ID  GemPort  UserVLAN  TagTransform
+--------------------------------------------------------------
+1       100   0/1        5       1        100       translate`,
+		},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	result, err := adapter.MoveSubscriber(context.Background(), "onu-0/1-5", "0/2", 3)
+	if err != nil {
+		t.Fatalf("MoveSubscriber() error: %v", err)
+	}
+
+	if result.OldPONPort != "0/1" {
+		t.Errorf("OldPONPort = %q, want %q", result.OldPONPort, "0/1")
+	}
+	if result.NewPONPort != "0/2" {
+		t.Errorf("NewPONPort = %q, want %q", result.NewPONPort, "0/2")
+	}
+	if result.OldONUID != 5 {
+		t.Errorf("OldONUID = %d, want 5", result.OldONUID)
+	}
+	if result.NewONUID != 3 {
+		t.Errorf("NewONUID = %d, want 3", result.NewONUID)
+	}
+
+	// Verify commands target the new PON port
+	hasNewPort := false
+	for _, cmd := range mock.commands {
+		if cmd == "interface gpon 0/2" {
+			hasNewPort = true
+			break
+		}
+	}
+	if !hasNewPort {
+		t.Errorf("expected commands targeting PON 0/2, got: %v", mock.commands)
+	}
+}
+
+func TestMoveSubscriber_EmptyTargetPort(t *testing.T) {
+	adapter := &Adapter{
+		cliExecutor: &mockCLIExecutor{outputs: map[string]string{}},
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	_, err := adapter.MoveSubscriber(context.Background(), "onu-0/1-5", "", 3)
+	if err == nil {
+		t.Fatal("expected error for empty target port")
+	}
+	if !strings.Contains(err.Error(), "target PON port is required") {
+		t.Errorf("error = %q, want to contain 'target PON port is required'", err.Error())
+	}
+}
+
+func TestMoveSubscriber_NoCLI(t *testing.T) {
+	adapter := &Adapter{
+		config: &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	_, err := adapter.MoveSubscriber(context.Background(), "onu-0/1-5", "0/2", 3)
+	if err == nil {
+		t.Fatal("expected error when CLI executor is nil")
+	}
+}
+
+func TestCheckONUCompatibility_SameModel(t *testing.T) {
+	mock := &mockCLIExecutor{
+		outputs: map[string]string{
+			"show onu info all": `Onuindex         Model            Profile          Mode  AuthInfo
+---------------------------------------------------------------------------
+GPON0/1:5        AN5506-04-F1     AN5506-04-F1     sn    VSOL12345678`,
+			"show running-config onu 5": `onu 5 profile AN5506-04-F1 sn VSOL12345678`,
+			"show service-port all":     "",
+		},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	report, err := adapter.CheckONUCompatibility(context.Background(), "onu-0/1-5", "VSOL99999999")
+	if err != nil {
+		t.Fatalf("CheckONUCompatibility() error: %v", err)
+	}
+	if !report.Compatible {
+		t.Errorf("expected compatible for same-model swap, got incompatible: %v", report.Warnings)
+	}
+}
+
+func TestCheckONUCompatibility_TypeMismatch(t *testing.T) {
+	mock := &mockCLIExecutor{
+		outputs: map[string]string{
+			"show onu info all": `Onuindex         Model            Profile          Mode  AuthInfo
+---------------------------------------------------------------------------
+GPON0/1:5        AN5506-04-F1     AN5506-04-F1     sn    VSOL12345678`,
+			"show running-config onu 5": `onu 5 profile AN5506-04-F1 sn VSOL12345678`,
+			"show service-port all":     "",
+		},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	report, err := adapter.CheckONUCompatibility(context.Background(), "onu-0/1-5", "HG260ROUTER")
+	if err != nil {
+		t.Fatalf("CheckONUCompatibility() error: %v", err)
+	}
+	if len(report.Warnings) == 0 {
+		t.Error("expected warnings for bridge->router swap")
+	}
+}
+
+func TestCheckONUCompatibility_EmptySerial(t *testing.T) {
+	adapter := &Adapter{
+		cliExecutor: &mockCLIExecutor{outputs: map[string]string{}},
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	_, err := adapter.CheckONUCompatibility(context.Background(), "onu-0/1-5", "")
+	if err == nil {
+		t.Fatal("expected error for empty serial")
+	}
+}
+
+func TestAddONUToSubscriber_Success(t *testing.T) {
+	mock := &mockCLIExecutor{
+		outputs: map[string]string{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	binding := model.ONUBinding{
+		Serial:  "VSOL99999999",
+		PONPort: "0/3",
+		ONUID:   7,
+		Role:    model.ONUBindingRoleSecondary,
+	}
+
+	result, err := adapter.AddONUToSubscriber(context.Background(), "onu-0/1-5", binding, nil)
+	if err != nil {
+		t.Fatalf("AddONUToSubscriber() error: %v", err)
+	}
+	if result == nil {
+		t.Fatal("result is nil")
+	}
+
+	// Verify CLI commands target the new PON/ONU
+	hasNewPort := false
+	for _, cmd := range mock.commands {
+		if cmd == "interface gpon 0/3" {
+			hasNewPort = true
+			break
+		}
+	}
+	if !hasNewPort {
+		t.Errorf("expected commands targeting PON 0/3, got: %v", mock.commands)
+	}
+}
+
+func TestAddONUToSubscriber_MissingSerial(t *testing.T) {
+	adapter := &Adapter{
+		cliExecutor: &mockCLIExecutor{outputs: map[string]string{}},
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	binding := model.ONUBinding{PONPort: "0/3", ONUID: 7}
+	_, err := adapter.AddONUToSubscriber(context.Background(), "onu-0/1-5", binding, nil)
+	if err == nil {
+		t.Fatal("expected error for missing serial")
+	}
+}
+
+func TestRemoveONUFromSubscriber_NoCLI(t *testing.T) {
+	adapter := &Adapter{
+		config: &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	err := adapter.RemoveONUFromSubscriber(context.Background(), "onu-0/1-5", "VSOL12345678")
+	if err == nil {
+		t.Fatal("expected error when CLI executor is nil")
+	}
+}
+
+func TestRemoveONUFromSubscriber_EmptySerial(t *testing.T) {
+	adapter := &Adapter{
+		cliExecutor: &mockCLIExecutor{outputs: map[string]string{}},
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	err := adapter.RemoveONUFromSubscriber(context.Background(), "onu-0/1-5", "")
+	if err == nil {
+		t.Fatal("expected error for empty serial")
+	}
+	if !strings.Contains(err.Error(), "serial is required") {
+		t.Errorf("error = %q, want to contain 'serial is required'", err.Error())
+	}
+}
+
+func TestRemoveONUFromSubscriber_NotFound(t *testing.T) {
+	// Without SNMP, ListSubscriberONUs returns a placeholder with empty serial,
+	// so looking up a specific serial won't match.
+	adapter := &Adapter{
+		cliExecutor: &mockCLIExecutor{outputs: map[string]string{}},
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	err := adapter.RemoveONUFromSubscriber(context.Background(), "onu-0/1-5", "VSOL_NONEXIST")
+	if err == nil {
+		t.Fatal("expected error when ONU not found")
+	}
+	if !strings.Contains(err.Error(), "not found for subscriber") {
+		t.Errorf("error = %q, want to contain 'not found for subscriber'", err.Error())
+	}
+}
+
+func TestListSubscriberONUs_NoCLI(t *testing.T) {
+	adapter := &Adapter{
+		config: &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	_, err := adapter.ListSubscriberONUs(context.Background(), "onu-0/1-5")
+	if err == nil {
+		t.Fatal("expected error when CLI executor is nil")
+	}
+}
+
+func TestListSubscriberONUs_ReturnsPlaceholder(t *testing.T) {
+	mock := &mockCLIExecutor{
+		outputs: map[string]string{},
+	}
+
+	adapter := &Adapter{
+		cliExecutor: mock,
+		config:      &types.EquipmentConfig{Metadata: map[string]string{}},
+	}
+
+	bindings, err := adapter.ListSubscriberONUs(context.Background(), "onu-0/1-5")
+	if err != nil {
+		t.Fatalf("ListSubscriberONUs() error: %v", err)
+	}
+	if len(bindings) != 1 {
+		t.Fatalf("expected 1 binding, got %d", len(bindings))
+	}
+	if bindings[0].PONPort != "0/1" {
+		t.Errorf("PONPort = %q, want %q", bindings[0].PONPort, "0/1")
+	}
+	if bindings[0].ONUID != 5 {
+		t.Errorf("ONUID = %d, want 5", bindings[0].ONUID)
+	}
+	if bindings[0].Role != model.ONUBindingRolePrimary {
+		t.Errorf("Role = %q, want %q", bindings[0].Role, model.ONUBindingRolePrimary)
+	}
+}
+
 // Ensure unused imports are used
 var _ = types.DBAProfile{}
 var _ = strings.Contains
