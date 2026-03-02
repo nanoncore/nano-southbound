@@ -579,11 +579,11 @@ func (m *MockDriver) GetCapabilities() []string {
 
 // Interface compliance checks
 var (
-	_ types.Driver          = (*MockDriver)(nil)
-	_ types.CLIExecutor     = (*MockDriver)(nil)
-	_ types.SNMPExecutor    = (*MockDriver)(nil)
+	_ types.Driver            = (*MockDriver)(nil)
+	_ types.CLIExecutor       = (*MockDriver)(nil)
+	_ types.SNMPExecutor      = (*MockDriver)(nil)
 	_ netconf.NETCONFExecutor = (*MockDriver)(nil)
-	_ types.CLIExecutor     = (*MockCLIExecutor)(nil)
-	_ types.SNMPExecutor    = (*MockSNMPExecutor)(nil)
+	_ types.CLIExecutor       = (*MockCLIExecutor)(nil)
+	_ types.SNMPExecutor      = (*MockSNMPExecutor)(nil)
 	_ netconf.NETCONFExecutor = (*MockNETCONFExecutor)(nil)
 )

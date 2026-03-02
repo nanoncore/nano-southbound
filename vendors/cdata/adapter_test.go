@@ -111,17 +111,28 @@ func TestNewAdapter_WithoutCLIExecutor(t *testing.T) {
 // simpleDriver is a minimal Driver with no CLIExecutor capability.
 type simpleDriver struct{ connected bool }
 
-func (d *simpleDriver) Connect(context.Context, *types.EquipmentConfig) error             { d.connected = true; return nil }
-func (d *simpleDriver) Disconnect(context.Context) error                                   { d.connected = false; return nil }
-func (d *simpleDriver) IsConnected() bool                                                  { return d.connected }
-func (d *simpleDriver) CreateSubscriber(context.Context, *model.Subscriber, *model.ServiceTier) (*types.SubscriberResult, error) { return nil, nil }
-func (d *simpleDriver) UpdateSubscriber(context.Context, *model.Subscriber, *model.ServiceTier) error { return nil }
-func (d *simpleDriver) DeleteSubscriber(context.Context, string) error                     { return nil }
-func (d *simpleDriver) SuspendSubscriber(context.Context, string) error                    { return nil }
-func (d *simpleDriver) ResumeSubscriber(context.Context, string) error                     { return nil }
-func (d *simpleDriver) GetSubscriberStatus(context.Context, string) (*types.SubscriberStatus, error) { return nil, nil }
-func (d *simpleDriver) GetSubscriberStats(context.Context, string) (*types.SubscriberStats, error)   { return nil, nil }
-func (d *simpleDriver) HealthCheck(context.Context) error                                  { return nil }
+func (d *simpleDriver) Connect(context.Context, *types.EquipmentConfig) error {
+	d.connected = true
+	return nil
+}
+func (d *simpleDriver) Disconnect(context.Context) error { d.connected = false; return nil }
+func (d *simpleDriver) IsConnected() bool                { return d.connected }
+func (d *simpleDriver) CreateSubscriber(context.Context, *model.Subscriber, *model.ServiceTier) (*types.SubscriberResult, error) {
+	return nil, nil
+}
+func (d *simpleDriver) UpdateSubscriber(context.Context, *model.Subscriber, *model.ServiceTier) error {
+	return nil
+}
+func (d *simpleDriver) DeleteSubscriber(context.Context, string) error  { return nil }
+func (d *simpleDriver) SuspendSubscriber(context.Context, string) error { return nil }
+func (d *simpleDriver) ResumeSubscriber(context.Context, string) error  { return nil }
+func (d *simpleDriver) GetSubscriberStatus(context.Context, string) (*types.SubscriberStatus, error) {
+	return nil, nil
+}
+func (d *simpleDriver) GetSubscriberStats(context.Context, string) (*types.SubscriberStats, error) {
+	return nil, nil
+}
+func (d *simpleDriver) HealthCheck(context.Context) error { return nil }
 
 // ---------------------------------------------------------------------------
 // Helper methods (table-driven)
@@ -421,9 +432,9 @@ func TestBuildEPONCommands(t *testing.T) {
 
 func TestParseONUStatus(t *testing.T) {
 	tests := []struct {
-		name     string
-		output   string
-		wantState string
+		name       string
+		output     string
+		wantState  string
 		wantOnline bool
 	}{
 		{

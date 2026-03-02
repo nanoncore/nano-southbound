@@ -300,7 +300,7 @@ func TestExtractSubscriberParams_WithAnnotations(t *testing.T) {
 		Name: "test-sub",
 		Annotations: map[string]string{
 			"nanoncore.com/pon-port": "gpon-0/1/3",
-			"nanoncore.com/ont-id":  "42",
+			"nanoncore.com/ont-id":   "42",
 		},
 		Spec: model.SubscriberSpec{
 			ONUSerial: "ADTN99999999",

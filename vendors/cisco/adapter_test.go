@@ -51,18 +51,18 @@ func TestNewAdapter_WithoutNETCONF(t *testing.T) {
 // plainDriver is a minimal Driver that does NOT implement NETCONFExecutor.
 type plainDriver struct{}
 
-func (p *plainDriver) Connect(context.Context, *types.EquipmentConfig) error  { return nil }
-func (p *plainDriver) Disconnect(context.Context) error                       { return nil }
-func (p *plainDriver) IsConnected() bool                                      { return true }
+func (p *plainDriver) Connect(context.Context, *types.EquipmentConfig) error { return nil }
+func (p *plainDriver) Disconnect(context.Context) error                      { return nil }
+func (p *plainDriver) IsConnected() bool                                     { return true }
 func (p *plainDriver) CreateSubscriber(context.Context, *model.Subscriber, *model.ServiceTier) (*types.SubscriberResult, error) {
 	return nil, nil
 }
 func (p *plainDriver) UpdateSubscriber(context.Context, *model.Subscriber, *model.ServiceTier) error {
 	return nil
 }
-func (p *plainDriver) DeleteSubscriber(context.Context, string) error               { return nil }
-func (p *plainDriver) SuspendSubscriber(context.Context, string) error              { return nil }
-func (p *plainDriver) ResumeSubscriber(context.Context, string) error               { return nil }
+func (p *plainDriver) DeleteSubscriber(context.Context, string) error  { return nil }
+func (p *plainDriver) SuspendSubscriber(context.Context, string) error { return nil }
+func (p *plainDriver) ResumeSubscriber(context.Context, string) error  { return nil }
 func (p *plainDriver) GetSubscriberStatus(context.Context, string) (*types.SubscriberStatus, error) {
 	return nil, nil
 }
