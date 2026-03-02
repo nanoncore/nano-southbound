@@ -72,3 +72,39 @@ func TestGetONUListSNMPLineProfile(t *testing.T) {
 		t.Fatalf("expected ONU profile metadata AN5506-04-F1, got %v", onu.Metadata["onu_profile"])
 	}
 }
+
+func TestGetONUListSNMPTrafficBytes(t *testing.T) {
+	executor := &fakeSNMPExecutor{
+		walks: map[string]map[string]interface{}{
+			OIDONUSerialNumber: {
+				".1.1": "VSOL00000001",
+			},
+			OIDONUUpstreamBytes: {
+				".1.1": uint64(5000000),
+			},
+			OIDONUDownstreamBytes: {
+				".1.1": uint64(10000000),
+			},
+		},
+	}
+
+	adapter := &Adapter{
+		snmpExecutor: executor,
+	}
+
+	results, err := adapter.getONUListSNMP(context.Background())
+	if err != nil {
+		t.Fatalf("getONUListSNMP returned error: %v", err)
+	}
+	if len(results) != 1 {
+		t.Fatalf("expected 1 ONU, got %d", len(results))
+	}
+
+	onu := results[0]
+	if onu.BytesUp != 5000000 {
+		t.Errorf("BytesUp = %d, want 5000000", onu.BytesUp)
+	}
+	if onu.BytesDown != 10000000 {
+		t.Errorf("BytesDown = %d, want 10000000", onu.BytesDown)
+	}
+}
