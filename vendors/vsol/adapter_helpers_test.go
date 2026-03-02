@@ -3915,6 +3915,49 @@ func TestParseVSOLPONPorts(t *testing.T) {
 			t.Error("did not find port with 10 ONUs")
 		}
 	})
+
+	t.Run("populates traffic counters", func(t *testing.T) {
+		snmpExec := &flexSNMPExecutor{
+			walks: map[string]map[string]interface{}{
+				OIDPONPortAdminStatus:    {".1": int64(1)},
+				OIDPONPortOperStatus:     {".1": int64(1)},
+				OIDPONPortRegisteredONUs: {".1": int64(5)},
+				OIDPONPortMaxONUs:        {".1": int64(128)},
+				OIDPONPortInputRate:      {".1": uint64(1000000)},
+				OIDPONPortOutputRate:     {".1": uint64(2000000)},
+				OIDPONPortInOctets:       {".1": uint64(123456789)},
+				OIDPONPortOutOctets:      {".1": uint64(987654321)},
+			},
+		}
+		adapter := &Adapter{
+			snmpExecutor: snmpExec,
+			config:       &types.EquipmentConfig{Metadata: map[string]string{}},
+		}
+
+		names := map[string]interface{}{".1": "GPON0/1"}
+
+		ports, err := adapter.parseVSOLPONPorts(context.Background(), names)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(ports) != 1 {
+			t.Fatalf("expected 1 port, got %d", len(ports))
+		}
+
+		p := ports[0]
+		if p.InputRateBps != 1000000 {
+			t.Errorf("InputRateBps = %d, want 1000000", p.InputRateBps)
+		}
+		if p.OutputRateBps != 2000000 {
+			t.Errorf("OutputRateBps = %d, want 2000000", p.OutputRateBps)
+		}
+		if p.InOctets != 123456789 {
+			t.Errorf("InOctets = %d, want 123456789", p.InOctets)
+		}
+		if p.OutOctets != 987654321 {
+			t.Errorf("OutOctets = %d, want 987654321", p.OutOctets)
+		}
+	})
 }
 
 // =============================================================================

@@ -652,6 +652,18 @@ type PONPortStatus struct {
 	// Description is the port description
 	Description string `json:"description,omitempty"`
 
+	// InputRateBps is the port input rate in bits per second
+	InputRateBps uint64 `json:"input_rate_bps,omitempty"`
+
+	// OutputRateBps is the port output rate in bits per second
+	OutputRateBps uint64 `json:"output_rate_bps,omitempty"`
+
+	// InOctets is the total inbound octets counter
+	InOctets uint64 `json:"in_octets,omitempty"`
+
+	// OutOctets is the total outbound octets counter
+	OutOctets uint64 `json:"out_octets,omitempty"`
+
 	// Metadata contains vendor-specific port data
 	Metadata map[string]interface{} `json:"metadata,omitempty"`
 }

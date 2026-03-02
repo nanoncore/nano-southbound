@@ -2666,6 +2666,10 @@ func (a *Adapter) parseVSOLPONPorts(ctx context.Context, names map[string]interf
 	operStatuses, _ := a.snmpExecutor.WalkSNMP(ctx, OIDPONPortOperStatus)
 	onuCounts, _ := a.snmpExecutor.WalkSNMP(ctx, OIDPONPortRegisteredONUs)
 	maxOnus, _ := a.snmpExecutor.WalkSNMP(ctx, OIDPONPortMaxONUs)
+	inputRates, _ := a.snmpExecutor.WalkSNMP(ctx, OIDPONPortInputRate)
+	outputRates, _ := a.snmpExecutor.WalkSNMP(ctx, OIDPONPortOutputRate)
+	inOctets, _ := a.snmpExecutor.WalkSNMP(ctx, OIDPONPortInOctets)
+	outOctets, _ := a.snmpExecutor.WalkSNMP(ctx, OIDPONPortOutOctets)
 
 	ports := []types.PONPortStatus{}
 	for index := range names {
@@ -2713,6 +2717,28 @@ func (a *Adapter) parseVSOLPONPorts(ctx context.Context, names map[string]interf
 		if max, ok := maxOnus[index]; ok {
 			if maxInt, ok := common.ParseIntSNMPValue(max); ok {
 				port.MaxONUs = int(maxInt)
+			}
+		}
+
+		// Parse traffic counters
+		if val, ok := inputRates[index]; ok {
+			if v, ok := ParseUint64SNMPValue(val); ok {
+				port.InputRateBps = v
+			}
+		}
+		if val, ok := outputRates[index]; ok {
+			if v, ok := ParseUint64SNMPValue(val); ok {
+				port.OutputRateBps = v
+			}
+		}
+		if val, ok := inOctets[index]; ok {
+			if v, ok := ParseUint64SNMPValue(val); ok {
+				port.InOctets = v
+			}
+		}
+		if val, ok := outOctets[index]; ok {
+			if v, ok := ParseUint64SNMPValue(val); ok {
+				port.OutOctets = v
 			}
 		}
 
@@ -2859,6 +2885,8 @@ func (a *Adapter) getONUListSNMP(ctx context.Context) ([]types.ONUInfo, error) {
 	// Service VLAN is available via SNMP at OIDONUServiceVLAN
 	// Format: {pon_idx}.{onu_idx}.{gem_idx} - we need to map this to {pon_idx}.{onu_idx}
 	serviceVLANs, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUServiceVLAN)
+	upstreamBytes, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUUpstreamBytes)
+	downstreamBytes, _ := a.snmpExecutor.WalkSNMP(ctx, OIDONUDownstreamBytes)
 
 	// Build results by correlating tables via index
 	results := make([]types.ONUInfo, 0, len(serials))
@@ -2953,6 +2981,18 @@ func (a *Adapter) getONUListSNMP(ctx context.Context) ([]types.ONUInfo, error) {
 				onu.Metadata["onu_profile"] = profile
 			}
 		}
+		// Traffic counters
+		if val, ok := upstreamBytes[index]; ok {
+			if v, ok := ParseUint64SNMPValue(val); ok {
+				onu.BytesUp = v
+			}
+		}
+		if val, ok := downstreamBytes[index]; ok {
+			if v, ok := ParseUint64SNMPValue(val); ok {
+				onu.BytesDown = v
+			}
+		}
+
 		// Service VLAN - OID index is {pon}.{onu}.{gem}, we match on {pon}.{onu}
 		// Try gem index 1 first (most common), then search for any gem
 		// Note: WalkSNMP returns keys with leading dots (e.g., ".1.1.1")
