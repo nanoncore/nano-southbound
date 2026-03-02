@@ -3919,14 +3919,14 @@ func TestParseVSOLPONPorts(t *testing.T) {
 	t.Run("populates traffic counters", func(t *testing.T) {
 		snmpExec := &flexSNMPExecutor{
 			walks: map[string]map[string]interface{}{
-				OIDPONPortAdminStatus:   {".1": int64(1)},
-				OIDPONPortOperStatus:    {".1": int64(1)},
+				OIDPONPortAdminStatus:    {".1": int64(1)},
+				OIDPONPortOperStatus:     {".1": int64(1)},
 				OIDPONPortRegisteredONUs: {".1": int64(5)},
-				OIDPONPortMaxONUs:       {".1": int64(128)},
-				OIDPONPortInputRate:     {".1": uint64(1000000)},
-				OIDPONPortOutputRate:    {".1": uint64(2000000)},
-				OIDPONPortInOctets:      {".1": uint64(123456789)},
-				OIDPONPortOutOctets:     {".1": uint64(987654321)},
+				OIDPONPortMaxONUs:        {".1": int64(128)},
+				OIDPONPortInputRate:      {".1": uint64(1000000)},
+				OIDPONPortOutputRate:     {".1": uint64(2000000)},
+				OIDPONPortInOctets:       {".1": uint64(123456789)},
+				OIDPONPortOutOctets:      {".1": uint64(987654321)},
 			},
 		}
 		adapter := &Adapter{
