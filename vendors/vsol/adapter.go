@@ -1524,6 +1524,59 @@ func (a *Adapter) parseONURunningConfigVLAN(output string) int {
 	return 0
 }
 
+// RestartOLT triggers a full reboot of the V-SOL OLT device.
+// Saves running config before rebooting.
+// Verified from UPLINK EP Series OLT CLI User Manual v1.2, Section 18.4.3.
+func (a *Adapter) RestartOLT(ctx context.Context) (*types.RestartOLTResult, error) {
+	result := &types.RestartOLTResult{
+		Success: false,
+	}
+
+	if a.cliExecutor == nil {
+		result.Error = "CLI executor not available"
+		result.Message = "Cannot connect to OLT"
+		return result, fmt.Errorf("CLI executor not available")
+	}
+
+	// Step 1: Save running config
+	saveCommands := []string{
+		"configure terminal",
+		"write",
+	}
+	_, err := a.cliExecutor.ExecCommands(ctx, saveCommands)
+	if err != nil {
+		result.Error = err.Error()
+		result.Message = "Failed to save configuration before reboot"
+		return result, fmt.Errorf("failed to save config: %w", err)
+	}
+	result.SaveSuccess = true
+
+	// Step 2: Send reboot command
+	// The SSH connection will drop after this command — that's expected.
+	// We treat io.EOF or timeout errors after sending "reboot" as success.
+	_, err = a.cliExecutor.ExecCommand(ctx, "reboot")
+	if err != nil {
+		// Connection drop after reboot is expected behavior
+		errMsg := err.Error()
+		if strings.Contains(errMsg, "EOF") ||
+			strings.Contains(errMsg, "broken pipe") ||
+			strings.Contains(errMsg, "connection reset") ||
+			strings.Contains(errMsg, "timeout") ||
+			strings.Contains(errMsg, "closed") {
+			result.Success = true
+			result.Message = "OLT reboot initiated (connection dropped as expected)"
+			return result, nil
+		}
+		result.Error = errMsg
+		result.Message = "Failed to send reboot command"
+		return result, fmt.Errorf("failed to reboot: %w", err)
+	}
+
+	result.Success = true
+	result.Message = "OLT reboot command sent successfully"
+	return result, nil
+}
+
 // detectONUVendor detects ONU vendor from serial number prefix
 func detectONUVendor(serial string) string {
 	if len(serial) < 4 {

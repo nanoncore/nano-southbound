@@ -72,6 +72,13 @@ type DriverV2 interface {
 	// Includes ONU alarms, port alarms, and system alarms.
 	GetAlarms(ctx context.Context) ([]OLTAlarm, error)
 
+	// === OLT Operations ===
+
+	// RestartOLT triggers a full reboot of the OLT device.
+	// Saves running config before rebooting. The SSH connection will drop
+	// after the reboot command is sent — callers should handle this gracefully.
+	RestartOLT(ctx context.Context) (*RestartOLTResult, error)
+
 	// === OLT Status ===
 
 	// GetOLTStatus returns comprehensive OLT status including
@@ -443,6 +450,21 @@ type RestartONUResult struct {
 
 	// RetryCount indicates how many verification retries were performed
 	RetryCount int `json:"retry_count,omitempty"`
+}
+
+// RestartOLTResult contains the result of an OLT device reboot operation.
+type RestartOLTResult struct {
+	// Success indicates if the reboot command was sent successfully
+	Success bool `json:"success"`
+
+	// SaveSuccess indicates if the config was saved before rebooting
+	SaveSuccess bool `json:"save_success"`
+
+	// Message contains a human-readable description of what happened
+	Message string `json:"message"`
+
+	// Error contains error details if the operation failed
+	Error string `json:"error,omitempty"`
 }
 
 // BulkProvisionOp represents a single operation in bulk provisioning.

@@ -1526,6 +1526,17 @@ func (a *Adapter) RestartONU(ctx context.Context, ponPort string, onuID int) (*t
 	return result, nil
 }
 
+// RestartOLT triggers a full reboot of the Huawei OLT device.
+// TODO: Implement once verified on real Huawei OLT hardware.
+// Likely command: enable → config → reboot (in system view).
+func (a *Adapter) RestartOLT(ctx context.Context) (*types.RestartOLTResult, error) {
+	return &types.RestartOLTResult{
+		Success: false,
+		Error:   "not yet implemented for Huawei (needs lab verification)",
+		Message: "Huawei OLT reboot not yet implemented (needs lab verification)",
+	}, fmt.Errorf("RestartOLT not yet implemented for Huawei")
+}
+
 // ApplyProfile applies a bandwidth/service profile to an ONU.
 func (a *Adapter) ApplyProfile(ctx context.Context, ponPort string, onuID int, profile *types.ONUProfile) error {
 	if a.cliExecutor == nil {
