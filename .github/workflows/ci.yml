@@ -167,7 +167,8 @@ jobs:
             trivy-${{ runner.os }}-
 
       - name: Run Trivy (vuln, config, secret)
-        uses: aquasecurity/trivy-action@0.30.0
+        # Pinned to commit SHA after March 2026 supply chain attack (tag v0.35.0)
+        uses: aquasecurity/trivy-action@57a97c7e7821a5776cebc9bb87c984fa69cba8f1
         env:
           TRIVY_CACHE_DIR: .trivycache
         with:
